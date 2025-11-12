@@ -46,7 +46,7 @@ VR0 = 0.0
 
 def ode_system(t, y, mu, power, m_dry, C_m, C_theta):
     """
-    The ODE system implements Eq. (24) in the paper:
+    The ODE system implements equations in the paper:
       \\dot r = v_r
       \\dot θ = v_θ / r
       \\dot v_r = v_θ^2 / r − μ/r^2 + a_r
@@ -70,10 +70,7 @@ def ode_system(t, y, mu, power, m_dry, C_m, C_theta):
     r, theta, v_r, v_theta, m, lam_r, lam_vr, lam_vtheta = y
 
     # ---- costate-dependent thrust law
-    # This is just a calibration relating input parameter C_m to k_gain. It would be good to clean up the code and
-    # throughly test it again, keeping for now. It should not have effect, only shifts the meaning of the input
-    # parameter that still needs to be found by the numerical procedure.
-    k_gain = C_m - 3.725e-6 - 4.91294688e-06
+    k_gain = K_GAIN_FIXED
     a_r = k_gain * lam_vr
     a_th = k_gain * lam_vtheta
     accel_sq = a_r*a_r + a_th*a_th
@@ -136,8 +133,9 @@ def integrate_trajectory(params, t_max_days=365*3, max_step_days=0.5, record=Tru
 
 
 # saving some solutions that worked, as starting points
-SOLUTION0 = (-9.39556446e-05, -2.30484959e+02, -2.10191027e+03, 0.00000000e+00, -2.75116990e+07)
+# SOLUTION0 = (-9.39556446e-05, -2.30484959e+02, -2.10191027e+03, 0.00000000e+00, -2.75116990e+07)
 SOLUTION0 = ([-9.04177133e-05, -2.23208767e+01, -2.82272150e+03, 0.00000000e+00, -1.56907920e+08])
+K_GAIN_FIXED = - 3.725e-6 - 4.91294688e-06   # set by trial and error initially, but it is just a calibration choice
 SCALE = np.delete(np.array(SOLUTION0), -2)
 
 
@@ -348,14 +346,14 @@ def objective(params, r_target=None, th_target=None):
     velocity_err = np.hypot(v_r_end, v_th_end - v_circ_target)
 
     if (r_target is None) or (th_target is None):
-        reward = (velocity_err / 1e4)**2   #   + np.abs(r_end-3)**2      # any theta is possible, for easiser solution finding
+        reward = (velocity_err / 1e4)**2   #   + np.abs(r_end-3)**2   # no theta constrain, for easiser solution finding
     else:
-        reward = (velocity_err / 1e4) ** 2 + np.abs(r_end - r_target) ** 2 + np.abs(th_end-th_target)**2*10
+        reward = (velocity_err / 1e4)**2 + np.abs(r_end - r_target)**2 + np.abs(th_end - th_target)**2*10
 
     return penalty_fuel + penalty_r + reward
 
 
-def make_plots(sol, params):
+def make_plots(sol, params, show=False):
     t_days = sol.t / DAY
     r = sol.y[0]
     theta = sol.y[1]
@@ -364,14 +362,11 @@ def make_plots(sol, params):
     lam_vth = sol.y[7]
 
     # Recover lam_m and thrust → exhaust velocity
-    C_m = params[-2]
-    # lam_m = C_m_guess - 2.0 * np.log(m)
-    # k_gain = P / (lam_m * m * m)
-    k_gain = C_m - 3.725e-6 - 4.91294688e-06        # must match the one in ode_system, would be better to get rid of
+    C_m = params[-2]    # was overriden by a fixed calibration K_GAIN_FIXED, it is not really a dynamic parameter
+    k_gain = K_GAIN_FIXED
 
     a_mag = np.abs(k_gain) * np.sqrt(lam_vr**2 + lam_vth**2)
     v_e = 2.0 * P / (m * a_mag)      # m/s
-    v_e_kms = v_e / 1e3              # km/s
 
     # Cartesian trajectory for plotting
     x_au = (r * np.cos(theta)) / AU
@@ -406,10 +401,12 @@ def make_plots(sol, params):
     ax_ve.set_title('Acceleration magnitude')
 
     fig.tight_layout()
-    # plt.show()
-    plt.savefig(r'c:\target-directory' +
-                # f'{np.round(r[-1]/AU, 1):.1f}-{np.round(np.rad2deg(theta[-1]), 1):.1f}.png', dpi=600)
-                f'{np.round(R0/AU, 1):.1f}-{np.round(np.rad2deg(theta[-1]), 1):.1f}.png', dpi=300)
+    if show:
+        plt.show()
+    else:
+        plt.savefig(r'c:\target-directory' +
+                    # f'{np.round(r[-1]/AU, 1):.1f}-{np.round(np.rad2deg(theta[-1]), 1):.1f}.png', dpi=600)
+                    f'{np.round(R0/AU, 1):.1f}-{np.round(np.rad2deg(theta[-1]), 1):.1f}.png', dpi=300)
     plt.close()
 
 
@@ -419,8 +416,13 @@ def main():
     print("Thruster power     : 1 GW\n")
 
     search_for_new_solution = False
+    just_plot = True
 
-    if search_for_new_solution:
+    if just_plot:
+        sol = [-9.26130852, -112.96960747, -0.13010519, 0.24847801]
+        sol_opt = integrate_trajectory(unpack(sol))
+        make_plots(sol_opt, unpack(sol), show=True)
+    elif search_for_new_solution:
         bounds = [(-1e-4, 1e-4),  # λ_r0
                   (-3000, 0.0),   # λ_vr0
                   (-6000, 0.0),   # λ_vθ0
