@@ -211,12 +211,15 @@ def boundary_residual(z, r_target, theta_target):
     # scales keep all residual components around O(1)
     v_scale = np.sqrt(MU_SI / AU)
     fuel_scale = M0 - M_DRY
+    # Penalize dry-mass violations strongly: this term must be zero when
+    # feasible (m_end >= M_DRY) and grow with any propellant overuse.
+    dry_mass_deficit = max(0.0, M_DRY - m_end)
     return np.array([
         (r_end_au - r_target) / 0.2,
         angle_wrap(th_end - theta_target) / 0.3,
         vr_end / v_scale,
         (vth_end - v_circ) / v_scale,
-        min(0.0, (m_end - M_DRY) / fuel_scale),
+        dry_mass_deficit / (0.05 * fuel_scale),
     ])
 
 
