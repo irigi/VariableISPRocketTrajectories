@@ -23,7 +23,7 @@ Units: SI throughout (m, kg, s). AU and day are convenience scales for I/O/plots
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
-from scipy.optimize import differential_evolution, minimize
+from scipy.optimize import differential_evolution, minimize, least_squares
 
 
 # ----------------------------- #
@@ -132,6 +132,29 @@ def integrate_trajectory(params, t_max_days=365*3, max_step_days=0.5, record=Tru
     return sol
 
 
+def integrate_fixed_time(params, t_days, max_step_days=0.5):
+    """
+    Integrate the trajectory to a *fixed* final time with no terminal events.
+
+    Compared to integrate_trajectory(), this is smooth in the optimization
+    variables and therefore much better suited for Newton/least-squares solvers.
+    """
+    lam_r0, lam_vr0, lam_vtheta0, C_m, C_theta = params
+    y0 = [R0, 0.0, VR0, VTHETA0, M0, lam_r0, lam_vr0, lam_vtheta0]
+
+    sol = solve_ivp(
+        ode_system,
+        (0.0, t_days * DAY),
+        y0,
+        args=(MU_SI, P, M_DRY, C_m, C_theta),
+        rtol=1e-8,
+        atol=1e-9,
+        max_step=max_step_days * DAY,
+        dense_output=False,
+    )
+    return sol
+
+
 # saving some solutions that worked, as starting points
 # SOLUTION0 = (-9.39556446e-05, -2.30484959e+02, -2.10191027e+03, 0.00000000e+00, -2.75116990e+07)
 SOLUTION0 = ([-9.04177133e-05, -2.23208767e+01, -2.82272150e+03, 0.00000000e+00, -1.56907920e+08])
@@ -161,6 +184,116 @@ def unpack(z):
 
 def objective_scaled(z, rt, tht):
     return objective(unpack(z), rt, tht)
+
+
+def angle_wrap(x):
+    """Wrap angle to [-pi, pi] for smooth residuals."""
+    return (x + np.pi) % (2 * np.pi) - np.pi
+
+
+def boundary_residual(z, r_target, theta_target):
+    """
+    Residual for direct boundary solve.
+
+    Unknowns z = [scaled_costates..., t_days_scale], where first 4 values are
+    in the same pack()/unpack() scaling as the legacy code and the last value
+    is transfer time in years.
+    """
+    params = unpack(z[:4])
+    t_days = np.clip(z[4] * 365.0, 5.0, 3650.0)
+    sol = integrate_fixed_time(params, t_days)
+    y = sol.y[:, -1]
+
+    r_end, th_end, vr_end, vth_end, m_end = y[:5]
+    r_end_au = r_end / AU
+    v_circ = np.sqrt(MU_SI / r_end)
+
+    # scales keep all residual components around O(1)
+    v_scale = np.sqrt(MU_SI / AU)
+    fuel_scale = M0 - M_DRY
+    return np.array([
+        (r_end_au - r_target) / 0.2,
+        angle_wrap(th_end - theta_target) / 0.3,
+        vr_end / v_scale,
+        (vth_end - v_circ) / v_scale,
+        min(0.0, (m_end - M_DRY) / fuel_scale),
+    ])
+
+
+def solve_target_fast(r_target, theta_target, seed_params, t_guess_days=500.0,
+                      n_starts=5, max_nfev=140):
+    """
+    Fast and robust target solver using least_squares + multi-start.
+
+    This replaces the old "shift target and half-step on failure" strategy.
+    """
+    seed = np.concatenate([pack(seed_params), [t_guess_days / 365.0]])
+
+    starts = [seed]
+    rng = np.random.default_rng(1234)
+    for _ in range(n_starts - 1):
+        jitter = np.array([0.1, 0.15, 0.15, 0.1, 0.2]) * rng.normal(size=5)
+        starts.append(seed + jitter)
+
+    best = None
+    for s in starts:
+        res = least_squares(
+            boundary_residual,
+            s,
+            args=(r_target, theta_target),
+            method="trf",
+            loss="soft_l1",
+            f_scale=0.2,
+            x_scale="jac",
+            max_nfev=max_nfev,
+            ftol=1e-10,
+            xtol=1e-10,
+            gtol=1e-10,
+        )
+        if (best is None) or (np.linalg.norm(res.fun) < np.linalg.norm(best.fun)):
+            best = res
+        if np.linalg.norm(res.fun) < 3e-4:
+            break
+
+    best_params = unpack(best.x[:4])
+    best_time_days = np.clip(best.x[4] * 365.0, 5.0, 3650.0)
+    return best_params, best_time_days, best
+
+
+def solve_arbitrary_transfer(r0_au, r_target_au, theta_target_rad, seed_params=SOLUTION0,
+                             n_homotopy_steps=8):
+    """
+    Solve transfer for arbitrary initial radius, target radius and target angle.
+
+    Strategy:
+      1) Set initial radius directly.
+      2) Build a homotopy path from known endpoint to desired endpoint.
+      3) At each step, solve a smooth boundary system with least_squares.
+
+    This is significantly faster than the legacy nested Powell + step-halving
+    loops and much more reliable for far targets.
+    """
+    global R0, VTHETA0
+    R0 = r0_au * AU
+    VTHETA0 = np.sqrt(MU_SI / R0)
+
+    seed_params = np.asarray(seed_params, dtype=float)
+    seed_sol = integrate_trajectory(seed_params, record=False)
+    r_seed = seed_sol.y[0, -1] / AU
+    th_seed = seed_sol.y[1, -1]
+
+    params = seed_params.copy()
+    t_guess = seed_sol.t[-1] / DAY
+
+    for alpha in np.linspace(0.0, 1.0, n_homotopy_steps + 1)[1:]:
+        r_step = (1 - alpha) * r_seed + alpha * r_target_au
+        th_step = angle_wrap((1 - alpha) * th_seed + alpha * theta_target_rad)
+        params, t_guess, info = solve_target_fast(r_step, th_step, params, t_guess_days=t_guess)
+        print(f"alpha={alpha:.2f}, target=({r_step:.4f} AU, {np.rad2deg(th_step):.2f} deg), "
+              f"res={np.linalg.norm(info.fun):.3e}, nfev={info.nfev}, t={t_guess:.1f} d")
+
+    sol = integrate_fixed_time(params, t_guess)
+    return params, t_guess, sol
 
 
 def refine_theta_forward(theta_T_old, r_T_old, params):
@@ -417,6 +550,7 @@ def main():
 
     search_for_new_solution = False
     just_plot = True
+    solve_arbitrary = False
 
     if just_plot:
         sol = [-9.26130852, -112.96960747, -0.13010519, 0.24847801]
@@ -434,6 +568,19 @@ def main():
         print("\nBest parameters:", result.x)
         sol_opt = integrate_trajectory(result.x)
         make_plots(sol_opt, result.x)
+    elif solve_arbitrary:
+        # Example: Saturn radius -> Earth radius with fixed arrival angle
+        params_opt, t_opt_days, sol_opt = solve_arbitrary_transfer(
+            r0_au=9.58,
+            r_target_au=1.0,
+            theta_target_rad=np.deg2rad(-95.0),
+            seed_params=unpack([-8.33529969, -99.6312038, 0.43134401, 0.66967974]),
+        )
+        print("\nSolved transfer")
+        print("params:", params_opt)
+        print(f"t_f = {t_opt_days:.2f} days")
+        integrate_trajectory(params_opt)
+        make_plots(sol_opt, params_opt, show=True)
     else:
         sol = [-9.26130852, -112.96960747, -0.13010519, 0.24847801]
         # sol = [-8.33529969, -99.6312038,    0.43134401,   0.66967974]  # for Mercury -> Earth
