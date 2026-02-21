@@ -126,13 +126,16 @@ def integrate_trajectory(params, t_max_days=365*3, max_step_days=0.5, record=Tru
                     dense_output=False)
 
     if record:
+        print(f"Integration started at t = {sol.t[0]/DAY:.2f} days "
+              f"with m = {sol.y[4, 0] / 1e6:.1f} kT, theta = {np.rad2deg(sol.y[1, 0]):.3f} deg "
+              f"and r = {sol.y[0, 0] / AU:.3f} AU")
         print(f"Integration finished at t = {sol.t[-1]/DAY:.2f} days "
               f"with m = {sol.y[4, -1] / 1e6:.1f} kT, theta = {np.rad2deg(sol.y[1, -1]):.3f} deg "
               f"and r = {sol.y[0, -1] / AU:.3f} AU")
     return sol
 
 
-def integrate_fixed_time(params, t_days, max_step_days=0.5):
+def integrate_fixed_time(params, t_days, max_step_days=0.5, rtol=1e-8, atol=1e-9):
     """
     Integrate the trajectory to a *fixed* final time with no terminal events.
 
@@ -147,8 +150,8 @@ def integrate_fixed_time(params, t_days, max_step_days=0.5):
         (0.0, t_days * DAY),
         y0,
         args=(MU_SI, P, M_DRY, C_m, C_theta),
-        rtol=1e-8,
-        atol=1e-9,
+        rtol=rtol,
+        atol=atol,
         max_step=max_step_days * DAY,
         dense_output=False,
     )
@@ -552,8 +555,8 @@ def main():
     print("Thruster power     : 1 GW\n")
 
     search_for_new_solution = False
-    just_plot = True
-    solve_arbitrary = False
+    just_plot = False
+    solve_arbitrary = True
 
     if just_plot:
         sol = [-9.26130852, -112.96960747, -0.13010519, 0.24847801]
