@@ -408,7 +408,6 @@ def main():
 
     search_for_new_solution = False
     just_plot = False
-    solve_arbitrary = True
 
     if just_plot:
         sol = [-9.26130852, -112.96960747, -0.13010519, 0.24847801]
@@ -426,7 +425,7 @@ def main():
         print("\nBest parameters:", result.x)
         sol_opt = integrate_trajectory(result.x)
         make_plots(sol_opt, result.x)
-    elif solve_arbitrary:
+    else:
         # Example: Saturn radius -> Earth radius with fixed arrival angle
         params_opt, t_opt_days, sol_opt = solve_arbitrary_transfer(
             r0_au=9.58,
