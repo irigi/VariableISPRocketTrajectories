@@ -38,7 +38,7 @@ def test_ode_system_matches_manual_derivatives():
         -2000.0,
     ]
 
-    out = rh.ode_system(0.0, y, rh.MU_SI, rh.P, rh.M_DRY, 0.0, -1.0e8)
+    out = rh.ode_system(0.0, y, rh.DEFAULT_CONFIG, 0.0, -1.0e8)
 
     r, _, v_r, v_theta, m, lam_r, lam_vr, lam_vtheta = y
     k = rh.K_GAIN_FIXED
@@ -100,14 +100,14 @@ def test_solve_arbitrary_transfer_can_be_tested_with_fast_stubs(monkeypatch):
             self.y[1, -1] = theta
             self.t = np.array([0.0, tf_days * rh.DAY])
 
-    monkeypatch.setattr(rh, "integrate_trajectory", lambda params, record=False: DummySol(1.2, 0.3, 50.0))
+    monkeypatch.setattr(rh, "integrate_trajectory", lambda params, record=False, config=None: DummySol(1.2, 0.3, 50.0))
 
     def fake_solve_target_fast(r_target, theta_target, params, t_guess_days=0.0, **kwargs):
         calls["steps"] += 1
         return np.asarray(params, dtype=float), t_guess_days + 1.0, type("Info", (), {"fun": np.zeros(5), "nfev": 1})()
 
     monkeypatch.setattr(rh, "solve_target_fast", fake_solve_target_fast)
-    monkeypatch.setattr(rh, "integrate_fixed_time", lambda params, t_days: DummySol(1.0, -0.2, t_days))
+    monkeypatch.setattr(rh, "integrate_fixed_time", lambda params, t_days, config=None: DummySol(1.0, -0.2, t_days))
 
     params_opt, t_opt_days, sol = rh.solve_arbitrary_transfer(
         r0_au=1.0,
@@ -121,3 +121,41 @@ def test_solve_arbitrary_transfer_can_be_tested_with_fast_stubs(monkeypatch):
     assert t_opt_days == 53.0
     assert np.isfinite(sol.y[0, -1])
     assert np.all(np.isfinite(params_opt))
+
+
+def test_integrate_fixed_time_respects_custom_mass_and_power():
+    params = np.array(rh.SOLUTION0, dtype=float).reshape(-1)
+    cfg = rh.TrajectoryConfig(power=5.0e8, m0=4.0e6, m_dry=1.2e6)
+
+    sol = rh.integrate_fixed_time(params, t_days=0.5, config=cfg)
+
+    assert sol.success
+    assert np.isclose(sol.y[4, 0], cfg.m0)
+    assert sol.y[4, -1] < cfg.m0
+
+
+def test_solve_arbitrary_transfer_does_not_mutate_module_initial_conditions(monkeypatch):
+    initial_r0 = rh.R0
+    initial_vtheta0 = rh.VTHETA0
+
+    class DummySol:
+        def __init__(self, r_au, theta, tf_days):
+            self.y = np.zeros((8, 2), dtype=float)
+            self.y[0, -1] = r_au * rh.AU
+            self.y[1, -1] = theta
+            self.t = np.array([0.0, tf_days * rh.DAY])
+
+    monkeypatch.setattr(rh, "integrate_trajectory", lambda params, record=False, config=None: DummySol(1.2, 0.3, 10.0))
+    monkeypatch.setattr(rh, "solve_target_fast", lambda *args, **kwargs: (np.asarray(args[2]), kwargs.get("t_guess_days", 10.0), type("Info", (), {"fun": np.zeros(5), "nfev": 1})()))
+    monkeypatch.setattr(rh, "integrate_fixed_time", lambda params, t_days, config=None: DummySol(1.0, 0.0, t_days))
+
+    rh.solve_arbitrary_transfer(
+        r0_au=2.0,
+        r_target_au=3.0,
+        theta_target_rad=0.1,
+        seed_params=np.array(rh.SOLUTION0, dtype=float).reshape(-1),
+        n_homotopy_steps=1,
+    )
+
+    assert rh.R0 == initial_r0
+    assert rh.VTHETA0 == initial_vtheta0
