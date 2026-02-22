@@ -22,6 +22,7 @@ Units: SI throughout (m, kg, s). AU and day are convenience scales for I/O/plots
 
 import numpy as np
 import matplotlib.pyplot as plt
+from dataclasses import dataclass, replace
 from scipy.integrate import solve_ivp
 from scipy.optimize import differential_evolution, minimize, least_squares
 
@@ -33,18 +34,36 @@ AU = 1.495978707e11           # m
 DAY = 86400.0                 # s
 MU_SI = 1.32712440018e20      # m^3 s⁻²  (GM☉)
 
-# ----------------------------- #
-#  Problem‑specific constants   #
-# ----------------------------- #
-P = 1.0e9                       # W  (1 GW electric thruster)
-M_DRY = 1.0e6                   # kg – dry / payload mass  (1000 kT)
-M0 = 3.0e6                      # kg – total initial mass (3000 kT ⇒ 2000 kT propellant)
-R0 = AU                         # m  – start at Earth’s orbit
-VTHETA0 = np.sqrt(MU_SI / R0)   # circular speed, m s⁻¹
-VR0 = 0.0
+@dataclass(frozen=True)
+class TrajectoryConfig:
+    """All physical constants and initial conditions for one trajectory solve."""
+    mu: float = MU_SI
+    power: float = 1.0e9
+    m_dry: float = 1.0e6
+    m0: float = 3.0e6
+    r0: float = AU
+    vr0: float = 0.0
+    vtheta0: float | None = None
+    k_gain: float = -3.725e-6 - 4.91294688e-06
+
+    def with_initial_radius(self, r0_au):
+        """Return a new config with a new circular-orbit initial radius."""
+        r0_si = r0_au * AU
+        return replace(self, r0=r0_si, vtheta0=np.sqrt(self.mu / r0_si))
 
 
-def ode_system(t, y, mu, power, m_dry, C_m, C_theta):
+DEFAULT_CONFIG = TrajectoryConfig()
+
+# Backward-compatible aliases for existing callers/tests
+P = DEFAULT_CONFIG.power
+M_DRY = DEFAULT_CONFIG.m_dry
+M0 = DEFAULT_CONFIG.m0
+R0 = DEFAULT_CONFIG.r0
+VR0 = DEFAULT_CONFIG.vr0
+VTHETA0 = np.sqrt(DEFAULT_CONFIG.mu / DEFAULT_CONFIG.r0)
+K_GAIN_FIXED = DEFAULT_CONFIG.k_gain
+
+def ode_system(t, y, config, C_m, C_theta):
     """
     The ODE system implements equations in the paper:
       \\dot r = v_r
@@ -70,7 +89,9 @@ def ode_system(t, y, mu, power, m_dry, C_m, C_theta):
     r, theta, v_r, v_theta, m, lam_r, lam_vr, lam_vtheta = y
 
     # ---- costate-dependent thrust law
-    k_gain = K_GAIN_FIXED
+    mu = config.mu
+    power = config.power
+    k_gain = config.k_gain
     a_r = k_gain * lam_vr
     a_th = k_gain * lam_vtheta
     accel_sq = a_r*a_r + a_th*a_th
@@ -91,23 +112,27 @@ def ode_system(t, y, mu, power, m_dry, C_m, C_theta):
     return [drdt, dthetadt, dv_rdt, dv_thdt, dmdt, dlam_r, dlam_vr, dlam_vtheta]
 
 
-def fuel_out_event(t, y, *args):
-    """Event: stop if propellant exhausted (m == M_DRY)"""
-    return y[4] - M_DRY       # m(t) - m_dry  — stops when zero
-fuel_out_event.terminal  = True
-fuel_out_event.direction = -1
+def make_fuel_out_event(config):
+    def fuel_out_event(t, y, *args):
+        """Event: stop if propellant exhausted (m == m_dry)."""
+        return y[4] - config.m_dry
+    fuel_out_event.terminal = True
+    fuel_out_event.direction = -1
+    return fuel_out_event
 
 
-def circular_velocity_event(t, y, *args):
-    """Circular velocity of planet at given radius reached"""
-    v_circ_target = np.sqrt(MU_SI / y[0])
-    velocity_err = np.hypot(y[2], y[3] - v_circ_target)
-    return velocity_err + (500 if y[0] / AU < 1.5 else 0)
-circular_velocity_event.terminal  = True        # was run with a bug, fuel_out_event.terminal defined here
-circular_velocity_event.direction = -1          # was run with a bug, fuel_out_event.direction defined here
+def make_circular_velocity_event(config):
+    def circular_velocity_event(t, y, *args):
+        """Circular velocity of planet at given radius reached."""
+        v_circ_target = np.sqrt(config.mu / y[0])
+        velocity_err = np.hypot(y[2], y[3] - v_circ_target)
+        return velocity_err + (500 if y[0] / AU < 1.5 else 0)
+    circular_velocity_event.terminal = True
+    circular_velocity_event.direction = -1
+    return circular_velocity_event
 
 
-def integrate_trajectory(params, t_max_days=365*3, max_step_days=0.5, record=True):
+def integrate_trajectory(params, t_max_days=365*3, max_step_days=0.5, record=True, config=DEFAULT_CONFIG):
     """
     Integrate trajectory (one‑shot)
     params = [λ_r0, λ_vr0, λ_vθ0, C_m, C_theta]
@@ -115,12 +140,13 @@ def integrate_trajectory(params, t_max_days=365*3, max_step_days=0.5, record=Tru
     """
     lam_r0, lam_vr0, lam_vtheta0, C_m, C_theta = params
 
-    y0 = [R0, 0.0, VR0, VTHETA0, M0, lam_r0, lam_vr0, lam_vtheta0]
+    vtheta0 = np.sqrt(config.mu / config.r0) if config.vtheta0 is None else config.vtheta0
+    y0 = [config.r0, 0.0, config.vr0, vtheta0, config.m0, lam_r0, lam_vr0, lam_vtheta0]
 
     t_span = (0.0, t_max_days * DAY)
     sol = solve_ivp(ode_system, t_span, y0,
-                    events=(fuel_out_event,circular_velocity_event),
-                    args=(MU_SI, P, M_DRY, C_m, C_theta),
+                    events=(make_fuel_out_event(config), make_circular_velocity_event(config)),
+                    args=(config, C_m, C_theta),
                     rtol=1e-8, atol=1e-9,
                     max_step=max_step_days * DAY,
                     dense_output=False)
@@ -135,7 +161,7 @@ def integrate_trajectory(params, t_max_days=365*3, max_step_days=0.5, record=Tru
     return sol
 
 
-def integrate_fixed_time(params, t_days, max_step_days=0.5, rtol=1e-8, atol=1e-9):
+def integrate_fixed_time(params, t_days, max_step_days=0.5, rtol=1e-8, atol=1e-9, config=DEFAULT_CONFIG):
     """
     Integrate the trajectory to a *fixed* final time with no terminal events.
 
@@ -143,13 +169,14 @@ def integrate_fixed_time(params, t_days, max_step_days=0.5, rtol=1e-8, atol=1e-9
     variables and therefore much better suited for Newton/least-squares solvers.
     """
     lam_r0, lam_vr0, lam_vtheta0, C_m, C_theta = params
-    y0 = [R0, 0.0, VR0, VTHETA0, M0, lam_r0, lam_vr0, lam_vtheta0]
+    vtheta0 = np.sqrt(config.mu / config.r0) if config.vtheta0 is None else config.vtheta0
+    y0 = [config.r0, 0.0, config.vr0, vtheta0, config.m0, lam_r0, lam_vr0, lam_vtheta0]
 
     sol = solve_ivp(
         ode_system,
         (0.0, t_days * DAY),
         y0,
-        args=(MU_SI, P, M_DRY, C_m, C_theta),
+        args=(config, C_m, C_theta),
         rtol=rtol,
         atol=atol,
         max_step=max_step_days * DAY,
@@ -161,7 +188,6 @@ def integrate_fixed_time(params, t_days, max_step_days=0.5, rtol=1e-8, atol=1e-9
 # saving some solutions that worked, as starting points
 # SOLUTION0 = (-9.39556446e-05, -2.30484959e+02, -2.10191027e+03, 0.00000000e+00, -2.75116990e+07)
 SOLUTION0 = ([-9.04177133e-05, -2.23208767e+01, -2.82272150e+03, 0.00000000e+00, -1.56907920e+08])
-K_GAIN_FIXED = - 3.725e-6 - 4.91294688e-06   # set by trial and error initially, but it is just a calibration choice
 SCALE = np.delete(np.array(SOLUTION0), -2)
 
 
@@ -185,8 +211,8 @@ def unpack(z):
     return np.insert(w, -1, 0)
 
 
-def objective_scaled(z, rt, tht):
-    return objective(unpack(z), rt, tht)
+def objective_scaled(z, rt, tht, config=DEFAULT_CONFIG):
+    return objective(unpack(z), rt, tht, config=config)
 
 
 def angle_wrap(x):
@@ -194,7 +220,7 @@ def angle_wrap(x):
     return (x + np.pi) % (2 * np.pi) - np.pi
 
 
-def boundary_residual(z, r_target, theta_target):
+def boundary_residual(z, r_target, theta_target, config=DEFAULT_CONFIG):
     """
     Residual for direct boundary solve.
 
@@ -204,19 +230,19 @@ def boundary_residual(z, r_target, theta_target):
     """
     params = unpack(z[:4])
     t_days = np.clip(z[4] * 365.0, 5.0, 3650.0)
-    sol = integrate_fixed_time(params, t_days)
+    sol = integrate_fixed_time(params, t_days, config=config)
     y = sol.y[:, -1]
 
     r_end, th_end, vr_end, vth_end, m_end = y[:5]
     r_end_au = r_end / AU
-    v_circ = np.sqrt(MU_SI / r_end)
+    v_circ = np.sqrt(config.mu / r_end)
 
     # scales keep all residual components around O(1)
-    v_scale = np.sqrt(MU_SI / AU)
-    fuel_scale = M0 - M_DRY
+    v_scale = np.sqrt(config.mu / AU)
+    fuel_scale = config.m0 - config.m_dry
     # Penalize dry-mass violations strongly: this term must be zero when
     # feasible (m_end >= M_DRY) and grow with any propellant overuse.
-    dry_mass_deficit = max(0.0, M_DRY - m_end)
+    dry_mass_deficit = max(0.0, config.m_dry - m_end)
     return np.array([
         (r_end_au - r_target) / 0.2,
         angle_wrap(th_end - theta_target) / 0.3,
@@ -227,7 +253,7 @@ def boundary_residual(z, r_target, theta_target):
 
 
 def solve_target_fast(r_target, theta_target, seed_params, t_guess_days=500.0,
-                      n_starts=5, max_nfev=140):
+                      n_starts=5, max_nfev=140, config=DEFAULT_CONFIG):
     """
     Fast and robust target solver using least_squares + multi-start.
 
@@ -246,7 +272,7 @@ def solve_target_fast(r_target, theta_target, seed_params, t_guess_days=500.0,
         res = least_squares(
             boundary_residual,
             s,
-            args=(r_target, theta_target),
+            args=(r_target, theta_target, config),
             method="trf",
             loss="soft_l1",
             f_scale=0.2,
@@ -267,7 +293,7 @@ def solve_target_fast(r_target, theta_target, seed_params, t_guess_days=500.0,
 
 
 def solve_arbitrary_transfer(r0_au, r_target_au, theta_target_rad, seed_params=SOLUTION0,
-                             n_homotopy_steps=8):
+                             n_homotopy_steps=8, config=DEFAULT_CONFIG):
     """
     Solve transfer for arbitrary initial radius, target radius and target angle.
 
@@ -279,12 +305,10 @@ def solve_arbitrary_transfer(r0_au, r_target_au, theta_target_rad, seed_params=S
     This is significantly faster than the legacy nested Powell + step-halving
     loops and much more reliable for far targets.
     """
-    global R0, VTHETA0
-    R0 = r0_au * AU
-    VTHETA0 = np.sqrt(MU_SI / R0)
+    local_config = config.with_initial_radius(r0_au)
 
     seed_params = np.asarray(seed_params, dtype=float)
-    seed_sol = integrate_trajectory(seed_params, record=False)
+    seed_sol = integrate_trajectory(seed_params, record=False, config=local_config)
     r_seed = seed_sol.y[0, -1] / AU
     th_seed = seed_sol.y[1, -1]
 
@@ -294,15 +318,15 @@ def solve_arbitrary_transfer(r0_au, r_target_au, theta_target_rad, seed_params=S
     for alpha in np.linspace(0.0, 1.0, n_homotopy_steps + 1)[1:]:
         r_step = (1 - alpha) * r_seed + alpha * r_target_au
         th_step = angle_wrap((1 - alpha) * th_seed + alpha * theta_target_rad)
-        params, t_guess, info = solve_target_fast(r_step, th_step, params, t_guess_days=t_guess)
+        params, t_guess, info = solve_target_fast(r_step, th_step, params, t_guess_days=t_guess, config=local_config)
         print(f"alpha={alpha:.2f}, target=({r_step:.4f} AU, {np.rad2deg(th_step):.2f} deg), "
               f"res={np.linalg.norm(info.fun):.3e}, nfev={info.nfev}, t={t_guess:.1f} d")
 
-    sol = integrate_fixed_time(params, t_guess)
-    return params, t_guess, sol
+    sol = integrate_fixed_time(params, t_guess, config=local_config)
+    return params, t_guess, sol, local_config
 
 
-def objective(params, r_target=None, th_target=None):
+def objective(params, r_target=None, th_target=None, config=DEFAULT_CONFIG):
     """
     Objective mirrors the two-stage strategy from the paper (§ Numerical Procedure):
      - If r_target / th_target are None ⇒ global "any circular orbit far enough" search:
@@ -313,8 +337,7 @@ def objective(params, r_target=None, th_target=None):
     The velocity error is ||(v_r, v_θ) − (0, sqrt(μ/r))|| at the final state,
     i.e., distance to the local circular velocity vector (Eq. (28) definition).
     """
-    sol = integrate_trajectory(params, record=False)
-    t_end = sol.t[-1]
+    sol = integrate_trajectory(params, record=False, config=config)
     r_end = sol.y[0, -1] / AU        # AU
     th_end = sol.y[1, -1]
     v_r_end = sol.y[2, -1]
@@ -322,7 +345,7 @@ def objective(params, r_target=None, th_target=None):
     m_end = sol.y[4, -1]
 
     # ---- penalty if fuel exhausted early ----
-    fuel_frac = (m_end - M_DRY) / (M0 - M_DRY)
+    fuel_frac = (m_end - config.m_dry) / (config.m0 - config.m_dry)
     # fuel_frac*100 is a shaping term so near-feasible runs still prefer saving fuel.
     penalty_fuel = 1e6 if fuel_frac < 0 else fuel_frac*100
 
@@ -333,7 +356,7 @@ def objective(params, r_target=None, th_target=None):
         penalty_r = 0.0
 
     # ---- “reward” for matching any outer planet circular orbit ----
-    v_circ_target = np.sqrt(MU_SI / (r_end * AU))
+    v_circ_target = np.sqrt(config.mu / (r_end * AU))
     velocity_err = np.hypot(v_r_end, v_th_end - v_circ_target)
 
     if (r_target is None) or (th_target is None):
@@ -344,7 +367,7 @@ def objective(params, r_target=None, th_target=None):
     return penalty_fuel + penalty_r + reward
 
 
-def make_plots(sol, params, show=False):
+def make_plots(sol, params, show=False, config=DEFAULT_CONFIG):
     t_days = sol.t / DAY
     r = sol.y[0]
     theta = sol.y[1]
@@ -353,11 +376,10 @@ def make_plots(sol, params, show=False):
     lam_vth = sol.y[7]
 
     # Recover lam_m and thrust → exhaust velocity
-    C_m = params[-2]    # was overriden by a fixed calibration K_GAIN_FIXED, it is not really a dynamic parameter
-    k_gain = K_GAIN_FIXED
+    k_gain = config.k_gain
 
     a_mag = np.abs(k_gain) * np.sqrt(lam_vr**2 + lam_vth**2)
-    v_e = 2.0 * P / (m * a_mag)      # m/s
+    v_e = 2.0 * config.power / (m * a_mag)      # m/s
 
     # Cartesian trajectory for plotting
     x_au = (r * np.cos(theta)) / AU
@@ -374,12 +396,12 @@ def make_plots(sol, params, show=False):
     ax_traj.set_aspect('equal')
     ax_traj.set_xlabel('x [AU]')
     ax_traj.set_ylabel('y [AU]')
-    ax_traj.set_title(f'{R0/AU:.1f} AU → {np.round(r[-1]/AU, 1):.1f} AU, {np.round(t_days[-1], 0):.0f} days, '
+    ax_traj.set_title(f'{config.r0/AU:.1f} AU → {np.round(r[-1]/AU, 1):.1f} AU, {np.round(t_days[-1], 0):.0f} days, '
                       f'{np.round(np.rad2deg(theta[-1]), 1):.1f} deg')
     # ax_traj.legend()
 
     # --- propellant mass
-    ax_fuel.plot(t_days, (m - M_DRY)/1e6)
+    ax_fuel.plot(t_days, (m - config.m_dry)/1e6)
     ax_fuel.set_xlabel('Time [days]')
     ax_fuel.set_ylabel('Propellant mass [kT]')
     ax_fuel.set_title('Fuel on board')
@@ -397,7 +419,7 @@ def make_plots(sol, params, show=False):
     else:
         plt.savefig(r'c:\target-directory' +
                     # f'{np.round(r[-1]/AU, 1):.1f}-{np.round(np.rad2deg(theta[-1]), 1):.1f}.png', dpi=600)
-                    f'{np.round(R0/AU, 1):.1f}-{np.round(np.rad2deg(theta[-1]), 1):.1f}.png', dpi=300)
+                    f'{np.round(config.r0/AU, 1):.1f}-{np.round(np.rad2deg(theta[-1]), 1):.1f}.png', dpi=300)
     plt.close()
 
 
@@ -427,7 +449,7 @@ def main():
         make_plots(sol_opt, result.x)
     else:
         # Example: Saturn radius -> Earth radius with fixed arrival angle
-        params_opt, t_opt_days, sol_opt = solve_arbitrary_transfer(
+        params_opt, t_opt_days, sol_opt, transfer_config = solve_arbitrary_transfer(
             r0_au=9.58,
             r_target_au=1.0,
             theta_target_rad=np.deg2rad(-95.0),
@@ -436,8 +458,8 @@ def main():
         print("\nSolved transfer")
         print("params:", params_opt)
         print(f"t_f = {t_opt_days:.2f} days")
-        integrate_trajectory(params_opt)
-        make_plots(sol_opt, params_opt, show=True)
+        integrate_trajectory(params_opt, config=transfer_config)
+        make_plots(sol_opt, params_opt, show=True, config=transfer_config)
 
 
 if __name__ == "__main__":
