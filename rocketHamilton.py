@@ -23,8 +23,12 @@ Units: SI throughout (m, kg, s). AU and day are convenience scales for I/O/plots
 import numpy as np
 import matplotlib.pyplot as plt
 from dataclasses import dataclass, replace
+from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor
 from scipy.integrate import solve_ivp
 from scipy.optimize import differential_evolution, minimize, least_squares
+
+from numba import njit
 
 
 # ----------------------------- #
@@ -63,6 +67,40 @@ VR0 = DEFAULT_CONFIG.vr0
 VTHETA0 = np.sqrt(DEFAULT_CONFIG.mu / DEFAULT_CONFIG.r0)
 K_GAIN_FIXED = DEFAULT_CONFIG.k_gain
 
+
+@njit(cache=True)
+def _ode_system_kernel(y, mu, power, k_gain, C_theta):
+    r = y[0]
+    v_r = y[2]
+    v_theta = y[3]
+    m = y[4]
+    lam_r = y[5]
+    lam_vr = y[6]
+    lam_vtheta = y[7]
+
+    a_r = k_gain * lam_vr
+    a_th = k_gain * lam_vtheta
+    accel_sq = a_r * a_r + a_th * a_th
+
+    out = np.empty(8, dtype=np.float64)
+    out[0] = v_r
+    out[1] = v_theta / r
+    out[2] = v_theta * v_theta / r - mu / (r * r) + a_r
+    out[3] = -v_r * v_theta / r + a_th
+    out[4] = -(m * m) / (2.0 * power) * accel_sq
+    out[5] = (C_theta * v_theta) / (r * r) + (lam_vr * v_theta * v_theta) / (r * r) - 2.0 * lam_vr * mu / (r * r * r) - lam_vtheta * v_r * v_theta / (r * r)
+    out[6] = -lam_r + lam_vtheta * v_theta / r
+    out[7] = -C_theta / r - 2.0 * lam_vr * v_theta / r + lam_vtheta * v_r / r
+    return out
+
+
+def _ode_system_numba(t, y, config, C_m, C_theta):
+    # t and C_m are part of solver signature but not used by dynamics as currently formulated.
+    _ = (t, C_m)
+    y_arr = y if isinstance(y, np.ndarray) else np.asarray(y, dtype=np.float64)
+    return _ode_system_kernel(y_arr, config.mu, config.power, config.k_gain, C_theta)
+
+
 def ode_system(t, y, config, C_m, C_theta):
     """
     The ODE system implements equations in the paper:
@@ -86,30 +124,7 @@ def ode_system(t, y, config, C_m, C_theta):
     y = [r, theta, v_r, v_theta, m, lambda_r, lambda_vr, lambda_vtheta]
     returns dy/dt in the same order, working in **SI units**
     """
-    r, theta, v_r, v_theta, m, lam_r, lam_vr, lam_vtheta = y
-
-    # ---- costate-dependent thrust law
-    mu = config.mu
-    power = config.power
-    k_gain = config.k_gain
-    a_r = k_gain * lam_vr
-    a_th = k_gain * lam_vtheta
-    accel_sq = a_r*a_r + a_th*a_th
-
-    # ---- state derivatives ----
-    drdt = v_r
-    dthetadt = v_theta / r
-    dv_rdt = v_theta**2 / r - mu/r**2 + a_r
-    dv_thdt = -v_r * v_theta / r + a_th
-    dmdt = - m**2 / (2.0 * power) * accel_sq
-
-    # ---- costate derivatives (eq. 4) ----
-    dlam_r = (C_theta * v_theta)/r**2 + (lam_vr * v_theta**2)/r**2 \
-                    - 2.0 * lam_vr * mu / r**3 - lam_vtheta * v_r * v_theta / r**2
-    dlam_vr = -lam_r + lam_vtheta * v_theta / r
-    dlam_vtheta = -C_theta / r - 2.0 * lam_vr * v_theta / r + lam_vtheta * v_r / r
-
-    return [drdt, dthetadt, dv_rdt, dv_thdt, dmdt, dlam_r, dlam_vr, dlam_vtheta]
+    return _ode_system_numba(t, y, config, C_m, C_theta)
 
 
 def make_fuel_out_event(config):
@@ -144,7 +159,7 @@ def integrate_trajectory(params, t_max_days=365*3, max_step_days=0.5, record=Tru
     y0 = [config.r0, 0.0, config.vr0, vtheta0, config.m0, lam_r0, lam_vr0, lam_vtheta0]
 
     t_span = (0.0, t_max_days * DAY)
-    sol = solve_ivp(ode_system, t_span, y0,
+    sol = solve_ivp(_ode_system_numba, t_span, y0,
                     events=(make_fuel_out_event(config), make_circular_velocity_event(config)),
                     args=(config, C_m, C_theta),
                     rtol=1e-8, atol=1e-9,
@@ -173,7 +188,7 @@ def integrate_fixed_time(params, t_days, max_step_days=0.5, rtol=1e-8, atol=1e-9
     y0 = [config.r0, 0.0, config.vr0, vtheta0, config.m0, lam_r0, lam_vr0, lam_vtheta0]
 
     sol = solve_ivp(
-        ode_system,
+        _ode_system_numba,
         (0.0, t_days * DAY),
         y0,
         args=(config, C_m, C_theta),
@@ -218,6 +233,48 @@ def objective_scaled(z, rt, tht, config=DEFAULT_CONFIG):
 def angle_wrap(x):
     """Wrap angle to [-pi, pi] for smooth residuals."""
     return (x + np.pi) % (2 * np.pi) - np.pi
+
+
+@njit(cache=True)
+def _angle_wrap_numba(x):
+    return (x + np.pi) % (2.0 * np.pi) - np.pi
+
+
+@njit(cache=True)
+def _closest_seed_index_numba(seed_r, seed_t, target_r, target_t):
+    best_idx = 0
+    best_dist = 1e300
+    for i in range(seed_r.shape[0]):
+        dr = seed_r[i] - target_r
+        dt = _angle_wrap_numba(seed_t[i] - target_t)
+        dist = dr * dr + dt * dt
+        if dist < best_dist:
+            best_dist = dist
+            best_idx = i
+    return best_idx
+
+
+def scaled_power_for_mass_scaling(base_power, base_m0, new_m0):
+    """
+    Scaling law that preserves dynamics when all masses are scaled together.
+
+    If m -> s m for both wet and dry mass, then P must scale as P -> s P,
+    with s = new_m0 / base_m0.
+    """
+    return base_power * (new_m0 / base_m0)
+
+
+@dataclass(frozen=True)
+class CacheSpec:
+    r0_grid_au: tuple[float, ...]
+    rf_grid_au: tuple[float, ...]
+    theta_samples: int = 15
+    max_abs_theta_deg: float = 170.0
+    n_homotopy_steps: int = 5
+    m0_scales: tuple[float, ...] = (1.0,)
+    dry_mass_fractions: tuple[float, ...] = (1.0 / 3.0,)
+    power_factors: tuple[float, ...] = (1.0,)
+    max_workers: int = 1
 
 
 def boundary_residual(z, r_target, theta_target, config=DEFAULT_CONFIG):
@@ -326,6 +383,176 @@ def solve_arbitrary_transfer(r0_au, r_target_au, theta_target_rad, seed_params=S
     return params, t_guess, sol, local_config
 
 
+def estimate_reachable_theta_bounds(
+    r0_au,
+    r_target_au,
+    seed_params,
+    config=DEFAULT_CONFIG,
+    max_abs_theta_deg=170.0,
+    n_scan=9,
+):
+    """Estimate positive/negative reachable theta bounds via continuation scan."""
+    local_cfg = config.with_initial_radius(r0_au)
+    seed = np.asarray(seed_params, dtype=float)
+    max_abs = np.deg2rad(max_abs_theta_deg)
+
+    def _scan(sign):
+        params = seed.copy()
+        t_guess = 450.0
+        last_ok = 0.0
+        for th in np.linspace(0.0, sign * max_abs, n_scan)[1:]:
+            try:
+                params, t_guess, info = solve_target_fast(
+                    r_target_au, th, params, t_guess_days=t_guess, config=local_cfg, max_nfev=90
+                )
+                if np.linalg.norm(info.fun) < 2e-2:
+                    last_ok = th
+                else:
+                    break
+            except Exception:
+                break
+        return last_ok
+
+    return _scan(+1.0), _scan(-1.0)
+
+
+def _solve_parameter_case(case):
+    (
+        case_idx,
+        config,
+        spec,
+        theta_grid,
+        seed_params,
+    ) = case
+    r0_grid = np.asarray(spec.r0_grid_au, dtype=float)
+    rf_grid = np.asarray(spec.rf_grid_au, dtype=float)
+
+    params_cache = np.full((r0_grid.size, rf_grid.size, theta_grid.size, 5), np.nan)
+    time_cache = np.full((r0_grid.size, rf_grid.size, theta_grid.size), np.nan)
+    resid_cache = np.full((r0_grid.size, rf_grid.size, theta_grid.size), np.nan)
+    success = np.zeros((r0_grid.size, rf_grid.size, theta_grid.size), dtype=bool)
+    theta_bounds = np.zeros((r0_grid.size, rf_grid.size, 2), dtype=float)
+
+    seed_params = np.asarray(seed_params, dtype=float)
+    for i, r0 in enumerate(r0_grid):
+        for j, rf in enumerate(rf_grid):
+            th_pos, th_neg = estimate_reachable_theta_bounds(
+                r0, rf, seed_params, config=config, max_abs_theta_deg=spec.max_abs_theta_deg
+            )
+            theta_bounds[i, j, 0] = th_neg
+            theta_bounds[i, j, 1] = th_pos
+
+            solved_r = []
+            solved_t = []
+            solved_params = []
+            t_guess = 450.0
+            for k, th in enumerate(theta_grid):
+                if th < th_neg or th > th_pos:
+                    continue
+
+                if solved_params:
+                    idx = _closest_seed_index_numba(
+                        np.asarray(solved_r), np.asarray(solved_t), rf, th
+                    )
+                    seed = solved_params[idx]
+                else:
+                    seed = seed_params
+
+                try:
+                    out_params, out_t, info = solve_target_fast(
+                        rf,
+                        th,
+                        seed,
+                        t_guess_days=t_guess,
+                        n_starts=3,
+                        max_nfev=100,
+                        config=config.with_initial_radius(r0),
+                    )
+                    params_cache[i, j, k, :] = out_params
+                    time_cache[i, j, k] = out_t
+                    resid_cache[i, j, k] = np.linalg.norm(info.fun)
+                    success[i, j, k] = resid_cache[i, j, k] < 2e-2
+                    if success[i, j, k]:
+                        solved_r.append(rf)
+                        solved_t.append(th)
+                        solved_params.append(out_params)
+                        t_guess = out_t
+                except Exception:
+                    continue
+
+    return case_idx, params_cache, time_cache, resid_cache, success, theta_bounds
+
+
+def build_trajectory_cache_npz(
+    output_path,
+    spec,
+    base_config=DEFAULT_CONFIG,
+    seed_params=SOLUTION0,
+):
+    """
+    Build and save a trajectory cache over (r0, rf, theta, propulsion parameters).
+
+    The 3 physical ship parameters are reduced with scaling symmetry:
+      m0 scale (absolute), dry-mass fraction, and power factor at fixed scaled power.
+    """
+    theta_grid = np.linspace(-np.deg2rad(spec.max_abs_theta_deg), np.deg2rad(spec.max_abs_theta_deg), spec.theta_samples)
+    cases = []
+    parameter_table = []
+
+    for m0_scale in spec.m0_scales:
+        m0 = base_config.m0 * m0_scale
+        for dry_frac in spec.dry_mass_fractions:
+            m_dry = m0 * dry_frac
+            for power_factor in spec.power_factors:
+                power_scaled = scaled_power_for_mass_scaling(base_config.power, base_config.m0, m0)
+                cfg = replace(base_config, m0=m0, m_dry=m_dry, power=power_scaled * power_factor)
+                idx = len(parameter_table)
+                parameter_table.append((m0, m_dry, cfg.power, m0_scale, dry_frac, power_factor))
+                cases.append((idx, cfg, spec, theta_grid, np.array(seed_params, dtype=float).reshape(-1)))
+
+    shape = (
+        len(parameter_table),
+        len(spec.r0_grid_au),
+        len(spec.rf_grid_au),
+        spec.theta_samples,
+    )
+    params_cache = np.full(shape + (5,), np.nan)
+    time_cache = np.full(shape, np.nan)
+    resid_cache = np.full(shape, np.nan)
+    success = np.zeros(shape, dtype=bool)
+    theta_bounds = np.zeros((len(parameter_table), len(spec.r0_grid_au), len(spec.rf_grid_au), 2))
+
+    workers = max(1, int(spec.max_workers))
+    if workers == 1:
+        results = map(_solve_parameter_case, cases)
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            results = ex.map(_solve_parameter_case, cases)
+
+    for case_idx, p, t, r, s, b in results:
+        params_cache[case_idx] = p
+        time_cache[case_idx] = t
+        resid_cache[case_idx] = r
+        success[case_idx] = s
+        theta_bounds[case_idx] = b
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        output_path,
+        parameter_table=np.asarray(parameter_table, dtype=float),
+        r0_grid_au=np.asarray(spec.r0_grid_au, dtype=float),
+        rf_grid_au=np.asarray(spec.rf_grid_au, dtype=float),
+        theta_grid_rad=theta_grid,
+        theta_bounds_rad=theta_bounds,
+        time_days=time_cache,
+        params=params_cache,
+        residual_norm=resid_cache,
+        success=success,
+    )
+    return output_path
+
+
 def objective(params, r_target=None, th_target=None, config=DEFAULT_CONFIG):
     """
     Objective mirrors the two-stage strategy from the paper (§ Numerical Procedure):
@@ -428,25 +655,28 @@ def main():
     print("Initial conditions: Earth orbit, m₀ = 3000 kT (payload 1000 kT + prop 2000 kT)")
     print("Thruster power     : 1 GW\n")
 
-    search_for_new_solution = False
-    just_plot = False
+    # Default branch: solve and plot one trajectory.
+    run_parameter_search = False
 
-    if just_plot:
-        sol = [-9.26130852, -112.96960747, -0.13010519, 0.24847801]
-        sol_opt = integrate_trajectory(unpack(sol))
-        make_plots(sol_opt, unpack(sol), show=True)
-    elif search_for_new_solution:
-        bounds = [(-1e-4, 1e-4),  # λ_r0
-                  (-3000, 0.0),   # λ_vr0
-                  (-6000, 0.0),   # λ_vθ0
-                  (-1, 0),        # C_m
-                  (-1e9, 0)]      # C_theta
-
-        result = differential_evolution(objective, bounds, maxiter=400, popsize=100,
-                                        polish=True, tol=1e-4, workers=4, disp=True)
-        print("\nBest parameters:", result.x)
-        sol_opt = integrate_trajectory(result.x)
-        make_plots(sol_opt, result.x)
+    if run_parameter_search:
+        print("Running parameter-space cache search...")
+        spec = CacheSpec(
+            r0_grid_au=(0.05, 0.2, 0.5, 1.0, 3.0, 10.0, 30.0, 100.0),
+            rf_grid_au=(0.05, 0.2, 0.5, 1.0, 3.0, 10.0, 30.0, 100.0),
+            theta_samples=31,
+            max_abs_theta_deg=170.0,
+            m0_scales=(0.5, 1.0, 2.0),
+            dry_mass_fractions=(0.25, 1.0 / 3.0, 0.5),
+            power_factors=(0.75, 1.0, 1.25),
+            max_workers=4,
+        )
+        cache_path = build_trajectory_cache_npz(
+            output_path="cache/trajectory_cache.npz",
+            spec=spec,
+            base_config=DEFAULT_CONFIG,
+            seed_params=np.array(SOLUTION0, dtype=float).reshape(-1),
+        )
+        print(f"Cache written to: {cache_path}")
     else:
         # Example: Saturn radius -> Earth radius with fixed arrival angle
         params_opt, t_opt_days, sol_opt, transfer_config = solve_arbitrary_transfer(

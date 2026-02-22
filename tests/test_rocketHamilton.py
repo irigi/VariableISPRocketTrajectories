@@ -160,3 +160,40 @@ def test_solve_arbitrary_transfer_does_not_mutate_module_initial_conditions(monk
 
     assert rh.R0 == initial_r0
     assert rh.VTHETA0 == initial_vtheta0
+
+
+def test_scaled_power_for_mass_scaling_is_linear_in_mass_scale():
+    scaled = rh.scaled_power_for_mass_scaling(base_power=1.0e9, base_m0=3.0e6, new_m0=6.0e6)
+    assert np.isclose(scaled, 2.0e9)
+
+
+def test_build_trajectory_cache_npz_writes_expected_arrays(tmp_path, monkeypatch):
+    def fake_estimate(*args, **kwargs):
+        return 0.5, -0.5
+
+    class DummyInfo:
+        fun = np.zeros(5)
+
+    def fake_solve_target_fast(*args, **kwargs):
+        return np.array(rh.SOLUTION0, dtype=float).reshape(-1), 42.0, DummyInfo()
+
+    monkeypatch.setattr(rh, "estimate_reachable_theta_bounds", fake_estimate)
+    monkeypatch.setattr(rh, "solve_target_fast", fake_solve_target_fast)
+
+    spec = rh.CacheSpec(
+        r0_grid_au=(1.0,),
+        rf_grid_au=(1.5,),
+        theta_samples=3,
+        max_workers=1,
+        m0_scales=(1.0,),
+        dry_mass_fractions=(1.0 / 3.0,),
+        power_factors=(1.0,),
+    )
+
+    out = tmp_path / "cache.npz"
+    rh.build_trajectory_cache_npz(out, spec)
+
+    data = np.load(out)
+    assert data["time_days"].shape == (1, 1, 1, 3)
+    assert data["params"].shape == (1, 1, 1, 3, 5)
+    assert data["success"].dtype == np.bool_
