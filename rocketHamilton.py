@@ -424,6 +424,7 @@ def _solve_parameter_case(case):
         spec,
         theta_grid,
         seed_params,
+        show_progress,
     ) = case
     r0_grid = np.asarray(spec.r0_grid_au, dtype=float)
     rf_grid = np.asarray(spec.rf_grid_au, dtype=float)
@@ -435,8 +436,19 @@ def _solve_parameter_case(case):
     theta_bounds = np.zeros((r0_grid.size, rf_grid.size, 2), dtype=float)
 
     seed_params = np.asarray(seed_params, dtype=float)
+    total_pairs = r0_grid.size * rf_grid.size
+    pair_counter = 0
+
     for i, r0 in enumerate(r0_grid):
         for j, rf in enumerate(rf_grid):
+            pair_counter += 1
+            if show_progress:
+                print(
+                    f"[cache][case {case_idx}] pair {pair_counter}/{total_pairs} "
+                    f"r0={r0:.3f} AU -> rf={rf:.3f} AU: scanning theta bounds...",
+                    flush=True,
+                )
+
             th_pos, th_neg = estimate_reachable_theta_bounds(
                 r0, rf, seed_params, config=config, max_abs_theta_deg=spec.max_abs_theta_deg
             )
@@ -447,10 +459,13 @@ def _solve_parameter_case(case):
             solved_t = []
             solved_params = []
             t_guess = 450.0
+            attempted = 0
+            solved = 0
             for k, th in enumerate(theta_grid):
                 if th < th_neg or th > th_pos:
                     continue
 
+                attempted += 1
                 if solved_params:
                     idx = _closest_seed_index_numba(
                         np.asarray(solved_r), np.asarray(solved_t), rf, th
@@ -474,12 +489,21 @@ def _solve_parameter_case(case):
                     resid_cache[i, j, k] = np.linalg.norm(info.fun)
                     success[i, j, k] = resid_cache[i, j, k] < 2e-2
                     if success[i, j, k]:
+                        solved += 1
                         solved_r.append(rf)
                         solved_t.append(th)
                         solved_params.append(out_params)
                         t_guess = out_t
                 except Exception:
                     continue
+
+            if show_progress:
+                print(
+                    f"[cache][case {case_idx}] pair {pair_counter}/{total_pairs} done: "
+                    f"theta solved {solved}/{attempted}, bounds "
+                    f"[{np.rad2deg(th_neg):.1f}, {np.rad2deg(th_pos):.1f}] deg",
+                    flush=True,
+                )
 
     return case_idx, params_cache, time_cache, resid_cache, success, theta_bounds
 
@@ -510,7 +534,7 @@ def build_trajectory_cache_npz(
                 cfg = replace(base_config, m0=m0, m_dry=m_dry, power=power_scaled * power_factor)
                 idx = len(parameter_table)
                 parameter_table.append((m0, m_dry, cfg.power, m0_scale, dry_frac, power_factor))
-                cases.append((idx, cfg, spec, theta_grid, np.array(seed_params, dtype=float).reshape(-1)))
+                cases.append((idx, cfg, spec, theta_grid, np.array(seed_params, dtype=float).reshape(-1), show_progress))
 
     shape = (
         len(parameter_table),
