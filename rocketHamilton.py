@@ -323,7 +323,7 @@ def solve_arbitrary_transfer(r0_au, r_target_au, theta_target_rad, seed_params=S
               f"res={np.linalg.norm(info.fun):.3e}, nfev={info.nfev}, t={t_guess:.1f} d")
 
     sol = integrate_fixed_time(params, t_guess, config=local_config)
-    return params, t_guess, sol
+    return params, t_guess, sol, local_config
 
 
 def objective(params, r_target=None, th_target=None, config=DEFAULT_CONFIG):
@@ -449,7 +449,7 @@ def main():
         make_plots(sol_opt, result.x)
     else:
         # Example: Saturn radius -> Earth radius with fixed arrival angle
-        params_opt, t_opt_days, sol_opt = solve_arbitrary_transfer(
+        params_opt, t_opt_days, sol_opt, transfer_config = solve_arbitrary_transfer(
             r0_au=9.58,
             r_target_au=1.0,
             theta_target_rad=np.deg2rad(-95.0),
@@ -458,8 +458,8 @@ def main():
         print("\nSolved transfer")
         print("params:", params_opt)
         print(f"t_f = {t_opt_days:.2f} days")
-        integrate_trajectory(params_opt)
-        make_plots(sol_opt, params_opt, show=True)
+        integrate_trajectory(params_opt, config=transfer_config)
+        make_plots(sol_opt, params_opt, show=True, config=transfer_config)
 
 
 if __name__ == "__main__":

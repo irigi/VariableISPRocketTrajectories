@@ -109,7 +109,7 @@ def test_solve_arbitrary_transfer_can_be_tested_with_fast_stubs(monkeypatch):
     monkeypatch.setattr(rh, "solve_target_fast", fake_solve_target_fast)
     monkeypatch.setattr(rh, "integrate_fixed_time", lambda params, t_days, config=None: DummySol(1.0, -0.2, t_days))
 
-    params_opt, t_opt_days, sol = rh.solve_arbitrary_transfer(
+    params_opt, t_opt_days, sol, used_config = rh.solve_arbitrary_transfer(
         r0_au=1.0,
         r_target_au=1.5,
         theta_target_rad=0.5,
@@ -121,6 +121,7 @@ def test_solve_arbitrary_transfer_can_be_tested_with_fast_stubs(monkeypatch):
     assert t_opt_days == 53.0
     assert np.isfinite(sol.y[0, -1])
     assert np.all(np.isfinite(params_opt))
+    assert np.isclose(used_config.r0, 1.0 * rh.AU)
 
 
 def test_integrate_fixed_time_respects_custom_mass_and_power():
