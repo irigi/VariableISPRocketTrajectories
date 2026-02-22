@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 from dataclasses import dataclass, replace
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
+from time import perf_counter
 from scipy.integrate import solve_ivp
 from scipy.optimize import differential_evolution, minimize, least_squares
 
@@ -488,6 +489,7 @@ def build_trajectory_cache_npz(
     spec,
     base_config=DEFAULT_CONFIG,
     seed_params=SOLUTION0,
+    show_progress=True,
 ):
     """
     Build and save a trajectory cache over (r0, rf, theta, propulsion parameters).
@@ -523,18 +525,39 @@ def build_trajectory_cache_npz(
     theta_bounds = np.zeros((len(parameter_table), len(spec.r0_grid_au), len(spec.rf_grid_au), 2))
 
     workers = max(1, int(spec.max_workers))
-    if workers == 1:
-        results = map(_solve_parameter_case, cases)
-    else:
-        with ProcessPoolExecutor(max_workers=workers) as ex:
-            results = ex.map(_solve_parameter_case, cases)
+    total_cases = len(cases)
+    started = perf_counter()
 
-    for case_idx, p, t, r, s, b in results:
+    def _ingest_result(result, completed):
+        case_idx, p, t, r, s, b = result
         params_cache[case_idx] = p
         time_cache[case_idx] = t
         resid_cache[case_idx] = r
         success[case_idx] = s
         theta_bounds[case_idx] = b
+
+        if show_progress:
+            elapsed = perf_counter() - started
+            rate = completed / elapsed if elapsed > 0 else 0.0
+            remaining = (total_cases - completed) / rate if rate > 0 else float("inf")
+            eta_str = f"{remaining/60.0:6.1f} min" if np.isfinite(remaining) else "   inf"
+            print(
+                f"[cache] case {completed:>3}/{total_cases} "
+                f"({100.0*completed/total_cases:5.1f}%) "
+                f"elapsed {elapsed/60.0:6.1f} min, eta {eta_str}",
+                flush=True,
+            )
+
+    if show_progress:
+        print(f"[cache] starting {total_cases} parameter cases with {workers} worker(s)", flush=True)
+
+    if workers == 1:
+        for completed, result in enumerate(map(_solve_parameter_case, cases), start=1):
+            _ingest_result(result, completed)
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            for completed, result in enumerate(ex.map(_solve_parameter_case, cases), start=1):
+                _ingest_result(result, completed)
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
