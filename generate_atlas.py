@@ -17,17 +17,15 @@ from pathlib import Path
 
 import numpy as np
 
-from rocketHamilton import (
-    AU,
-    DEFAULT_CONFIG,
-    MU_SI,
-    SOLUTION0,
-    integrate_fixed_time,
-    solve_target_fast,
+from rocketHamilton import AU, DEFAULT_CONFIG, MU_SI, SOLUTION0, integrate_fixed_time, solve_target_fast
+from trajectory_scaling import (
+    ATLAS_VECTOR_SIZE,
+    AtlasNormalization,
+    default_atlas_normalization,
+    denormalize_solver_seed,
+    normalize_solver_seed,
+    solve_power_for_kappa,
 )
-from trajectory_scaling import solve_power_for_kappa
-
-ATLAS_VECTOR_SIZE = 6  # [lam_r0, lam_vr0, lam_vtheta0, C_m, C_theta, t_f_days]
 
 
 @dataclass(frozen=True)
@@ -46,6 +44,7 @@ class AtlasGridSpec:
 @dataclass(frozen=True)
 class AtlasMeta:
     version: str
+    normalization_version: str
     anchor_i: int
     anchor_j: int
     anchor_completed: bool
@@ -124,8 +123,8 @@ def _solve_cell(
     kappa_target: float,
     seed_params: np.ndarray,
     t_guess_days: float,
-) -> tuple[int, np.ndarray | None, float | None, float | None]:
-    """Attempt solving one cell and return status + solution payload."""
+) -> tuple[int, np.ndarray, float, float]:
+    """Attempt solving one cell and return status + physical solution payload."""
     local_config = _config_for_kappa(kappa_target)
     params, t_days, info = solve_target_fast(
         r_target=float(rho_target),
@@ -147,11 +146,10 @@ def _solve_cell(
 def _try_seed_candidate(
     values: np.ndarray,
     status: np.ndarray,
-    i: int,
-    j: int,
-    k: int,
+    norm_contract: AtlasNormalization,
     candidate_i: int,
     candidate_j: int,
+    k: int,
     source: int,
 ) -> tuple[np.ndarray, float, int] | None:
     if candidate_i < 0 or candidate_i >= status.shape[0]:
@@ -160,13 +158,15 @@ def _try_seed_candidate(
         return None
     if status[candidate_i, candidate_j, k] != AtlasStatus.SOLVED:
         return None
-    vec = values[candidate_i, candidate_j, k, :]
-    return np.asarray(vec[:5], dtype=float), float(vec[5]), source
+    vec_norm = values[candidate_i, candidate_j, k, :]
+    params, t_days = denormalize_solver_seed(vec_norm, norm_contract)
+    return params, t_days, source
 
 
 def _select_predictor_seed(
     values: np.ndarray,
     status: np.ndarray,
+    norm_contract: AtlasNormalization,
     i: int,
     j: int,
     k: int,
@@ -178,24 +178,23 @@ def _select_predictor_seed(
 
     rho_neighbor = i - 1 if i > anchor_i else i + 1 if i < anchor_i else None
     if rho_neighbor is not None:
-        candidates.append(_try_seed_candidate(values, status, i, j, k, rho_neighbor, j, SeedSource.RHO_NEIGHBOR))
+        candidates.append(_try_seed_candidate(values, status, norm_contract, rho_neighbor, j, k, SeedSource.RHO_NEIGHBOR))
 
     kappa_neighbor = j - 1 if j > anchor_j else j + 1 if j < anchor_j else None
     if kappa_neighbor is not None:
-        candidates.append(_try_seed_candidate(values, status, i, j, k, i, kappa_neighbor, SeedSource.KAPPA_NEIGHBOR))
+        candidates.append(_try_seed_candidate(values, status, norm_contract, i, kappa_neighbor, k, SeedSource.KAPPA_NEIGHBOR))
 
-    candidates.append(_try_seed_candidate(values, status, i, j, k, i - 1, j, SeedSource.OTHER_PHYSICAL))
-    candidates.append(_try_seed_candidate(values, status, i, j, k, i + 1, j, SeedSource.OTHER_PHYSICAL))
-    candidates.append(_try_seed_candidate(values, status, i, j, k, i, j - 1, SeedSource.OTHER_PHYSICAL))
-    candidates.append(_try_seed_candidate(values, status, i, j, k, i, j + 1, SeedSource.OTHER_PHYSICAL))
+    candidates.append(_try_seed_candidate(values, status, norm_contract, i - 1, j, k, SeedSource.OTHER_PHYSICAL))
+    candidates.append(_try_seed_candidate(values, status, norm_contract, i + 1, j, k, SeedSource.OTHER_PHYSICAL))
+    candidates.append(_try_seed_candidate(values, status, norm_contract, i, j - 1, k, SeedSource.OTHER_PHYSICAL))
+    candidates.append(_try_seed_candidate(values, status, norm_contract, i, j + 1, k, SeedSource.OTHER_PHYSICAL))
 
     for c in candidates:
         if c is not None:
             return c
 
     if k > 0 and status[i, j, k - 1] == AtlasStatus.SOLVED:
-        vec = values[i, j, k - 1, :]
-        return np.asarray(vec[:5], dtype=float), float(vec[5]), SeedSource.THETA_FALLBACK
+        return _try_seed_candidate(values, status, norm_contract, i, j, k - 1, SeedSource.THETA_FALLBACK)
 
     return None
 
@@ -210,20 +209,20 @@ def run_anchor_thread(
     theta_axis: np.ndarray,
     anchor_i: int,
     anchor_j: int,
+    norm_contract: AtlasNormalization,
     initial_seed: np.ndarray | None = None,
     t_guess_days: float = 500.0,
 ) -> None:
     """Populate the anchor column along theta for fixed (rho, kappa)."""
     rho_target = float(rho_axis[anchor_i])
     kappa_target = float(kappa_axis[anchor_j])
-    seed = seed_from_solution0() if initial_seed is None else np.asarray(initial_seed, dtype=float)
-    current_params = seed.copy()
+    current_params = seed_from_solution0() if initial_seed is None else np.asarray(initial_seed, dtype=float)
     current_t = float(t_guess_days)
 
     for k, theta_target in enumerate(theta_axis):
         try:
             s, vec, new_t, res = _solve_cell(rho_target, float(theta_target), kappa_target, current_params, current_t)
-            values[anchor_i, anchor_j, k, :] = vec
+            values[anchor_i, anchor_j, k, :] = normalize_solver_seed(vec[:5], vec[5], norm_contract)
             status[anchor_i, anchor_j, k] = s
             seed_source[anchor_i, anchor_j, k] = SeedSource.THETA_FALLBACK if k > 0 else SeedSource.NONE
             residual_norm[anchor_i, anchor_j, k] = res
@@ -253,6 +252,7 @@ def run_wavefront_propagation(
     theta_axis: np.ndarray,
     anchor_i: int,
     anchor_j: int,
+    norm_contract: AtlasNormalization,
 ) -> None:
     """Fill all grid cells with 3D homotopy wavefront propagation."""
     ni, nj, nk = status.shape
@@ -264,7 +264,7 @@ def run_wavefront_propagation(
             if status[i, j, k] != AtlasStatus.EMPTY:
                 continue
 
-            seed_payload = _select_predictor_seed(values, status, i, j, k, anchor_i, anchor_j)
+            seed_payload = _select_predictor_seed(values, status, norm_contract, i, j, k, anchor_i, anchor_j)
             if seed_payload is None:
                 status[i, j, k] = AtlasStatus.FAILED
                 continue
@@ -278,23 +278,22 @@ def run_wavefront_propagation(
                     seed_params=seed_params,
                     t_guess_days=t_guess,
                 )
-                values[i, j, k, :] = vec
+                values[i, j, k, :] = normalize_solver_seed(vec[:5], vec[5], norm_contract)
                 status[i, j, k] = s
                 seed_source[i, j, k] = source
                 residual_norm[i, j, k] = res
             except Exception:
-                # explicit roadmap fallback: regrow from angular neighbor if available
                 if k > 0 and status[i, j, k - 1] == AtlasStatus.SOLVED:
                     try:
-                        fallback = values[i, j, k - 1, :]
+                        fallback_params, fallback_t = denormalize_solver_seed(values[i, j, k - 1, :], norm_contract)
                         s, vec, _, res = _solve_cell(
                             rho_target=float(rho_axis[i]),
                             theta_target=float(theta_axis[k]),
                             kappa_target=float(kappa_axis[j]),
-                            seed_params=np.asarray(fallback[:5], dtype=float),
-                            t_guess_days=float(fallback[5]),
+                            seed_params=fallback_params,
+                            t_guess_days=fallback_t,
                         )
-                        values[i, j, k, :] = vec
+                        values[i, j, k, :] = normalize_solver_seed(vec[:5], vec[5], norm_contract)
                         status[i, j, k] = s
                         seed_source[i, j, k] = SeedSource.THETA_FALLBACK
                         residual_norm[i, j, k] = res
@@ -314,6 +313,7 @@ def save_atlas(
     status: np.ndarray,
     seed_source: np.ndarray,
     residual_norm: np.ndarray,
+    norm_contract: AtlasNormalization,
     meta: AtlasMeta,
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -326,6 +326,7 @@ def save_atlas(
         status=status,
         seed_source=seed_source,
         residual_norm=residual_norm,
+        normalization_json=json.dumps(asdict(norm_contract)),
         spec_json=json.dumps(asdict(spec)),
         meta_json=json.dumps(asdict(meta)),
     )
@@ -352,9 +353,21 @@ def main() -> None:
     rho_axis, kappa_axis, theta_axis = build_axes(spec)
     values, status, seed_source, residual_norm = init_atlas_tensor(spec)
     anchor_i, anchor_j = select_anchor_indices(spec)
+    norm_contract = default_atlas_normalization(seed_from_solution0())
 
     if not args.skip_anchor:
-        run_anchor_thread(values, status, seed_source, residual_norm, rho_axis, kappa_axis, theta_axis, anchor_i, anchor_j)
+        run_anchor_thread(
+            values,
+            status,
+            seed_source,
+            residual_norm,
+            rho_axis,
+            kappa_axis,
+            theta_axis,
+            anchor_i,
+            anchor_j,
+            norm_contract,
+        )
 
     if args.run_wavefront:
         run_wavefront_propagation(
@@ -367,10 +380,12 @@ def main() -> None:
             theta_axis,
             anchor_i,
             anchor_j,
+            norm_contract,
         )
 
     meta = AtlasMeta(
-        version="phase2-complete-v1",
+        version="phase2-complete-v2",
+        normalization_version=norm_contract.version,
         anchor_i=anchor_i,
         anchor_j=anchor_j,
         anchor_completed=bool(np.any(status[anchor_i, anchor_j, :] != AtlasStatus.EMPTY)),
@@ -379,9 +394,21 @@ def main() -> None:
         config_m0_kg=DEFAULT_CONFIG.m0,
         config_m_dry_kg=DEFAULT_CONFIG.m_dry,
         config_mu_si=DEFAULT_CONFIG.mu,
-        notes="Wavefront implemented with predictor/fallback seed selection.",
+        notes="Values are normalized with explicit atlas normalization contract.",
     )
-    save_atlas(args.out, spec, rho_axis, kappa_axis, theta_axis, values, status, seed_source, residual_norm, meta)
+    save_atlas(
+        args.out,
+        spec,
+        rho_axis,
+        kappa_axis,
+        theta_axis,
+        values,
+        status,
+        seed_source,
+        residual_norm,
+        norm_contract,
+        meta,
+    )
     print(f"Wrote atlas: {args.out}")
 
 

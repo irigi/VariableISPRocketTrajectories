@@ -46,6 +46,7 @@ def test_run_anchor_thread_populates_status_with_stubbed_solver(monkeypatch):
     rho, kappa, theta = ga.build_axes(spec)
     values, status, seed_source, residual_norm = ga.init_atlas_tensor(spec)
     ai, aj = ga.select_anchor_indices(spec)
+    contract = ga.default_atlas_normalization(ga.seed_from_solution0())
 
     def fake_solve_target_fast(r_target, theta_target, seed_params, t_guess_days=0.0, config=None):
         del r_target, theta_target, config
@@ -59,7 +60,7 @@ def test_run_anchor_thread_populates_status_with_stubbed_solver(monkeypatch):
     monkeypatch.setattr(ga, "solve_target_fast", fake_solve_target_fast)
     monkeypatch.setattr(ga, "integrate_fixed_time", lambda *args, **kwargs: DummySol())
 
-    ga.run_anchor_thread(values, status, seed_source, residual_norm, rho, kappa, theta, ai, aj, t_guess_days=10.0)
+    ga.run_anchor_thread(values, status, seed_source, residual_norm, rho, kappa, theta, ai, aj, contract, t_guess_days=10.0)
 
     assert np.all(status[ai, aj, :] == ga.AtlasStatus.SOLVED)
     assert np.all(np.isfinite(values[ai, aj, :, :]))
@@ -71,6 +72,7 @@ def test_run_wavefront_propagation_fills_grid_with_stubbed_solver(monkeypatch):
     rho, kappa, theta = ga.build_axes(spec)
     values, status, seed_source, residual_norm = ga.init_atlas_tensor(spec)
     ai, aj = ga.select_anchor_indices(spec)
+    contract = ga.default_atlas_normalization(ga.seed_from_solution0())
 
     def fake_solve_target_fast(r_target, theta_target, seed_params, t_guess_days=0.0, config=None):
         del r_target, theta_target, config
@@ -85,8 +87,8 @@ def test_run_wavefront_propagation_fills_grid_with_stubbed_solver(monkeypatch):
     monkeypatch.setattr(ga, "solve_target_fast", fake_solve_target_fast)
     monkeypatch.setattr(ga, "integrate_fixed_time", lambda *args, **kwargs: DummySol())
 
-    ga.run_anchor_thread(values, status, seed_source, residual_norm, rho, kappa, theta, ai, aj)
-    ga.run_wavefront_propagation(values, status, seed_source, residual_norm, rho, kappa, theta, ai, aj)
+    ga.run_anchor_thread(values, status, seed_source, residual_norm, rho, kappa, theta, ai, aj, contract)
+    ga.run_wavefront_propagation(values, status, seed_source, residual_norm, rho, kappa, theta, ai, aj, contract)
 
     assert np.all(status != ga.AtlasStatus.EMPTY)
     assert np.all(np.isfinite(values[status == ga.AtlasStatus.SOLVED]))
@@ -96,8 +98,10 @@ def test_save_atlas_writes_expected_payload(tmp_path):
     spec = ga.AtlasGridSpec(rho_points=2, kappa_points=2, theta_points=2)
     rho, kappa, theta = ga.build_axes(spec)
     values, status, seed_source, residual_norm = ga.init_atlas_tensor(spec)
+    contract = ga.default_atlas_normalization(ga.seed_from_solution0())
     meta = ga.AtlasMeta(
         version="vtest",
+        normalization_version=contract.version,
         anchor_i=0,
         anchor_j=0,
         anchor_completed=False,
@@ -109,7 +113,7 @@ def test_save_atlas_writes_expected_payload(tmp_path):
         notes="test",
     )
     out = tmp_path / "atlas.npz"
-    ga.save_atlas(out, spec, rho, kappa, theta, values, status, seed_source, residual_norm, meta)
+    ga.save_atlas(out, spec, rho, kappa, theta, values, status, seed_source, residual_norm, contract, meta)
 
     data = np.load(out, allow_pickle=False)
     assert data["values"].shape == (2, 2, 2, ga.ATLAS_VECTOR_SIZE)
@@ -117,3 +121,4 @@ def test_save_atlas_writes_expected_payload(tmp_path):
     assert data["seed_source"].shape == (2, 2, 2)
     assert data["residual_norm"].shape == (2, 2, 2)
     assert json.loads(str(data["meta_json"]))["version"] == "vtest"
+    assert json.loads(str(data["normalization_json"]))["version"] == contract.version

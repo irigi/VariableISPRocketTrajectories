@@ -3,10 +3,16 @@ import pytest
 
 from rocketHamilton import AU, MU_SI
 from trajectory_scaling import (
+    AtlasNormalization,
     compute_canonical_units,
     compute_kappa_tilde,
     compute_rho,
+    default_atlas_normalization,
+    denormalize_atlas_vector,
+    denormalize_solver_seed,
     estimate_kappa_bounds,
+    normalize_atlas_vector,
+    normalize_solver_seed,
     solve_power_for_kappa,
 )
 
@@ -27,6 +33,31 @@ def test_compute_canonical_units_match_reference_definition():
     units = compute_canonical_units(r0=AU, mu=MU_SI)
     assert np.isclose(units.du_m, AU)
     assert np.isclose(units.tu_s, np.sqrt((AU**3) / MU_SI))
+
+
+def test_default_atlas_normalization_builds_positive_scale():
+    contract = default_atlas_normalization([-9e-5, -22.0, -2800.0, 0.0, -1.5e8])
+    scale = contract.scale_array()
+    assert scale.shape == (6,)
+    assert np.all(scale > 0)
+
+
+def test_normalization_roundtrip_vector():
+    contract = AtlasNormalization(scale=(1.0, 2.0, 3.0, 4.0, 5.0, 6.0), offset=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6))
+    vector = np.array([1.1, 2.2, -3.0, 4.0, 0.0, 100.0])
+    norm = normalize_atlas_vector(vector, contract)
+    back = denormalize_atlas_vector(norm, contract)
+    np.testing.assert_allclose(back, vector)
+
+
+def test_normalization_roundtrip_seed_and_time():
+    contract = default_atlas_normalization([-9e-5, -22.0, -2800.0, 0.0, -1.5e8], t_scale_days=200.0)
+    params = np.array([-9.2e-5, -30.0, -2400.0, 0.01, -1.4e8])
+    t_days = 320.0
+    norm = normalize_solver_seed(params, t_days, contract)
+    params_back, t_back = denormalize_solver_seed(norm, contract)
+    np.testing.assert_allclose(params_back, params)
+    assert np.isclose(t_back, t_days)
 
 
 def test_compute_kappa_tilde_matches_formula():
