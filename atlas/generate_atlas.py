@@ -3,7 +3,7 @@ generate_atlas.py
 
 Generates the "Time-Optimal Trajectory Atlas" (TOTA).
 This script explores the 3D parameter space (Radius Ratio, Capability, Angle)
-using a wavefront propagation strategy to pre-compute optimal controls.
+using a 3D flood-fill (wavefront) strategy to pre-compute optimal controls.
 
 Output: 'trajectory_atlas.npz'
 """
@@ -11,6 +11,7 @@ Output: 'trajectory_atlas.npz'
 import numpy as np
 import time
 import sys
+from collections import deque
 from scipy.interpolate import RegularGridInterpolator
 
 import rocketHamilton as rh
@@ -19,15 +20,12 @@ import rocketHamilton as rh
 # -------------------------------------------------------
 # 1. Grid Configuration (Physics Verification Applied)
 # -------------------------------------------------------
-# Adjusted based on the "Neptune High-Power" case analysis.
 
 # Radius Ratio (rho = r_target / r_start)
-# 0.05 (Sun dive) to 100.0 (Kuiper Belt)
 RHO_MIN, RHO_MAX = 0.05, 100.0
 N_RHO = 40
 
 # Capability Parameter (kappa)
-# Range expanded to 200,000 to cover GW-class ships at outer planets.
 KAPPA_MIN, KAPPA_MAX = 0.1, 200000.0
 N_KAPPA = 30
 
@@ -44,7 +42,7 @@ def get_grids():
     """Returns the defining axes of the Atlas."""
     rho_grid = np.logspace(np.log10(RHO_MIN), np.log10(RHO_MAX), N_RHO)
     kappa_grid = np.logspace(np.log10(KAPPA_MIN), np.log10(KAPPA_MAX), N_KAPPA)
-    theta_grid = np.linspace(-THETA_MAX_REV * 2 * np.pi, THETA_MAX_REV * 2 * np.pi, N_THETA)  # Start slightly > 0
+    theta_grid = np.linspace(-THETA_MAX_REV * 2 * np.pi, THETA_MAX_REV * 2 * np.pi, N_THETA)
     return rho_grid, kappa_grid, theta_grid
 
 
@@ -84,7 +82,7 @@ def get_canonical_mission_config(rho, kappa):
         m0=m0,
         r0=r0,
         vr0=0.0,
-        vtheta0=None  # Defaults to circular
+        vtheta0=None
     )
 
     return r_target, config
@@ -102,21 +100,19 @@ def solve_point(rho, kappa, theta_target, guess_params=None, guess_time=None):
     r_target_si, config = get_canonical_mission_config(rho, kappa)
     r_target_au = r_target_si / rh.AU
 
-    # Heuristic guess if none provided (Basic Hohmann-ish time)
+    # Heuristic guess if none provided
     if guess_time is None:
-        # Simple heuristic: Time ~ distance^1.5
         avg_r_au = 0.5 * (1.0 + r_target_au)
         period_days = 365.25 * (avg_r_au ** 1.5)
-        guess_time = period_days * (theta_target / (2 * np.pi))
+        guess_time = period_days * (abs(theta_target) / (2 * np.pi)) # abs() for symmetric grid
         if guess_time < 10: guess_time = 50.0
 
     # Default seed params if none provided (from user's SOLUTION0)
     if guess_params is None:
         guess_params = rh.unpack([-8.33529969, -99.6312038, 0.43134401, 0.66967974])
 
-        # Run the user's fast solver
-    # We reduce max_nfev because we expect good guesses from neighbors
     try:
+        # We reduce max_nfev because we expect good guesses from neighbors
         params, t_days, info = rh.solve_target_fast(
             r_target=r_target_au,
             theta_target=theta_target,
@@ -127,10 +123,10 @@ def solve_point(rho, kappa, theta_target, guess_params=None, guess_time=None):
             config=config
         )
 
-        success = np.linalg.norm(info.fun) < 1e-3
+        success = info.success
         return success, params, t_days
 
-    except NotImplementedError as e:
+    except Exception:
         return False, None, None
 
 
@@ -141,12 +137,13 @@ def solve_point(rho, kappa, theta_target, guess_params=None, guess_time=None):
 def generate():
     rho_grid, kappa_grid, theta_grid = get_grids()
 
-    # Tensor shape: (N_rho, N_kappa, N_theta, DATA_DIM)
+    # Tensor shape: (N_rho, N_kappa, N_theta, 6)
     # Data: [lambda_r, lambda_vr, lambda_vtheta, C_m, C_theta, t_flight_days]
-    # We store 6 values.
-    # Note: These are specific to the "Canonical Mission" (1 AU start).
     data_shape = (N_RHO, N_KAPPA, N_THETA, 6)
     atlas = np.full(data_shape, np.nan)
+
+    # Track visited status separately to distinguish between "not reached" and "failed"
+    visited = np.zeros(data_shape[:3], dtype=bool)
 
     print(f"[-] Initializing Atlas: {data_shape} points.")
     print(f"[-] Grid Bounds: Rho[{RHO_MIN}-{RHO_MAX}], Kappa[{KAPPA_MIN:.1f}-{KAPPA_MAX:.1f}]")
@@ -155,111 +152,97 @@ def generate():
     total_points = N_RHO * N_KAPPA * N_THETA
     solved_count = 0
 
+    # --- Anchor Setup ---
+    # Find the indices for the seed point (Saturn-ish transfer)
     idx_rho_start = np.abs(rho_grid - 1.0).argmin()
     idx_kappa_start = np.abs(kappa_grid - 9.58).argmin()
     idx_theta_start = np.abs(theta_grid - np.deg2rad(-95.0)).argmin()
 
-    print(f"[-] Starting Anchor Column at indices [{idx_rho_start}, {idx_kappa_start}, {idx_theta_start}]...")
+    print(f"[-] Starting Anchor at indices [{idx_rho_start}, {idx_kappa_start}, {idx_theta_start}]...")
 
-    last_params = None
-    last_time = None
-    success, params, t_days = solve_point(
-        rho_grid[idx_rho_start],
-        kappa_grid[idx_kappa_start],
-        theta_grid[idx_theta_start],
-        last_params,
-        last_time
-    )
+    # Solve the anchor first
+    rho_start = rho_grid[idx_rho_start]
+    kappa_start = kappa_grid[idx_kappa_start]
+    theta_start = theta_grid[idx_theta_start]
+
+    success, params, t_days = solve_point(rho_start, kappa_start, theta_start)
+
+    # Initialize Queue for the wave
+    # Queue stores tuples: (i, j, k)
+    queue = deque()
 
     if success:
         sol_vec = np.append(params, t_days)
         atlas[idx_rho_start, idx_kappa_start, idx_theta_start, :] = sol_vec
-        last_params, last_time = params, t_days
+        visited[idx_rho_start, idx_kappa_start, idx_theta_start] = True
+        queue.append((idx_rho_start, idx_kappa_start, idx_theta_start))
         solved_count += 1
+        print("[-] Anchor Solved. Starting 3D Wave...")
     else:
-        print(f"[!] Anchor failed")
+        print("[!] Anchor failed. Cannot start propagation.")
+        return
 
-    # --- B. Wavefront Propagation ---
-    # We expand outwards from the anchor in concentric "shells" of radius d
-    # Distance metric: simple Manhattan distance in grid indices
+    # --- 3D Flood Fill Loop ---
 
-    # Create a list of all (i, j) coordinates sorted by distance from center
-    coords = []
-    for i in range(N_RHO):
-        for j in range(N_KAPPA):
-            if i == idx_rho_start and j == idx_kappa_start: continue
-            dist = abs(i - idx_rho_start) + abs(j - idx_kappa_start)
-            coords.append((dist, i, j))
+    # Neighbors: 6 directions in 3D (up/down/left/right/forward/back)
+    directions = [
+        (1, 0, 0), (-1, 0, 0),  # Rho neighbors
+        (0, 1, 0), (0, -1, 0),  # Kappa neighbors
+        (0, 0, 1), (0, 0, -1)   # Theta neighbors
+    ]
 
-    # Sort by distance to grow outwards
-    coords.sort()
+    while queue:
+        # Pop the seed node
+        curr_i, curr_j, curr_k = queue.popleft()
 
-    print("[-] Starting Wavefront Propagation...")
+        # Get the solution at the current node (to use as guess for neighbors)
+        curr_sol = atlas[curr_i, curr_j, curr_k]
+        curr_params = curr_sol[:5]
+        curr_time = curr_sol[5]
 
-    for dist, i, j in coords:
-        rho = rho_grid[i]
-        kappa = kappa_grid[j]
+        # Try to expand to all immediate neighbors
+        for di, dj, dk in directions:
+            ni, nj, nk = curr_i + di, curr_j + dj, curr_k + dk
 
-        # Angle Loop
-        # We perform the angle loop for this (rho, kappa) pair.
-        # Crucial: We get our initial guess from a NEIGHBOR in (rho, kappa) space.
+            # 1. Check Bounds
+            if not (0 <= ni < N_RHO and 0 <= nj < N_KAPPA and 0 <= nk < N_THETA):
+                continue
 
-        # 1. Find a valid neighbor to seed the theta=0 start
-        seed_params = None
-        seed_time = None
+            # 2. Check if already visited (solved or attempted & failed)
+            if visited[ni, nj, nk]:
+                continue
 
-        # Check neighbors (i-1, j), (i+1, j), (i, j-1), etc.
-        # We prioritize neighbors that are closer to the anchor (already solved)
-        potential_seeds = [
-            (i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)
-        ]
+            # 3. Mark as visited immediately to prevent duplicates in queue
+            visited[ni, nj, nk] = True
 
-        for ni, nj in potential_seeds:
-            if 0 <= ni < N_RHO and 0 <= nj < N_KAPPA:
-                # Check if neighbor has a solution at first angle
-                if not np.isnan(atlas[ni, nj, 0, 0]):
-                    # Valid seed found!
-                    seed_params = atlas[ni, nj, 0, :5]
-                    seed_time = atlas[ni, nj, 0, 5]
-                    break
+            # 4. Solve Neighbor
+            # Using current node's solution as the seed guess
+            n_rho = rho_grid[ni]
+            n_kappa = kappa_grid[nj]
+            n_theta = theta_grid[nk]
 
-        # If no neighbor (shouldn't happen with sorted expansion), use default
-
-        # 2. Run the Angular Thread
-        # We reuse the previous angle's solution as we step through k
-        curr_params = seed_params
-        curr_time = seed_time
-
-        for k in range(N_THETA):
-            theta = theta_grid[k]
-
-            # If previous angle failed, we can try to recover using a spatial neighbor
-            # at this specific angle k (Cross-linking the mesh)
-            if curr_params is None:
-                for ni, nj in potential_seeds:
-                    if 0 <= ni < N_RHO and 0 <= nj < N_KAPPA:
-                        if not np.isnan(atlas[ni, nj, k, 0]):
-                            curr_params = atlas[ni, nj, k, :5]
-                            curr_time = atlas[ni, nj, k, 5]
-                            break
-
-            # Solve
-            success, params, t_days = solve_point(rho, kappa, theta, curr_params, curr_time)
+            success, n_params, n_time = solve_point(
+                n_rho, n_kappa, n_theta,
+                guess_params=curr_params,
+                guess_time=curr_time
+            )
 
             if success:
-                sol_vec = np.append(params, t_days)
-                atlas[i, j, k, :] = sol_vec
-                curr_params = params
-                curr_time = t_days
-                solved_count += 1
-            else:
-                # If we fail, we leave as NaN.
-                # Future points in the angle loop might recover via spatial neighbors,
-                # but usually failure implies a physical limit (e.g. max thrust exceeded).
-                curr_params = None
+                # Store solution
+                n_sol_vec = np.append(n_params, n_time)
+                atlas[ni, nj, nk, :] = n_sol_vec
 
-        if i % 5 == 0 and j % 5 == 0:
-            print(f"    Processed Grid ({i}, {j}). Solved: {solved_count}/{total_points}")
+                # Add to queue to propagate further
+                queue.append((ni, nj, nk))
+                solved_count += 1
+
+            # If failed: do nothing.
+            # It is marked 'visited', so we won't try again.
+            # We do NOT add to queue, so the wave stops in this direction.
+
+        # Progress logging
+        if solved_count % 10 == 0:
+             print(f"    Solved: {solved_count}/{total_points} (Queue size: {len(queue)})")
 
     # -------------------------------------------------------
     # 5. Save
