@@ -3,7 +3,7 @@ generate_atlas.py
 
 Generates the "Time-Optimal Trajectory Atlas" (TOTA).
 This script explores the 3D parameter space (Radius Ratio, Capability, Angle)
-using a 3D flood-fill (wavefront) strategy to pre-compute optimal controls.
+using a parallelized 3D flood-fill (wavefront) strategy.
 
 Output: 'trajectory_atlas.npz'
 """
@@ -11,14 +11,14 @@ Output: 'trajectory_atlas.npz'
 import numpy as np
 import time
 import sys
+import multiprocessing as mp
 from collections import deque
-from scipy.interpolate import RegularGridInterpolator
 
 import rocketHamilton as rh
 
 
 # -------------------------------------------------------
-# 1. Grid Configuration (Physics Verification Applied)
+# 1. Grid Configuration
 # -------------------------------------------------------
 
 # Radius Ratio (rho = r_target / r_start)
@@ -61,18 +61,13 @@ def get_canonical_mission_config(rho, kappa):
     # 2. Ship Capability
     # Reversing the kappa formula:
     # kappa = [2P * (1/m_dry - 1/m0)] * (r0^2.5 / mu^1.5)
-    # We fix m0, m_dry, and solve for Power P to match kappa.
 
     m0 = 3000.0  # kg (Arbitrary, cancels out in dimensionless form)
     m_dry = 1000.0  # kg
     delta_inv_m = (1.0 / m_dry) - (1.0 / m0)
 
     scale_factor = (r0 ** 2.5) / (mu ** 1.5)
-
-    # Required J_capacity (integral a^2 dt)
     J_capacity = kappa / scale_factor
-
-    # Required Power
     P = J_capacity / (2.0 * delta_inv_m)
 
     config = rh.TrajectoryConfig(
@@ -89,164 +84,214 @@ def get_canonical_mission_config(rho, kappa):
 
 
 # -------------------------------------------------------
-# 3. The Solver Kernel
+# 3. The Solver Kernel (Worker Function)
 # -------------------------------------------------------
 
-def solve_point(rho, kappa, theta_target, guess_params=None, guess_time=None):
+def worker_task(task_data):
     """
-    Solves a single point in the grid using the user's rocketHamilton solver.
-    Returns: (success, params_array, time_days)
+    The function executed by worker processes.
+    Args:
+        task_data: tuple (target_indices, rho_val, kappa_val, theta_val, seed_params, seed_time)
+    Returns:
+        (indices, success, params, time_days)
     """
+    (indices, rho, kappa, theta, seed_params, seed_time) = task_data
+
+    # Re-construct config inside worker (objects might not pickle perfectly otherwise)
     r_target_si, config = get_canonical_mission_config(rho, kappa)
     r_target_au = r_target_si / rh.AU
 
-    # Heuristic guess if none provided
-    if guess_time is None:
+    # Heuristic guess if seed is None (only for anchor)
+    if seed_time is None:
         avg_r_au = 0.5 * (1.0 + r_target_au)
         period_days = 365.25 * (avg_r_au ** 1.5)
-        guess_time = period_days * (abs(theta_target) / (2 * np.pi)) # abs() for symmetric grid
+        # Using abs() because theta can be negative
+        guess_time = period_days * (abs(theta) / (2 * np.pi))
         if guess_time < 10: guess_time = 50.0
+    else:
+        guess_time = seed_time
 
-    # Default seed params if none provided (from user's SOLUTION0)
-    if guess_params is None:
-        guess_params = rh.unpack([-8.33529969, -99.6312038, 0.43134401, 0.66967974])
+    # Default seed params
+    if seed_params is None:
+        # User's default solution
+        seed_params = rh.unpack([-8.33529969, -99.6312038, 0.43134401, 0.66967974])
 
     try:
-        # We reduce max_nfev because we expect good guesses from neighbors
+        # Run solver
+        # We use a modest max_nfev. If the seed is good (neighbor), it converges fast.
+        # If the physics changed too much, we fail fast and stop the wave in that direction.
         params, t_days, info = rh.solve_target_fast(
             r_target=r_target_au,
-            theta_target=theta_target,
-            seed_params=guess_params,
+            theta_target=theta,
+            seed_params=seed_params,
             t_guess_days=guess_time,
-            n_starts=1,  # Single start because we trust the homotopy guess
-            max_nfev=60,
+            n_starts=1,
+            max_nfev=80,
             config=config
         )
 
         success = info.success
-        return success, params, t_days
+
+        return (indices, success, params, t_days)
 
     except Exception:
-        return False, None, None
+        return (indices, False, None, None)
 
 
 # -------------------------------------------------------
-# 4. Wavefront Propagation Generator
+# 4. Parallel Wavefront Generator
 # -------------------------------------------------------
 
 def generate():
+    # Windows support for multiprocessing
+    mp.freeze_support()
+
     rho_grid, kappa_grid, theta_grid = get_grids()
 
     # Tensor shape: (N_rho, N_kappa, N_theta, 6)
-    # Data: [lambda_r, lambda_vr, lambda_vtheta, C_m, C_theta, t_flight_days]
     data_shape = (N_RHO, N_KAPPA, N_THETA, 6)
-    atlas = np.full(data_shape, np.nan)
 
-    # Track visited status separately to distinguish between "not reached" and "failed"
+    # Shared Array for results (optional, but we'll use main memory to collect)
+    # Using float32 to save RAM if grids get huge, but float64 is safer for physics
+    atlas = np.full(data_shape, np.nan, dtype=np.float64)
+
+    # Visited Map: 0 = Unvisited, 1 = In Progress/Solved/Failed
     visited = np.zeros(data_shape[:3], dtype=bool)
 
-    print(f"[-] Initializing Atlas: {data_shape} points.")
-    print(f"[-] Grid Bounds: Rho[{RHO_MIN}-{RHO_MAX}], Kappa[{KAPPA_MIN:.1f}-{KAPPA_MAX:.1f}]")
+    print(f"[-] Initializing Parallel Atlas: {data_shape} points.")
 
-    start_time = time.time()
-    total_points = N_RHO * N_KAPPA * N_THETA
-    solved_count = 0
+    # --- Parallel Pool Setup ---
+    num_workers = mp.cpu_count() - 1  # Leave one for the OS/Manager
+    if num_workers < 1: num_workers = 1
+    print(f"[-] Spawning {num_workers} worker processes...")
+
+    pool = mp.Pool(processes=num_workers)
 
     # --- Anchor Setup ---
-    # Find the indices for the seed point (Saturn-ish transfer)
+    # We find indices for a known good starting point
     idx_rho_start = np.abs(rho_grid - 1.0).argmin()
     idx_kappa_start = np.abs(kappa_grid - 9.58).argmin()
     idx_theta_start = np.abs(theta_grid - np.deg2rad(-95.0)).argmin()
 
-    print(f"[-] Starting Anchor at indices [{idx_rho_start}, {idx_kappa_start}, {idx_theta_start}]...")
+    start_node = (idx_rho_start, idx_kappa_start, idx_theta_start)
 
-    # Solve the anchor first
-    rho_start = rho_grid[idx_rho_start]
-    kappa_start = kappa_grid[idx_kappa_start]
-    theta_start = theta_grid[idx_theta_start]
+    # We prime the pump with the anchor task
+    # (indices, rho, kappa, theta, seed_params, seed_time)
+    anchor_task = (
+        start_node,
+        rho_grid[idx_rho_start],
+        kappa_grid[idx_kappa_start],
+        theta_grid[idx_theta_start],
+        None, None
+    )
 
-    success, params, t_days = solve_point(rho_start, kappa_start, theta_start)
+    # Queue stores FUTURE tasks to be computed
+    # But since we need the results of neighbors to create tasks,
+    # we actually manage the "Frontier" here.
 
-    # Initialize Queue for the wave
-    # Queue stores tuples: (i, j, k)
-    queue = deque()
+    # 1. Submit Anchor
+    visited[start_node] = True
+    active_jobs = []
 
-    if success:
-        sol_vec = np.append(params, t_days)
-        atlas[idx_rho_start, idx_kappa_start, idx_theta_start, :] = sol_vec
-        visited[idx_rho_start, idx_kappa_start, idx_theta_start] = True
-        queue.append((idx_rho_start, idx_kappa_start, idx_theta_start))
-        solved_count += 1
-        print("[-] Anchor Solved. Starting 3D Wave...")
-    else:
-        print("[!] Anchor failed. Cannot start propagation.")
-        return
+    # Submit asynchronous job
+    job = pool.apply_async(worker_task, (anchor_task,))
+    active_jobs.append(job)
 
-    # --- 3D Flood Fill Loop ---
+    print(f"[-] Anchor submitted. Starting Event Loop...")
 
-    # Neighbors: 6 directions in 3D (up/down/left/right/forward/back)
-    directions = [
-        (1, 0, 0), (-1, 0, 0),  # Rho neighbors
-        (0, 1, 0), (0, -1, 0),  # Kappa neighbors
-        (0, 0, 1), (0, 0, -1)   # Theta neighbors
+    total_points = N_RHO * N_KAPPA * N_THETA
+    solved_count = 0
+    start_time = time.time()
+
+    # Directions for 3D neighbors
+    neighbor_offsets = [
+        (1, 0, 0), (-1, 0, 0),
+        (0, 1, 0), (0, -1, 0),
+        (0, 0, 1), (0, 0, -1)
     ]
 
-    while queue:
-        # Pop the seed node
-        curr_i, curr_j, curr_k = queue.popleft()
+    # --- Event Loop ---
+    # We continually check for finished jobs, harvest results,
+    # and spawn new jobs for their neighbors.
 
-        # Get the solution at the current node (to use as guess for neighbors)
-        curr_sol = atlas[curr_i, curr_j, curr_k]
-        curr_params = curr_sol[:5]
-        curr_time = curr_sol[5]
+    while active_jobs:
+        # Check for completed jobs
+        # We iterate backwards to allow removing items safely
+        still_active = []
+        new_tasks = []
 
-        # Try to expand to all immediate neighbors
-        for di, dj, dk in directions:
-            ni, nj, nk = curr_i + di, curr_j + dj, curr_k + dk
+        for job in active_jobs:
+            if job.ready():
+                # Harvest Result
+                try:
+                    indices, success, params, t_days = job.get()
+                    i, j, k = indices
 
-            # 1. Check Bounds
-            if not (0 <= ni < N_RHO and 0 <= nj < N_KAPPA and 0 <= nk < N_THETA):
-                continue
+                    if success:
+                        # 1. Save Result
+                        sol_vec = np.append(params, t_days)
+                        atlas[i, j, k, :] = sol_vec
+                        solved_count += 1
 
-            # 2. Check if already visited (solved or attempted & failed)
-            if visited[ni, nj, nk]:
-                continue
+                        # 2. Identify Neighbors
+                        for di, dj, dk in neighbor_offsets:
+                            ni, nj, nk = i + di, j + dj, k + dk
 
-            # 3. Mark as visited immediately to prevent duplicates in queue
-            visited[ni, nj, nk] = True
+                            # Check Bounds
+                            if (0 <= ni < N_RHO) and (0 <= nj < N_KAPPA) and (0 <= nk < N_THETA):
+                                if not visited[ni, nj, nk]:
+                                    # Mark visited immediately so no other job claims it
+                                    visited[ni, nj, nk] = True
 
-            # 4. Solve Neighbor
-            # Using current node's solution as the seed guess
-            n_rho = rho_grid[ni]
-            n_kappa = kappa_grid[nj]
-            n_theta = theta_grid[nk]
+                                    # Prepare Task
+                                    task = (
+                                        (ni, nj, nk),
+                                        rho_grid[ni],
+                                        kappa_grid[nj],
+                                        theta_grid[nk],
+                                        params, # Use parent's params as seed
+                                        t_days  # Use parent's time as seed
+                                    )
+                                    new_tasks.append(task)
+                    else:
+                        # Failed to converge.
+                        # We do nothing. The wavefront stops here.
+                        pass
 
-            success, n_params, n_time = solve_point(
-                n_rho, n_kappa, n_theta,
-                guess_params=curr_params,
-                guess_time=curr_time
-            )
+                except Exception as e:
+                    print(f"[!] Job failed with error: {e}")
+            else:
+                still_active.append(job)
 
-            if success:
-                # Store solution
-                n_sol_vec = np.append(n_params, n_time)
-                atlas[ni, nj, nk, :] = n_sol_vec
+        # Dispatch New Tasks
+        if new_tasks:
+            # Batch submission logic could go here if overhead is high,
+            # but apply_async is usually fast enough for N=70k.
+            for task in new_tasks:
+                job = pool.apply_async(worker_task, (task,))
+                still_active.append(job)
 
-                # Add to queue to propagate further
-                queue.append((ni, nj, nk))
-                solved_count += 1
+        active_jobs = still_active
 
-            # If failed: do nothing.
-            # It is marked 'visited', so we won't try again.
-            # We do NOT add to queue, so the wave stops in this direction.
+        # Logging & Throttling
+        if solved_count % 100 == 0 and len(new_tasks) > 0:
+            elapsed = time.time() - start_time
+            rate = solved_count / (elapsed + 1e-5)
+            print(f"    Solved: {solved_count} | Active Workers: {len(active_jobs)} | Rate: {rate:.1f} pts/s")
 
-        # Progress logging
-        if solved_count % 10 == 0:
-             print(f"    Solved: {solved_count}/{total_points} (Queue size: {len(queue)})")
+        # Prevent CPU spin if waiting for long jobs
+        if not new_tasks and active_jobs:
+            time.sleep(0.05)
 
-    # -------------------------------------------------------
-    # 5. Save
-    # -------------------------------------------------------
+    # --- Shutdown ---
+    pool.close()
+    pool.join()
+
+    # --- Save ---
+    elapsed = time.time() - start_time
+    print(f"\n[+] Parallel Atlas Generation Complete in {elapsed:.1f}s")
+    print(f"[+] Coverage: {solved_count}/{total_points} ({solved_count/total_points*100:.1f}%)")
+
     output_filename = 'trajectory_atlas.npz'
     np.savez_compressed(
         output_filename,
@@ -255,11 +300,7 @@ def generate():
         theta=theta_grid,
         data=atlas
     )
-
-    elapsed = time.time() - start_time
-    print(f"\n[+] Atlas Generation Complete in {elapsed:.1f}s")
     print(f"[+] Saved to {output_filename}")
-    print(f"[+] Coverage: {solved_count / total_points * 100:.1f}% of grid solved.")
 
 
 if __name__ == "__main__":
