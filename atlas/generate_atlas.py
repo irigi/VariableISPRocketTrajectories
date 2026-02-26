@@ -13,12 +13,8 @@ import time
 import sys
 from scipy.interpolate import RegularGridInterpolator
 
-# Import the user's trusted physics solver
-try:
-    import rocketHamilton as rh
-except ImportError:
-    print("Error: rocketHamilton.py must be in the same directory.")
-    sys.exit(1)
+import rocketHamilton as rh
+
 
 # -------------------------------------------------------
 # 1. Grid Configuration (Physics Verification Applied)
@@ -36,9 +32,7 @@ KAPPA_MIN, KAPPA_MAX = 0.1, 200000.0
 N_KAPPA = 30
 
 # Angle (theta) in Radians
-# 0 to ~6 revolutions.
-# Note: Low kappa (low power) requires more revolutions.
-THETA_MAX_REV = 6.0
+THETA_MAX_REV = 1.1
 N_THETA = 60
 
 
@@ -50,7 +44,7 @@ def get_grids():
     """Returns the defining axes of the Atlas."""
     rho_grid = np.logspace(np.log10(RHO_MIN), np.log10(RHO_MAX), N_RHO)
     kappa_grid = np.logspace(np.log10(KAPPA_MIN), np.log10(KAPPA_MAX), N_KAPPA)
-    theta_grid = np.linspace(0.1, THETA_MAX_REV * 2 * np.pi, N_THETA)  # Start slightly > 0
+    theta_grid = np.linspace(-THETA_MAX_REV * 2 * np.pi, THETA_MAX_REV * 2 * np.pi, N_THETA)  # Start slightly > 0
     return rho_grid, kappa_grid, theta_grid
 
 
@@ -118,7 +112,7 @@ def solve_point(rho, kappa, theta_target, guess_params=None, guess_time=None):
 
     # Default seed params if none provided (from user's SOLUTION0)
     if guess_params is None:
-        guess_params = rh.unpack(rh.SOLUTION0)
+        guess_params = rh.unpack([-8.33529969, -99.6312038, 0.43134401, 0.66967974])
 
         # Run the user's fast solver
     # We reduce max_nfev because we expect good guesses from neighbors
@@ -136,7 +130,7 @@ def solve_point(rho, kappa, theta_target, guess_params=None, guess_time=None):
         success = np.linalg.norm(info.fun) < 1e-3
         return success, params, t_days
 
-    except Exception as e:
+    except NotImplementedError as e:
         return False, None, None
 
 
@@ -161,40 +155,29 @@ def generate():
     total_points = N_RHO * N_KAPPA * N_THETA
     solved_count = 0
 
-    # --- A. The Anchor Column (Middle Rho, Middle Kappa) ---
-    # We find the indices for Rho=1.0 and a moderate Kappa
     idx_rho_start = np.abs(rho_grid - 1.0).argmin()
-    idx_kappa_start = np.abs(kappa_grid - 50.0).argmin()  # 50 is a 'safe' value
+    idx_kappa_start = np.abs(kappa_grid - 9.58).argmin()
+    idx_theta_start = np.abs(theta_grid - np.deg2rad(-95.0)).argmin()
 
-    print(f"[-] Starting Anchor Column at indices [{idx_rho_start}, {idx_kappa_start}]...")
+    print(f"[-] Starting Anchor Column at indices [{idx_rho_start}, {idx_kappa_start}, {idx_theta_start}]...")
 
-    # Solve the angle spine (0 -> theta_max)
     last_params = None
     last_time = None
+    success, params, t_days = solve_point(
+        rho_grid[idx_rho_start],
+        kappa_grid[idx_kappa_start],
+        theta_grid[idx_theta_start],
+        last_params,
+        last_time
+    )
 
-    for k in range(N_THETA):
-        theta = theta_grid[k]
-
-        success, params, t_days = solve_point(
-            rho_grid[idx_rho_start],
-            kappa_grid[idx_kappa_start],
-            theta,
-            last_params,
-            last_time
-        )
-
-        if success:
-            # Pack solution: params (5) + time (1)
-            # params is [lam_r, lam_vr, lam_vth, Cm, Cth]
-            sol_vec = np.append(params, t_days)
-            atlas[idx_rho_start, idx_kappa_start, k, :] = sol_vec
-
-            last_params = params
-            last_time = t_days
-            solved_count += 1
-        else:
-            print(f"[!] Anchor failed at theta={theta:.2f}")
-            break
+    if success:
+        sol_vec = np.append(params, t_days)
+        atlas[idx_rho_start, idx_kappa_start, idx_theta_start, :] = sol_vec
+        last_params, last_time = params, t_days
+        solved_count += 1
+    else:
+        print(f"[!] Anchor failed")
 
     # --- B. Wavefront Propagation ---
     # We expand outwards from the anchor in concentric "shells" of radius d
