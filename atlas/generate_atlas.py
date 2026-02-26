@@ -11,7 +11,9 @@ Output: 'trajectory_atlas.npz'
 import numpy as np
 import time
 import sys
+import multiprocessing as mp
 from collections import deque
+from concurrent.futures import ProcessPoolExecutor
 from scipy.interpolate import RegularGridInterpolator
 
 import rocketHamilton as rh
@@ -130,6 +132,19 @@ def solve_point(rho, kappa, theta_target, guess_params=None, guess_time=None):
         return False, None, None
 
 
+def _solve_neighbor_task(args):
+    """Worker helper for solving a neighbor atlas point in a spawned process."""
+    ni, nj, nk, n_rho, n_kappa, n_theta, curr_params, curr_time = args
+    success, n_params, n_time = solve_point(
+        n_rho,
+        n_kappa,
+        n_theta,
+        guess_params=curr_params,
+        guess_time=curr_time
+    )
+    return ni, nj, nk, success, n_params, n_time
+
+
 # -------------------------------------------------------
 # 4. Wavefront Propagation Generator
 # -------------------------------------------------------
@@ -191,58 +206,61 @@ def generate():
         (0, 0, 1), (0, 0, -1)   # Theta neighbors
     ]
 
-    while queue:
-        # Pop the seed node
-        curr_i, curr_j, curr_k = queue.popleft()
+    max_workers = max(1, mp.cpu_count() - 1)
+    spawn_context = mp.get_context("spawn")
 
-        # Get the solution at the current node (to use as guess for neighbors)
-        curr_sol = atlas[curr_i, curr_j, curr_k]
-        curr_params = curr_sol[:5]
-        curr_time = curr_sol[5]
+    with ProcessPoolExecutor(max_workers=max_workers, mp_context=spawn_context) as executor:
+        while queue:
+            # Pop the seed node
+            curr_i, curr_j, curr_k = queue.popleft()
 
-        # Try to expand to all immediate neighbors
-        for di, dj, dk in directions:
-            ni, nj, nk = curr_i + di, curr_j + dj, curr_k + dk
+            # Get the solution at the current node (to use as guess for neighbors)
+            curr_sol = atlas[curr_i, curr_j, curr_k]
+            curr_params = curr_sol[:5]
+            curr_time = curr_sol[5]
 
-            # 1. Check Bounds
-            if not (0 <= ni < N_RHO and 0 <= nj < N_KAPPA and 0 <= nk < N_THETA):
-                continue
+            neighbor_tasks = []
 
-            # 2. Check if already visited (solved or attempted & failed)
-            if visited[ni, nj, nk]:
-                continue
+            # Try to expand to all immediate neighbors
+            for di, dj, dk in directions:
+                ni, nj, nk = curr_i + di, curr_j + dj, curr_k + dk
 
-            # 3. Mark as visited immediately to prevent duplicates in queue
-            visited[ni, nj, nk] = True
+                # 1. Check Bounds
+                if not (0 <= ni < N_RHO and 0 <= nj < N_KAPPA and 0 <= nk < N_THETA):
+                    continue
 
-            # 4. Solve Neighbor
-            # Using current node's solution as the seed guess
-            n_rho = rho_grid[ni]
-            n_kappa = kappa_grid[nj]
-            n_theta = theta_grid[nk]
+                # 2. Check if already visited (solved or attempted & failed)
+                if visited[ni, nj, nk]:
+                    continue
 
-            success, n_params, n_time = solve_point(
-                n_rho, n_kappa, n_theta,
-                guess_params=curr_params,
-                guess_time=curr_time
-            )
+                # 3. Mark as visited immediately to prevent duplicates in queue
+                visited[ni, nj, nk] = True
 
-            if success:
-                # Store solution
-                n_sol_vec = np.append(n_params, n_time)
-                atlas[ni, nj, nk, :] = n_sol_vec
+                # 4. Queue neighbor solve task (using current node's solution as seed guess)
+                neighbor_tasks.append(
+                    (ni, nj, nk, rho_grid[ni], kappa_grid[nj], theta_grid[nk], curr_params, curr_time)
+                )
 
-                # Add to queue to propagate further
-                queue.append((ni, nj, nk))
-                solved_count += 1
+            if neighbor_tasks:
+                results = executor.map(_solve_neighbor_task, neighbor_tasks)
 
-            # If failed: do nothing.
-            # It is marked 'visited', so we won't try again.
-            # We do NOT add to queue, so the wave stops in this direction.
+                for ni, nj, nk, success, n_params, n_time in results:
+                    if success:
+                        # Store solution
+                        n_sol_vec = np.append(n_params, n_time)
+                        atlas[ni, nj, nk, :] = n_sol_vec
 
-        # Progress logging
-        if solved_count % 10 == 0:
-             print(f"    Solved: {solved_count}/{total_points} (Queue size: {len(queue)})")
+                        # Add to queue to propagate further
+                        queue.append((ni, nj, nk))
+                        solved_count += 1
+
+                    # If failed: do nothing.
+                    # It is marked 'visited', so we won't try again.
+                    # We do NOT add to queue, so the wave stops in this direction.
+
+            # Progress logging
+            if solved_count % 10 == 0:
+                 print(f"    Solved: {solved_count}/{total_points} (Queue size: {len(queue)})")
 
     # -------------------------------------------------------
     # 5. Save
