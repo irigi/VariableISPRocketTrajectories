@@ -10,7 +10,9 @@ Output: 'trajectory_atlas.npz'
 
 import time
 import multiprocessing as mp
-
+import os
+import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap, BoundaryNorm
 import numpy as np
 
 import rocketHamilton as rh
@@ -21,19 +23,19 @@ import rocketHamilton as rh
 # -------------------------------------------------------
 
 # Radius Ratio (rho = r_target / r_start)
-RHO_MIN, RHO_MAX = 0.05, 100.0
-N_RHO = 40
+RHO_MIN, RHO_MAX = 0.01, 100.0
+N_RHO = 80
 
 # Capability Parameter (kappa)
 KAPPA_MIN, KAPPA_MAX = 0.1, 200000.0
-N_KAPPA = 30
+N_KAPPA = 60
 
 # Angle (theta) in Radians
 THETA_MAX_REV = 1.1
-N_THETA = 60
+N_THETA = 120
 
 # Retry / batching controls
-MAX_RETRIES_PER_CELL = 1
+MAX_RETRIES_PER_CELL = 0
 MIN_CHUNKSIZE = 4
 MAX_CHUNKSIZE = 32
 PROGRESS_INTERVAL = 1
@@ -147,6 +149,7 @@ def worker_task(task_data):
             config=config,
         )
 
+        # print(info.fun, info.success)
         success = info.success
         return (indices, success, params, t_days)
 
@@ -224,17 +227,17 @@ def generate():
     failed_count = 0
     start_time = time.time()
 
+    viz_dir = "atlas_state_plots"
+    os.makedirs(viz_dir, exist_ok=True)
+    last_solved_count, last_elapsed = 0,0
+
     with mp.Pool(processes=num_workers) as pool:
         while frontier:
             frontier_round += 1
             chunksize = choose_chunksize(len(frontier), num_workers)
             next_frontier = []
 
-            for indices, success, params, t_days in pool.imap_unordered(
-                worker_task,
-                frontier,
-                chunksize=chunksize,
-            ):
+            for indices, success, params, t_days in pool.imap_unordered(worker_task, frontier, chunksize=chunksize):
                 i, j, k = indices
 
                 if success:
@@ -280,13 +283,36 @@ def generate():
             ):
                 elapsed = time.time() - start_time
                 rate = solved_count / max(elapsed, 1e-9)
+                rate_now = (solved_count - last_solved_count) / max(elapsed - last_elapsed, 1e-9)
                 print(
                     "    "
                     f"Round: {frontier_round} | "
                     f"Solved: {solved_count} | "
                     f"Queued next: {len(frontier)} | "
                     f"Chunksize: {chunksize} | "
-                    f"Rate: {rate:.1f} pts/s"
+                    f"Rate: {rate:.1f} pts/s | "
+                    f"Rate now: {rate_now:.1f} pts/s | "
+                )
+                last_solved_count, last_elapsed = solved_count, elapsed
+
+                output_filename = "trajectory_atlas.npz"
+                np.savez_compressed(
+                    output_filename,
+                    rho=rho_grid,
+                    kappa=kappa_grid,
+                    theta=theta_grid,
+                    data=atlas,
+                )
+
+                plot_filename = os.path.join(viz_dir, f"atlas_state_round_{frontier_round:05d}.png")
+                visualize_atlas_state_slices(
+                    state=state,
+                    rho_grid=rho_grid,
+                    kappa_grid=kappa_grid,
+                    theta_grid=theta_grid,
+                    round_idx=frontier_round,
+                    output_path=plot_filename,
+                    show=False,
                 )
 
     elapsed = time.time() - start_time
@@ -294,7 +320,7 @@ def generate():
     print(f"[+] Coverage: {solved_count}/{total_points} ({solved_count / total_points * 100:.1f}%)")
     print(f"[+] Failed solver calls: {failed_count}")
 
-    output_filename = "trajectory_atlas.npz"
+    output_filename = "trajectory_atlas_final.npz"
     np.savez_compressed(
         output_filename,
         rho=rho_grid,
@@ -303,6 +329,180 @@ def generate():
         data=atlas,
     )
     print(f"[+] Saved to {output_filename}")
+
+
+def _compute_edges_from_centers(values, log_spacing=False):
+    """
+    Convert 1D cell centers to cell edges for pcolormesh.
+    Works well for monotonic grids.
+    """
+    values = np.asarray(values, dtype=float)
+
+    if values.ndim != 1 or len(values) < 2:
+        raise ValueError("values must be a 1D array with at least 2 elements")
+
+    if log_spacing:
+        if np.any(values <= 0):
+            raise ValueError("log-spaced edges require strictly positive values")
+
+        edges = np.empty(len(values) + 1, dtype=float)
+        edges[1:-1] = np.sqrt(values[:-1] * values[1:])
+        edges[0] = values[0] ** 2 / edges[1]
+        edges[-1] = values[-1] ** 2 / edges[-2]
+    else:
+        edges = np.empty(len(values) + 1, dtype=float)
+        edges[1:-1] = 0.5 * (values[:-1] + values[1:])
+        edges[0] = values[0] - 0.5 * (values[1] - values[0])
+        edges[-1] = values[-1] + 0.5 * (values[-1] - values[-2])
+
+    return edges
+
+
+def visualize_atlas_state_slices(
+    state,
+    rho_grid,
+    kappa_grid,
+    theta_grid,
+    round_idx=None,
+    output_path=None,
+    nrows=3,
+    ncols=4,
+    figsize=(16, 10),
+    dpi=150,
+    show=False,
+):
+    """
+    Visualize the 3D atlas state as a grid of 2D (rho, kappa) cuts at selected theta slices.
+
+    Parameters
+    ----------
+    state : ndarray, shape (N_RHO, N_KAPPA, N_THETA)
+        Integer state tensor using the STATE_* codes.
+    rho_grid, kappa_grid, theta_grid : 1D ndarrays
+        Grid center coordinates from get_grids().
+    round_idx : int or None
+        Optional round number for the figure title.
+    output_path : str or None
+        If provided, save the figure here.
+    nrows, ncols : int
+        Layout of subplot grid.
+    figsize : tuple
+        Matplotlib figure size.
+    dpi : int
+        Figure DPI for saving.
+    show : bool
+        Whether to display interactively.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    axes : ndarray of Axes
+    """
+    # --- Validate shapes ---
+    expected_shape = (len(rho_grid), len(kappa_grid), len(theta_grid))
+    if state.shape != expected_shape:
+        raise ValueError(f"state.shape={state.shape}, expected {expected_shape}")
+
+    # --- Discrete colormap for your state machine ---
+    # 0 unseen, 1 queued, 2 solved, 3 retryable_failed, 4 dead_failed
+    cmap = ListedColormap([
+        "#f0f0f0",  # unseen
+        "#4c78a8",  # queued
+        "#54a24b",  # solved
+        "#f2cf5b",  # retryable failed
+        "#e45756",  # dead failed
+    ])
+    norm = BoundaryNorm(np.arange(-0.5, 5.5, 1.0), cmap.N)
+
+    state_names = {
+        0: "unseen",
+        1: "queued",
+        2: "solved",
+        3: "retryable failed",
+        4: "dead failed",
+    }
+
+    # --- Choose theta slices evenly across the theta axis ---
+    n_panels = nrows * ncols
+    if len(theta_grid) <= n_panels:
+        theta_indices = np.arange(len(theta_grid))
+    else:
+        theta_indices = np.linspace(0, len(theta_grid) - 1, n_panels, dtype=int)
+
+    # --- Cell edges for pcolormesh ---
+    rho_edges = _compute_edges_from_centers(rho_grid, log_spacing=True)
+    kappa_edges = _compute_edges_from_centers(kappa_grid, log_spacing=True)
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize, constrained_layout=True)
+    axes = np.atleast_1d(axes).ravel()
+
+    for ax in axes[n_panels:]:
+        ax.set_visible(False)
+
+    for panel_idx, ax in enumerate(axes):
+        if panel_idx >= len(theta_indices):
+            ax.set_visible(False)
+            continue
+
+        k = theta_indices[panel_idx]
+
+        # state[:, :, k] has shape (N_RHO, N_KAPPA)
+        # pcolormesh expects Z shape (len(y)-1, len(x)-1), so transpose to (N_KAPPA, N_RHO)
+        z = state[:, :, k].T
+
+        mesh = ax.pcolormesh(
+            rho_edges,
+            kappa_edges,
+            z,
+            cmap=cmap,
+            norm=norm,
+            shading="auto",
+        )
+
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlabel("rho = r_target / r_start")
+        ax.set_ylabel("kappa")
+        ax.set_title(
+            f"theta[{k}] = {theta_grid[k]:.2f} rad\n({np.degrees(theta_grid[k]):.1f}°)"
+        )
+
+    # One shared colorbar
+    cbar = fig.colorbar(
+        mesh,
+        ax=axes.tolist(),
+        ticks=[0, 1, 2, 3, 4],
+        shrink=0.92,
+        pad=0.02,
+    )
+    cbar.ax.set_yticklabels([state_names[i] for i in range(5)])
+    cbar.set_label("Cell state")
+
+    # Overall title
+    solved = np.count_nonzero(state == 2)
+    queued = np.count_nonzero(state == 1)
+    retryable = np.count_nonzero(state == 3)
+    dead = np.count_nonzero(state == 4)
+    unseen = np.count_nonzero(state == 0)
+    total = state.size
+
+    title = (
+        f"Atlas state slices"
+        + (f" — round {round_idx}" if round_idx is not None else "")
+        + f"\nsolved={solved}, queued={queued}, retryable={retryable}, dead={dead}, unseen={unseen}, total={total}"
+    )
+    fig.suptitle(title, fontsize=14)
+
+    if output_path:
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+    return fig, axes
 
 
 if __name__ == "__main__":
