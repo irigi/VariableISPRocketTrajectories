@@ -14,6 +14,8 @@ import os
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, BoundaryNorm
 import numpy as np
+from collections import deque
+from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 
 import rocketHamilton as rh
 
@@ -60,6 +62,10 @@ NEIGHBOR_OFFSETS = [
     (0, 1, 0), (0, -1, 0),
     (0, 0, 1), (0, 0, -1),
 ]
+
+PROGRESS_INTERVAL_SEC = 30.0
+SAVE_INTERVAL_SEC = 120.0
+MAX_IN_FLIGHT_FACTOR = 4   # allow a few waves of queued work beyond worker count
 
 
 # -------------------------------------------------------
@@ -188,6 +194,19 @@ def in_bounds(i, j, k):
     return (0 <= i < N_RHO) and (0 <= j < N_KAPPA) and (0 <= k < N_THETA)
 
 
+def save_checkpoint(filename, rho_grid, kappa_grid, theta_grid, atlas, state, retry_count):
+    """Save a restart/checkpoint snapshot."""
+    np.savez_compressed(
+        filename,
+        rho=rho_grid,
+        kappa=kappa_grid,
+        theta=theta_grid,
+        data=atlas,
+        state=state,
+        retry_count=retry_count,
+    )
+
+
 def generate():
     # Windows support for multiprocessing
     mp.freeze_support()
@@ -206,8 +225,7 @@ def generate():
 
     print(f"[-] Initializing Parallel Atlas: {data_shape} points.")
 
-    # --- Parallel Pool Setup ---
-    num_workers = max(1, mp.cpu_count() - 1)  # Leave one for the OS/Manager
+    num_workers = max(1, mp.cpu_count() - 1)
     print(f"[-] Spawning {num_workers} worker processes...")
 
     # --- Anchor Setup ---
@@ -216,119 +234,198 @@ def generate():
     idx_theta_start = np.abs(theta_grid - np.deg2rad(-95.0)).argmin()
     start_node = (idx_rho_start, idx_kappa_start, idx_theta_start)
 
-    frontier = [make_task(start_node, rho_grid, kappa_grid, theta_grid, None, None)]
-    state[start_node] = STATE_QUEUED
-
-    print("[-] Anchor queued. Starting frontier expansion...")
-
     total_points = N_RHO * N_KAPPA * N_THETA
     solved_count = 0
-    frontier_round = 0
     failed_count = 0
+    submitted_count = 0
+    completed_count = 0
     start_time = time.time()
+    last_progress_time = start_time
+    last_save_time = start_time
+    last_solved_count = 0
+    last_completed_count = 0
 
     viz_dir = "atlas_state_plots"
     os.makedirs(viz_dir, exist_ok=True)
-    last_solved_count, last_elapsed = 0,0
 
-    with mp.Pool(processes=num_workers) as pool:
-        while frontier:
-            frontier_round += 1
-            chunksize = choose_chunksize(len(frontier), num_workers)
-            next_frontier = []
+    checkpoint_filename = "trajectory_atlas.npz"
 
-            for indices, success, params, t_days in pool.imap_unordered(worker_task, frontier, chunksize=chunksize):
+    pending_tasks = deque()
+    in_flight = {}
+
+    def enqueue_task(indices, seed_params, seed_time):
+        """Queue a task if the state machine allows it."""
+        i, j, k = indices
+        current_state = state[i, j, k]
+
+        can_retry = (
+            current_state == STATE_RETRYABLE_FAILED
+            and retry_count[i, j, k] < MAX_RETRIES_PER_CELL
+        )
+
+        if current_state == STATE_UNSEEN or can_retry:
+            state[i, j, k] = STATE_QUEUED
+            pending_tasks.append(
+                make_task(indices, rho_grid, kappa_grid, theta_grid, seed_params, seed_time)
+            )
+            return True
+
+        return False
+
+    def submit_ready_tasks(executor):
+        """Keep workers fed without waiting for a whole frontier to finish."""
+        nonlocal submitted_count
+        max_in_flight = max(num_workers, num_workers * MAX_IN_FLIGHT_FACTOR)
+
+        while pending_tasks and len(in_flight) < max_in_flight:
+            task = pending_tasks.popleft()
+            future = executor.submit(worker_task, task)
+            in_flight[future] = task[0]   # store indices for robust failure handling
+            submitted_count += 1
+
+    def maybe_report_and_save(force=False):
+        nonlocal last_progress_time, last_save_time
+        nonlocal last_solved_count, last_completed_count
+
+        now = time.time()
+        elapsed = now - start_time
+
+        should_report = force or (now - last_progress_time >= PROGRESS_INTERVAL_SEC)
+        should_save = force or (now - last_save_time >= SAVE_INTERVAL_SEC)
+
+        if should_report:
+            solved_rate_avg = solved_count / max(elapsed, 1e-9)
+            solved_rate_now = (solved_count - last_solved_count) / max(now - last_progress_time, 1e-9)
+            completed_rate_now = (completed_count - last_completed_count) / max(now - last_progress_time, 1e-9)
+
+            print(
+                "    "
+                f"Solved: {solved_count} | "
+                f"Completed: {completed_count} | "
+                f"Failed calls: {failed_count} | "
+                f"Pending: {len(pending_tasks)} | "
+                f"In-flight: {len(in_flight)} | "
+                f"Submitted: {submitted_count} | "
+                f"Avg solve rate: {solved_rate_avg:.2f} pts/s | "
+                f"Recent solved rate: {solved_rate_now:.2f} pts/s | "
+                f"Recent completion rate: {completed_rate_now:.2f} pts/s"
+            )
+
+            last_progress_time = now
+            last_solved_count = solved_count
+            last_completed_count = completed_count
+
+        if should_save:
+            save_checkpoint(
+                checkpoint_filename,
+                rho_grid,
+                kappa_grid,
+                theta_grid,
+                atlas,
+                state,
+                retry_count,
+            )
+
+            plot_filename = os.path.join(
+                viz_dir, f"atlas_state_t_{int(elapsed):08d}s.png"
+            )
+            visualize_atlas_state_slices(
+                state=state,
+                rho_grid=rho_grid,
+                kappa_grid=kappa_grid,
+                theta_grid=theta_grid,
+                round_idx=None,
+                output_path=plot_filename,
+                show=False,
+            )
+
+            print(f"    [checkpoint] Saved {checkpoint_filename}")
+            last_save_time = now
+
+    # Seed initial task
+    enqueue_task(start_node, None, None)
+    print("[-] Anchor queued. Starting asynchronous frontier expansion...")
+
+    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+        submit_ready_tasks(executor)
+
+        while pending_tasks or in_flight:
+            # Keep workers busy before waiting
+            submit_ready_tasks(executor)
+
+            if not in_flight:
+                # Nothing running yet, loop around and submit more
+                maybe_report_and_save(force=False)
+                continue
+
+            done, _ = wait(
+                in_flight.keys(),
+                timeout=1.0,
+                return_when=FIRST_COMPLETED,
+            )
+
+            if not done:
+                # No completion yet, but still print/save periodically
+                maybe_report_and_save(force=False)
+                continue
+
+            for future in done:
+                fallback_indices = in_flight.pop(future)
+
+                try:
+                    indices, success, params, t_days = future.result()
+                except Exception:
+                    indices = fallback_indices
+                    success = False
+                    params = None
+                    t_days = None
+
                 i, j, k = indices
+                completed_count += 1
 
                 if success:
                     atlas[i, j, k, :] = np.append(params, t_days)
                     state[i, j, k] = STATE_SOLVED
                     solved_count += 1
 
+                    # Immediately expand neighbors and feed them to the pool
                     for di, dj, dk in NEIGHBOR_OFFSETS:
                         ni, nj, nk = i + di, j + dj, k + dk
                         if not in_bounds(ni, nj, nk):
                             continue
 
-                        neighbor_state = state[ni, nj, nk]
-                        can_retry = (
-                            neighbor_state == STATE_RETRYABLE_FAILED
-                            and retry_count[ni, nj, nk] < MAX_RETRIES_PER_CELL
-                        )
+                        enqueue_task((ni, nj, nk), params, t_days)
 
-                        if neighbor_state == STATE_UNSEEN or can_retry:
-                            state[ni, nj, nk] = STATE_QUEUED
-                            next_frontier.append(
-                                make_task(
-                                    (ni, nj, nk),
-                                    rho_grid,
-                                    kappa_grid,
-                                    theta_grid,
-                                    params,
-                                    t_days,
-                                )
-                            )
                 else:
                     failed_count += 1
                     retry_count[i, j, k] += 1
+
                     if retry_count[i, j, k] <= MAX_RETRIES_PER_CELL:
                         state[i, j, k] = STATE_RETRYABLE_FAILED
                     else:
                         state[i, j, k] = STATE_DEAD_FAILED
 
-            frontier = next_frontier
-
-            if solved_count and (
-                solved_count % PROGRESS_INTERVAL == 0 or frontier_round == 1 or not frontier
-            ):
-                elapsed = time.time() - start_time
-                rate = solved_count / max(elapsed, 1e-9)
-                rate_now = (solved_count - last_solved_count) / max(elapsed - last_elapsed, 1e-9)
-                print(
-                    "    "
-                    f"Round: {frontier_round} | "
-                    f"Solved: {solved_count} | "
-                    f"Queued next: {len(frontier)} | "
-                    f"Chunksize: {chunksize} | "
-                    f"Rate: {rate:.1f} pts/s | "
-                    f"Rate now: {rate_now:.1f} pts/s | "
-                )
-                last_solved_count, last_elapsed = solved_count, elapsed
-
-                output_filename = "trajectory_atlas.npz"
-                np.savez_compressed(
-                    output_filename,
-                    rho=rho_grid,
-                    kappa=kappa_grid,
-                    theta=theta_grid,
-                    data=atlas,
-                )
-
-                plot_filename = os.path.join(viz_dir, f"atlas_state_round_{frontier_round:05d}.png")
-                visualize_atlas_state_slices(
-                    state=state,
-                    rho_grid=rho_grid,
-                    kappa_grid=kappa_grid,
-                    theta_grid=theta_grid,
-                    round_idx=frontier_round,
-                    output_path=plot_filename,
-                    show=False,
-                )
+            # Right after handling completions, submit newly discovered work
+            submit_ready_tasks(executor)
+            maybe_report_and_save(force=False)
 
     elapsed = time.time() - start_time
+
     print(f"\n[+] Parallel Atlas Generation Complete in {elapsed:.1f}s")
     print(f"[+] Coverage: {solved_count}/{total_points} ({solved_count / total_points * 100:.1f}%)")
     print(f"[+] Failed solver calls: {failed_count}")
 
-    output_filename = "trajectory_atlas_final.npz"
-    np.savez_compressed(
-        output_filename,
-        rho=rho_grid,
-        kappa=kappa_grid,
-        theta=theta_grid,
-        data=atlas,
+    final_filename = "trajectory_atlas_final.npz"
+    save_checkpoint(
+        final_filename,
+        rho_grid,
+        kappa_grid,
+        theta_grid,
+        atlas,
+        state,
+        retry_count,
     )
-    print(f"[+] Saved to {output_filename}")
+    print(f"[+] Saved final result to {final_filename}")
 
 
 def _compute_edges_from_centers(values, log_spacing=False):
@@ -464,7 +561,7 @@ def visualize_atlas_state_slices(
         ax.set_xlabel("rho = r_target / r_start")
         ax.set_ylabel("kappa")
         ax.set_title(
-            f"theta[{k}] = {theta_grid[k]:.2f} rad\n({np.degrees(theta_grid[k]):.1f}°)"
+            f"theta[{k}] = {np.degrees(theta_grid[k]):.1f}°"
         )
 
     # One shared colorbar
