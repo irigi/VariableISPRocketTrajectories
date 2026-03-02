@@ -221,6 +221,7 @@ Solving for $T_{\min}$ yields the final result:
   \label{eq:Tmin}
 \end{equation}
 
+Equation~\eqref{eq:Tmin} treats the dry mass as prescribed. If the propulsion hardware mass is instead allowed to scale with power, the same free-space benchmark can be extended by a simple dry-mass closure; the resulting scaling law is derived in Appendix~\ref{sec:appendix_mass_closure}.
 
 \section{Transfers with a Finite Exhaust-Speed Ceiling}
 \label{sec:capped_ve}
@@ -236,13 +237,13 @@ We adapt the acceleration profile from the unlimited case, $a_\infty(t)$ from \e
 \subsection{Derivation via Constraint Matching}
 Since the Pontryagin conditions are preserved on the powered arcs, the scaled linear-in-time profile with an inserted coast is an admissible PMP candidate; enforcing the three global constraints selects the optimal member of this family.
 
-\paragraph{1. Distance Closure}
+\paragraph{Distance Closure}
 The total distance traveled, $L$, is the sum of distances covered during the first burn, the coast, and the final brake. Integrating the velocity profile for the scaled acceleration over the three segments and setting the sum to $L$ uniquely determines the throttle scale $k$ as a function of $\xi$:
 \begin{equation}
 k = \frac{1}{2f(\xi)}.
 \end{equation}
 
-\paragraph{2. Propellant Closure}
+\paragraph{Propellant Closure}
 The total change in the inverse of mass, $\Delta$, must be consumed over the two symmetric powered phases. Integrating the mass-flow equation \eqref{eq:mass_flow} using the scaled acceleration $a(t) = k\, a_\infty(t)$ gives:
 \begin{equation}
 \Delta = 2 \int_0^{t_c} \frac{a(t)^2}{2P} dt = \frac{k^2}{P} \int_0^{t_c} a_\infty(t)^2 dt.
@@ -256,7 +257,7 @@ t_f(\xi)=
 \label{eq:T_of_xi_new}
 \end{equation}
 
-\paragraph{3. Exhaust Speed Ceiling}
+\paragraph{Exhaust Speed Ceiling}
 The final constraint is that the exhaust speed must not exceed its ceiling, $v_e(t) \le v_{e,\max}$. The critical point is at the switch-off time $t=t_c$, where acceleration is lowest and mass has decreased. We impose the limit exactly at this point: $v_e(t_c) = 2P/(m_c a(t_c)) = v_{e,\max}$. The mass at this point, $m_c$, is the harmonic mean of the initial and dry masses, $m_c=2m_i m_\mathrm{dry}/(m_i+m_\mathrm{dry})$, since half the propellant is consumed. Substituting the expressions for $a(t_c)$, $k$, and $t_f(\xi)$ into this ceiling condition gives a single nonlinear equation for the optimal switch fraction~$\xi_\star$:
 \begin{align}
 F(\xi)&=0, \quad \text{where} \\
@@ -495,6 +496,147 @@ We combined analytic insight (two closed-form first integrals and a free-space b
 The author wishes to acknowledge the use of large language models (Google's Gemini and OpenAI's GPT) for assistance in improving the language and clarity of the manuscript, for aiding in the implementation of the numerical code and derivations of some of the analytical results. The results were tested and verified by the author.
 
 \appendices
+\section{Power-System Mass Closure for the Free-Space Benchmark}
+\label{sec:appendix_mass_closure}
+
+The benchmark result \eqref{eq:Tmin} was derived for prescribed initial and dry masses. 
+For high-power spacecraft, however, the dry mass may itself depend on the propulsion system, because both the power-conversion hardware and the radiators must be carried together with the payload. 
+This appendix shows how the free-space minimum-time law is modified under a simple power-system mass closure.
+
+Let \(P\) denote the useful jet power appearing in the rocket model, and let \(P_\mathrm{tot}\) be the total onboard engine power. 
+Define
+\begin{equation}
+  \alpha_\mathrm{eng} \equiv \frac{P_\mathrm{tot}}{m_\mathrm{eng}},
+  \qquad
+  \phi \equiv \frac{P_\mathrm{heat}}{P_\mathrm{tot}},
+  \qquad
+  \rho_\mathrm{rad} \equiv \frac{P_\mathrm{heat}}{m_\mathrm{rad}},
+\end{equation}
+where \(\alpha_\mathrm{eng}\) is the engine specific power, \(\phi\) is the waste-heat fraction, and \(\rho_\mathrm{rad}\) is the radiator specific heat-rejection capability. 
+Since only the fraction \(1-\phi\) of the total power is converted into useful jet power,
+\begin{equation}
+  P = (1-\phi)P_\mathrm{tot},
+  \qquad
+  P_\mathrm{heat} = \phi P_\mathrm{tot}
+  = \frac{\phi}{1-\phi}P.
+\end{equation}
+Therefore,
+\begin{equation}
+  m_\mathrm{eng}=\frac{P}{(1-\phi)\alpha_\mathrm{eng}},
+  \qquad
+  m_\mathrm{rad}=\frac{\phi}{1-\phi}\frac{P}{\rho_\mathrm{rad}}.
+\end{equation}
+
+Let \(m_\mathrm{pay}\) be the payload mass. 
+The dry mass can then be written in the affine form
+\begin{equation}
+  m_\mathrm{dry}=m_\mathrm{pay}+m_\mathrm{eng}+m_\mathrm{rad}
+  = m_\mathrm{pay}+\beta P,
+  \label{eq:mdry_beta_app}
+\end{equation}
+with
+\begin{equation}
+  \beta \equiv
+  \frac{1}{(1-\phi)\alpha_\mathrm{eng}}
+  +\frac{\phi}{(1-\phi)\rho_\mathrm{rad}}.
+  \label{eq:beta_def_app}
+\end{equation}
+The quantity \(\beta\) has units of kg/W and is the inverse of the effective propulsion-system specific power,
+\begin{equation}
+  \alpha_\mathrm{sys}\equiv \beta^{-1}.
+\end{equation}
+
+To close the mass model, assume a fixed fuel-to-dry-mass ratio
+\begin{equation}
+  \mathcal{R}\equiv \frac{m_\mathrm{fuel}}{m_\mathrm{dry}}.
+\end{equation}
+Then
+\begin{equation}
+  m_i=(1+\mathcal{R})m_\mathrm{dry},
+\end{equation}
+and the parameter \(\Delta\) from \eqref{eq:Tmin} becomes
+\begin{equation}
+  \Delta
+  = \frac{1}{m_\mathrm{dry}}-\frac{1}{m_i}
+  = \frac{\mathcal{R}}{(1+\mathcal{R})m_\mathrm{dry}}.
+  \label{eq:Delta_payload_app}
+\end{equation}
+Substituting \eqref{eq:mdry_beta_app} and \eqref{eq:Delta_payload_app} into the benchmark law \eqref{eq:Tmin} yields
+\begin{equation}
+  T(P)
+  =
+  \left[
+    \frac{6L^2(1+\mathcal{R})}{\mathcal{R}}
+    \left(
+      \frac{m_\mathrm{pay}}{P}+\beta
+    \right)
+  \right]^{1/3}.
+  \label{eq:T_payload_beta_app}
+\end{equation}
+Equation~\eqref{eq:T_payload_beta_app} is the free-space minimum-time law when the dry mass is allowed to scale linearly with propulsion power.
+
+Several immediate consequences follow. 
+First,
+\begin{equation}
+  T^3(P)
+  =
+  \frac{6L^2(1+\mathcal{R})}{\mathcal{R}}
+  \left(
+    \frac{m_\mathrm{pay}}{P}+\beta
+  \right),
+\end{equation}
+so that
+\begin{equation}
+  \frac{d}{dP}T^3(P)
+  =
+  -\frac{6L^2(1+\mathcal{R})}{\mathcal{R}}
+   \frac{m_\mathrm{pay}}{P^2}
+  <0.
+\end{equation}
+Under the idealized assumption of unlimited exhaust speed, the transfer time therefore decreases monotonically with power and has no finite mathematical optimum:
+\begin{equation}
+  P^\star \to \infty.
+\end{equation}
+Second, the family approaches the asymptotic lower bound
+\begin{equation}
+  T_\infty
+  =
+  \left[
+    \frac{6L^2(1+\mathcal{R})}{\mathcal{R}}\,\beta
+  \right]^{1/3}.
+  \label{eq:T_infty_beta_app}
+\end{equation}
+This lower bound arises because increasing \(P\) also increases the dry mass that must be accelerated.
+
+A convenient engineering scale is obtained by equating propulsion-hardware mass to payload mass,
+\begin{equation}
+  m_\mathrm{eng}+m_\mathrm{rad}=m_\mathrm{pay}.
+\end{equation}
+Using \eqref{eq:mdry_beta_app}, this defines the characteristic power
+\begin{equation}
+  \beta P_\mathrm{knee}=m_\mathrm{pay},
+  \qquad
+  P_\mathrm{knee}=\frac{m_\mathrm{pay}}{\beta}
+  = \alpha_\mathrm{sys}m_\mathrm{pay}.
+  \label{eq:Pknee_app}
+\end{equation}
+At this point the dry mass is \(m_\mathrm{dry}=2m_\mathrm{pay}\), and \eqref{eq:T_payload_beta_app} can be written as
+\begin{equation}
+  T(P)=T_\infty
+  \left(
+    1+\frac{P_\mathrm{knee}}{P}
+  \right)^{1/3}.
+  \label{eq:T_knee_form_app}
+\end{equation}
+Hence
+\begin{equation}
+  T(P_\mathrm{knee}) = 2^{1/3}T_\infty.
+  \label{eq:Tknee_app}
+\end{equation}
+
+Equations~\eqref{eq:T_payload_beta_app}--\eqref{eq:Tknee_app} provide an engineering interpretation of the free-space benchmark. 
+They are not used in the subsequent Sun-field optimal-control formulation, but they show how the cubic-root time law is modified when propulsion-system mass scales with power.
+
 \section{Direct Method Using Spline Parameterization}
 
 \label{sec:appendix}
