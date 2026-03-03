@@ -420,7 +420,7 @@ def make_plots(sol, params, show=False, config=DEFAULT_CONFIG):
         plt.savefig(r'c:\target-directory' +
                     # f'{np.round(r[-1]/AU, 1):.1f}-{np.round(np.rad2deg(theta[-1]), 1):.1f}.png', dpi=600)
                     f'{np.round(config.r0/AU, 1):.1f}-{np.round(np.rad2deg(theta[-1]), 1):.1f}.png', dpi=300)
-    plt.close()
+        plt.close()
 
 
 def main():
