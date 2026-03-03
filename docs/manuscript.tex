@@ -13,6 +13,7 @@
 \usepackage{cuted}
 \usepackage{lipsum}
 \usepackage{amsmath}
+\usepackage{amssymb}
 \usepackage{siunitx}
 \sisetup{output-exponent-marker=\ensuremath{\mathrm{e}}}
 
@@ -401,6 +402,204 @@ The thrust magnitude is proportional to the norm of the velocity costates, $\|\b
 \medskip
 This completes the analytical formulation. The problem is reduced to a boundary-value problem governed by the seven differential equations for the state $(r, \theta, v_r, v_\theta)$ and non-constant costates $(\lambda_r, \lambda_{v_r}, \lambda_{v_\theta})$, with the control given by \eqref{eq:ThrustLaw_Final}. A shooting method must find the initial values of the four costates $(\lambda_r(0), C_\theta, \lambda_{v_r}(0), \lambda_{v_\theta}(0))$ and the thrust constant $k_T$ that satisfy the specified final conditions at the optimal final time $t_f$.
 
+\section{Similarity Reduction of the Sun-Field Transfer Family}
+\label{sec:similarity_reduction}
+
+The Sun-field boundary-value problem from Sec.~\ref{sec:SunModel} is written in dimensional variables, but its family of circular-to-circular transfers possesses a useful scaling symmetry. 
+This symmetry allows the six nominal inputs
+\[
+(r_0,\; r_f,\; \Theta,\; P,\; m_i,\; m_\mathrm{dry})
+\]
+to be reduced to three dimensionless parameters. 
+The reduction is useful both conceptually and numerically: conceptually, because it shows which combinations of the physical inputs actually determine the transfer shape; numerically, because it makes it possible to tabulate a reduced atlas of normalized solutions and then map them back to dimensional trajectories for any specific spacecraft.
+
+\subsection{Canonical units and normalized variables}
+Let the departure radius define the distance unit,
+\begin{equation}
+  R_0 \equiv r_0,
+\end{equation}
+and let the associated Keplerian time and velocity scales be
+\begin{equation}
+  T_0 \equiv \sqrt{\frac{R_0^3}{\mu}},
+  \qquad
+  V_0 \equiv \frac{R_0}{T_0} = \sqrt{\frac{\mu}{R_0}}.
+\end{equation}
+The corresponding acceleration scale is
+\begin{equation}
+  A_0 \equiv \frac{V_0}{T_0} = \frac{\mu}{R_0^2}.
+\end{equation}
+
+We now define the dimensionless independent variable and normalized state by
+\begin{equation}
+  \tau \equiv \frac{t}{T_0},
+  \qquad
+  \bar r \equiv \frac{r}{R_0},
+  \qquad
+  \bar v_r \equiv \frac{v_r}{V_0},
+  \qquad
+  \bar v_\theta \equiv \frac{v_\theta}{V_0},
+\end{equation}
+and similarly normalize the thrust acceleration components as
+\begin{equation}
+  \bar a_r \equiv \frac{a_r}{A_0},
+  \qquad
+  \bar a_\theta \equiv \frac{a_\theta}{A_0}.
+\end{equation}
+The polar angle \(\theta\) is already dimensionless and is left unchanged.
+
+The mass is handled more conveniently through the inverse-mass increment that already appears in the free-space solution. 
+Define
+\begin{equation}
+  \Delta \equiv \frac{1}{m_\mathrm{dry}}-\frac{1}{m_i},
+\end{equation}
+and introduce the normalized fuel coordinate
+\begin{equation}
+  q(\tau) \equiv \frac{m(\tau)^{-1}-m_i^{-1}}{\Delta}.
+  \label{eq:q_def_similarity}
+\end{equation}
+By construction,
+\begin{equation}
+  q(0)=0,
+  \qquad
+  q(\tau_f)=1,
+\end{equation}
+so \(q\) measures the fraction of the available inverse-mass budget that has been consumed. 
+The dimensional mass is recovered from \(q\) as
+\begin{equation}
+  m(\tau)=\frac{1}{m_i^{-1}+\Delta q(\tau)}.
+  \label{eq:m_from_q_similarity}
+\end{equation}
+
+\subsection{Dimensionless form of the dynamics}
+Substituting the scaled variables into \eqref{eq:StateDyn} gives
+\begin{subequations}\label{eq:StateDyn_scaled}
+\begin{align}
+  \bar r' &= \bar v_r, \\
+  \theta' &= \frac{\bar v_\theta}{\bar r}, \\
+  \bar v_r' &= \frac{\bar v_\theta^2}{\bar r} - \frac{1}{\bar r^2} + \bar a_r, \\
+  \bar v_\theta' &= -\frac{\bar v_r\bar v_\theta}{\bar r} + \bar a_\theta, \\
+  q' &= \frac{\bar a_r^2+\bar a_\theta^2}{\kappa},
+\end{align}
+\end{subequations}
+where prime denotes differentiation with respect to \(\tau\), and where the single dimensionless propulsion parameter is
+\begin{equation}
+  \kappa \equiv 2P\Delta\,\frac{R_0^{5/2}}{\mu^{3/2}}
+  = 2P\left(\frac{1}{m_\mathrm{dry}}-\frac{1}{m_i}\right)\frac{r_0^{5/2}}{\mu^{3/2}}.
+  \label{eq:kappa_def}
+\end{equation}
+
+This is the key reduction. 
+In dimensional form, the mass-flow law \eqref{eq:mass_flow} depends separately on \(P\), \(m_i\), \(m_\mathrm{dry}\), and \(r_0\). 
+After scaling, those four quantities appear only through the single combination \(\kappa\). 
+The normalized equations therefore no longer distinguish between spacecraft that have different powers and masses but the same value of \(\kappa\). 
+Such spacecraft follow the same dimensionless trajectory and differ only by the dimensional scales used to reconstruct time, radius, velocity, and acceleration.
+
+\subsection{Dimensionless boundary conditions}
+For a transfer from a circular orbit of radius \(r_0\) to a circular orbit of radius \(r_f\), the normalized boundary conditions become
+\begin{subequations}\label{eq:BC_scaled}
+\begin{align}
+  \bar r(0) &= 1, &
+  \bar r(\tau_f) &= \rho, \\
+  \theta(0) &= 0, &
+  \theta(\tau_f) &= \Theta,\\
+  \bar v_r(0) &= 0, &  \bar v_r(\tau_f) &= 0, \\
+  \bar v_\theta(0) &= 1, &\bar v_\theta(\tau_f) &= \rho^{-1/2}, \\
+  q(0) &= 0, &q(\tau_f) &= 1,  
+\end{align}
+\end{subequations}
+with
+\begin{equation}
+  \rho \equiv \frac{r_f}{r_0}.
+  \label{eq:rho_def_similarity}
+\end{equation}
+The quantity \(\rho\) is the radius ratio, while
+\begin{equation}
+  \Theta \equiv \theta_f-\theta_0+2\pi N
+  \label{eq:Theta_def_similarity}
+\end{equation}
+is the unwrapped transfer angle, with \(N\in\mathbb Z_{\ge 0}\) selecting the number of completed revolutions. 
+Only the angular difference matters, not the absolute departure angle, because the Sun-field model is rotationally invariant. 
+This is the same symmetry that produced the first integral \(\lambda_\theta=C_\theta\) in Sec.~\ref{sec:SunModel}.
+
+Equations~\eqref{eq:StateDyn_scaled}--\eqref{eq:BC_scaled} show that the normalized transfer problem depends only on
+\[
+(\rho,\;\kappa,\;\Theta).
+\]
+This is the reduced parameter space.
+
+\subsection{Why the parameter space shrinks}
+It is useful to state explicitly what has been removed.
+
+First, the absolute orbital scale \(r_0\) disappears from the normalized equations because lengths are measured in units of \(r_0\), times in units of \(\sqrt{r_0^3/\mu}\), and velocities in units of \(\sqrt{\mu/r_0}\). 
+Only the ratio \(r_f/r_0\) remains.
+
+Second, the three propulsion quantities \(P\), \(m_i\), and \(m_\mathrm{dry}\) do not independently affect the normalized dynamics. 
+They enter only through the inverse-mass budget \(\Delta\) and then only through the combination \(\kappa\) in \eqref{eq:kappa_def}. 
+Thus three nominal propulsion parameters collapse to one similarity parameter.
+
+Third, the absolute phase angle \(\theta_0\) is irrelevant because the equations are invariant under a rigid rotation of the entire trajectory. 
+Only the total angular change \(\Theta\) matters.
+
+As a result, the circular-to-circular Sun-field transfer problem is parameterized, at the similarity level, by the three variables \((\rho,\kappa,\Theta)\) rather than the six nominal quantities \((r_0,r_f,\Theta,P,m_i,m_\mathrm{dry})\).
+
+
+\subsection{Forward map from nominal parameters to similarity space}
+For a given dimensional transfer request, the reduced coordinates are obtained directly from the nominal mission parameters:
+\begin{align}
+  \rho &= \frac{r_f}{r_0}, \\
+  \Theta &= \theta_f-\theta_0+2\pi N, \\
+  \Delta &= \frac{1}{m_\mathrm{dry}}-\frac{1}{m_i}, \\
+  \kappa &= 2P\Delta\,\frac{r_0^{5/2}}{\mu^{3/2}}.
+\end{align}
+Here \(N\) selects the desired multi-revolution branch. 
+Thus the similarity reduction is applied by first computing \((\rho,\kappa,\Theta)\) from the physical problem and then solving the corresponding normalized boundary-value problem.
+
+
+\subsection{Inverse map from a normalized atlas solution to dimensional variables}
+Suppose now that a normalized solution has been computed or interpolated in the reduced space \((\rho,\kappa,\Theta)\). 
+That solution consists of the dimensionless functions
+\[
+\bar r(\tau),\quad
+\theta(\tau),\quad
+\bar v_r(\tau),\quad
+\bar v_\theta(\tau),\quad
+q(\tau),\quad
+\bar a_r(\tau),\quad
+\bar a_\theta(\tau),
+\]
+together with the normalized final time \(\tau_f\).
+
+For the specific dimensional system defined by \(r_0\), \(m_i\), \(m_\mathrm{dry}\), and \(\mu\), the trajectory is recovered by the inverse scaling
+\begin{align}
+  t &= T_0\tau = \sqrt{\frac{r_0^3}{\mu}}\,\tau, \\
+  r(t) &= r_0\,\bar r(\tau), \\
+  \theta(t) &= \theta_0 + \theta(\tau), \\
+  v_r(t) &= \sqrt{\frac{\mu}{r_0}}\,\bar v_r(\tau), \\
+  v_\theta(t) &= \sqrt{\frac{\mu}{r_0}}\,\bar v_\theta(\tau), \\
+  a_r(t) &= \frac{\mu}{r_0^2}\,\bar a_r(\tau), \\
+  a_\theta(t) &= \frac{\mu}{r_0^2}\,\bar a_\theta(\tau), \\
+  m(t) &= \frac{1}{m_i^{-1}+\Delta q(\tau)}.
+\end{align}
+In particular, the dimensional flight time is
+\begin{equation}
+  t_f = \sqrt{\frac{r_0^3}{\mu}}\,\tau_f.
+\end{equation}
+
+This gives the practical recipe for using a precomputed solution atlas:
+\begin{enumerate}
+    \item Start from the nominal physical parameters.
+    \item Compute \(\rho\), \(\Theta\), and \(\kappa\) from the forward map above.
+    \item Retrieve or interpolate the normalized solution stored at that location in \((\rho,\kappa,\Theta)\)-space.
+    \item Recover the dimensional trajectory by the inverse scaling formulas.
+\end{enumerate}
+
+\subsection{What should be stored in the atlas}
+For numerical continuation, it is not necessary to store the full dimensional trajectory. 
+A more efficient choice is to store the normalized shooting data, namely the initial costates, the constant \(C_\theta\) associated with rotational symmetry, the thrust-gain constant \(k_T\), and the normalized flight time. 
+Because these quantities are stored in dimensionless form, the same atlas entry can be reused for any dimensional spacecraft that maps to the same \((\rho,\kappa,\Theta)\). 
+This is the computational advantage of the similarity reduction: one normalized solution represents an entire equivalence class of physical missions.
+
+
 \section{Numerical Procedure}
 Solving the two-point boundary-value problem requires a numerical approach. We employ a two-stage strategy that combines a global search to find an initial, feasible trajectory with a local refinement process that uses a continuation method to precisely reach the desired target \cite{Fogel2020,DiPasquale2024}.
 
@@ -446,6 +645,8 @@ This adaptive stepping ensures that the local optimizer is always given a proble
 All simulations, optimization procedures, and figures were generated using the accompanying open-source Python implementation \cite{Olsina2025}.
 The repository includes the complete solver, plotting scripts, and resulting graphs of trajectories, fuel and acceleration magnitudes.
 
+\pagebreak
+
 \section{Results}
 The numerical procedure was applied to compute minimum-time transfers from a 1\,AU circular orbit (representing Earth) to various target circular orbits. The targets are defined by their final radius and true anomaly relative to the starting position. A 1\,GW engine was assumed with an initial vehicle mass of 3000\,tons and a dry mass of 1000\,tons.
 
@@ -454,6 +655,13 @@ Figures~\ref{fig:final_theta} and~\ref{fig:starting_theta} show the relationship
 Figures~\ref{fig:oberth_figure} and~\ref{fig:oberth_figure2} show example trajectories. A key feature of these optimal paths is the inclusion of an Oberth maneuver. To gain orbital energy efficiently, the spacecraft first thrusts to lower its periapsis, making a close pass of the Sun. It then applies its main acceleration burn at maximum velocity near the Sun, which is far more effective at increasing orbital energy than thrusting in a higher orbit \cite{Oberth1923}. This is visible in the plots as an initial dip towards the Sun and a corresponding peak in the acceleration magnitude.
 
 Table~\ref{tab:transfer_times_final_anomaly} and Table~\ref{tab:transfer_times_initial_anomaly} present the resulting transfer times in days for a grid of targets. As expected, transfers to more distant orbits take longer. The notation 'N/A' indicates that the transfer was not achievable with the given propellant load. This typically happens because there is a fixed constraint that cannot be overcome by continuous change of the initial conditions. Figure \ref{fig:oberth_figure2} shows trajectory  very close to such a barrier, with very extreme Oberth maneuver around the Sun that cannot be extended further. 
+
+
+\section{Conclusion}
+We combined analytic insight (two closed-form first integrals and a free-space benchmark solution) with a robust continuation strategy to solve the time-optimal transfer problem for a constant-power, variable-$I_{\!sp}$ engine. The method successfully generates high-performance trajectories, including those featuring Oberth maneuvers, for transfers out to the giant planets with a gigawatt-class engine. Recent developments in variable-$I_{\!sp}$ propulsion and adaptive low-thrust guidance algorithms \cite{PinoHowell2020,DiPasquale2024} suggest that further improvements in mission performance are possible. Future work will extend this framework to three-dimensional rendezvous problems.
+
+\section*{Acknowledgment}
+The author wishes to acknowledge the use of large language models (Google's Gemini and OpenAI's GPT) for assistance in improving the language and clarity of the manuscript, for aiding in the implementation of the numerical code and derivations of some of the analytical results. The results were tested and verified by the author.
 
 \begin{figure}[htbp]
     \centering
@@ -489,11 +697,7 @@ Table~\ref{tab:transfer_times_final_anomaly} and Table~\ref{tab:transfer_times_i
 
 
 \FloatBarrier
-\section{Conclusion}
-We combined analytic insight (two closed-form first integrals and a free-space benchmark solution) with a robust continuation strategy to solve the time-optimal transfer problem for a constant-power, variable-$I_{\!sp}$ engine. The method successfully generates high-performance trajectories, including those featuring Oberth maneuvers, for transfers out to the giant planets with a gigawatt-class engine. Recent developments in variable-$I_{\!sp}$ propulsion and adaptive low-thrust guidance algorithms \cite{PinoHowell2020,DiPasquale2024} suggest that further improvements in mission performance are possible. Future work will extend this framework to three-dimensional rendezvous problems.
 
-\section*{Acknowledgment}
-The author wishes to acknowledge the use of large language models (Google's Gemini and OpenAI's GPT) for assistance in improving the language and clarity of the manuscript, for aiding in the implementation of the numerical code and derivations of some of the analytical results. The results were tested and verified by the author.
 
 \appendices
 \section{Power-System Mass Closure for the Free-Space Benchmark}

@@ -34,7 +34,6 @@ def load_module_from_path(module_path: str, module_name: str = "user_solver_modu
     return module
 
 
-
 def compute_edges_from_centers(values, log_spacing=False):
     values = np.asarray(values, dtype=float)
     if values.ndim != 1 or len(values) < 2:
@@ -54,12 +53,10 @@ def compute_edges_from_centers(values, log_spacing=False):
     return edges
 
 
-
 def infer_theta_indices(theta_grid, n_panels):
     if len(theta_grid) <= n_panels:
         return np.arange(len(theta_grid))
     return np.linspace(0, len(theta_grid) - 1, n_panels, dtype=int)
-
 
 
 def digitize_to_cell_index(edges, value):
@@ -131,8 +128,7 @@ def make_status_figure(state, rho_grid, kappa_grid, theta_grid, nrows=3, ncols=4
     unseen = int(np.count_nonzero(state == STATE_UNSEEN))
     total = int(state.size)
 
-    fig.suptitle(
-        "Atlas state slices — click a green cell to replay its trajectory\n"
+    fig.suptitle("Atlas state slices — click a green cell to replay its trajectory\n"
         f"solved={solved}, queued={queued}, retryable={retryable}, dead={dead}, unseen={unseen}, total={total}",
         fontsize=14,
     )
@@ -147,14 +143,14 @@ def main():
     parser.add_argument(
         "--solver",
         default="../rocketHamilton.py",
-        help="Path to the solver script that defines TrajectoryConfig, integrate_trajectory, and make_plots",
+        help="Path to the solver script that defines TrajectoryConfig, integrate_fixed_time, and make_plots",
     )
     parser.add_argument("--nrows", type=int, default=3, help="Number of subplot rows")
     parser.add_argument("--ncols", type=int, default=4, help="Number of subplot columns")
     args = parser.parse_args()
 
     solver = load_module_from_path(args.solver)
-    required_names = ["TrajectoryConfig", "AU", "MU_SI", "integrate_trajectory", "make_plots"]
+    required_names = ["TrajectoryConfig", "AU", "MU_SI", "integrate_fixed_time", "make_plots"]
     missing = [name for name in required_names if not hasattr(solver, name)]
     if missing:
         raise AttributeError(f"Solver module is missing required names: {missing}")
