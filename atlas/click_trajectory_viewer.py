@@ -38,7 +38,7 @@ DISPLAY_NAMES = {
     DISPLAY_SOLVED_LEFT: "solved: Sun left",
     DISPLAY_SOLVED_RIGHT: "solved: Sun right",
     DISPLAY_SOLVED_UNDEFINED: "solved: undefined/far",
-    DISPLAY_RETRYABLE_FAILED: "retryable failed",
+    DISPLAY_RETRYABLE_FAILED: "solved: boundary mismatch",
     DISPLAY_DEAD_FAILED: "dead failed",
 }
 
@@ -51,6 +51,18 @@ BRANCH_NAMES = {
     BRANCH_RIGHT: "Sun right",
     BRANCH_UNDEFINED: "undefined / not enclosing Sun",
 }
+
+# --- Tunables ---------------------------------------------------------------
+# Reduced undefined threshold: classify to left/right if |turns| exceeds this value.
+# (Old behavior effectively required |turns| >= 0.5 due to rounding.)
+BRANCH_UNDEFINED_TURNS_EPS = 0.15  # smaller => more willing to decide
+
+# Flag a "solved" cell as boundary-mismatched if the integrated fixed-time endpoint
+# misses rho/theta by more than these tolerances.
+RHO_TOL_REL = 1e-2     # relative tolerance on rho (r_end / AU)
+# RHO_TOL_ABS = 1e-2     # absolute tolerance on rho
+THETA_TOL_DEG = 1.0    # degrees (wrapped to [-180, 180])
+# ---------------------------------------------------------------------------
 
 
 def load_module_from_path(module_path: str, module_name: str = "user_solver_module"):
@@ -95,45 +107,75 @@ def digitize_to_cell_index(edges, value):
     return int(idx)
 
 
-def closed_curve_winding_number(x, y):
+def wrap_to_pi(angle_rad: float) -> float:
+    return float(np.arctan2(np.sin(angle_rad), np.cos(angle_rad)))
+
+
+def closed_curve_turns_about_origin(x, y):
     """
-    Winding number of the closed curve formed by the trajectory plus the straight
-    chord from the endpoint back to the start. Positive/negative sign labels the
-    two topological families around the Sun; zero means the Sun is not enclosed.
+    Returns the net turns (total angle change / 2π) of the closed curve formed by
+    the trajectory plus the straight chord from the endpoint back to the start.
+
+    Sign of turns labels the two families around the Sun; near-zero means the Sun
+    is not enclosed (or enclosure is ambiguous).
     """
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
 
     if x.ndim != 1 or y.ndim != 1 or x.size != y.size or x.size < 2:
-        return 0
+        return 0.0
 
-    # If the path gets extremely close to the Sun, the side classification is not stable.
+    # If the path gets extremely close to the Sun, any "side" classification is unstable.
     r = np.hypot(x, y)
-    if np.any(r < 1e-6):
-        return 0
+    if np.any(r < 1e-9):
+        return 0.0
 
     x_closed = np.concatenate([x, [x[0]]])
     y_closed = np.concatenate([y, [y[0]]])
     angles = np.unwrap(np.arctan2(y_closed, x_closed))
     total_turn = angles[-1] - angles[0]
-    return int(np.rint(total_turn / (2.0 * np.pi)))
+    return float(total_turn / (2.0 * np.pi))
 
 
 def classify_solution_branch(sol, solver):
     x = (sol.y[0] * np.cos(sol.y[1])) / solver.AU
     y = (sol.y[0] * np.sin(sol.y[1])) / solver.AU
-    winding = closed_curve_winding_number(x, y)
 
-    if winding > 0:
-        return BRANCH_LEFT, winding
-    if winding < 0:
-        return BRANCH_RIGHT, winding
-    return BRANCH_UNDEFINED, winding
+    turns = closed_curve_turns_about_origin(x, y)
+
+    if turns > BRANCH_UNDEFINED_TURNS_EPS:
+        branch = BRANCH_LEFT
+    elif turns < -BRANCH_UNDEFINED_TURNS_EPS:
+        branch = BRANCH_RIGHT
+    else:
+        branch = BRANCH_UNDEFINED
+
+    # For display/debug, keep a small signed integer.
+    # If rounding would give 0 but we classified left/right, keep ±1.
+    winding = int(np.rint(turns))
+    if winding == 0 and branch != BRANCH_UNDEFINED:
+        winding = int(np.sign(turns))
+    return branch, winding, turns
 
 
-def classify_all_solved_points(state, data, rho_grid, kappa_grid, solver):
+def check_boundary_mismatch(sol, rho_target, theta_target_rad, solver):
+    r_end = float(sol.y[0, -1] / solver.AU)
+    theta_end = float(sol.y[1, -1])
+
+    dr = r_end - float(rho_target)
+    rho_tol = max(0.0, RHO_TOL_REL * float(rho_target))
+
+    dtheta = wrap_to_pi(theta_end - float(theta_target_rad))
+    theta_tol = np.deg2rad(THETA_TOL_DEG)
+
+    mismatch = (abs(dr) > rho_tol) or (abs(dtheta) > theta_tol)
+    return mismatch, r_end, dr, float(dtheta)
+
+
+def classify_all_solved_points(state, data, rho_grid, kappa_grid, theta_grid, solver):
     branch_map = np.full(state.shape, BRANCH_UNDEFINED, dtype=np.int8)
     winding_map = np.zeros(state.shape, dtype=np.int8)
+    mismatch_map = np.zeros(state.shape, dtype=bool)
 
     solved_indices = np.argwhere(state == STATE_SOLVED)
     total = int(len(solved_indices))
@@ -144,45 +186,57 @@ def classify_all_solved_points(state, data, rho_grid, kappa_grid, solver):
         if row.size < 6 or not np.all(np.isfinite(row[:6])):
             branch_map[i, j, k] = BRANCH_UNDEFINED
             winding_map[i, j, k] = 0
+            mismatch_map[i, j, k] = True
             continue
 
         rho = float(rho_grid[i])
         kappa = float(kappa_grid[j])
+        theta_target = float(theta_grid[k])
+
         t_days = float(row[5])
         params = row[:5]
         _, config = get_canonical_mission_config(rho, kappa)
 
         try:
             sol = solver.integrate_fixed_time(params, t_days, config=config)
-            branch, winding = classify_solution_branch(sol, solver)
+            branch, winding, _turns = classify_solution_branch(sol, solver)
+            mismatch, _r_end, _dr, _dtheta = check_boundary_mismatch(sol, rho, theta_target, solver)
         except Exception as exc:
             print(f"  Warning: classification failed for cell {(int(i), int(j), int(k))}: {exc}")
-            branch, winding = BRANCH_UNDEFINED, 0
+            branch, winding, mismatch = BRANCH_UNDEFINED, 0, True
 
         branch_map[i, j, k] = np.int8(branch)
         winding_map[i, j, k] = np.int8(np.clip(winding, -9, 9))
+        mismatch_map[i, j, k] = bool(mismatch)
 
         if (n % 100 == 0) or (n == total):
             print(f"  classified {n}/{total}")
 
-    return branch_map, winding_map
+    return branch_map, winding_map, mismatch_map
 
 
-def make_display_state(state, branch_map):
+def make_display_state(state, branch_map, mismatch_map):
     display = np.full(state.shape, DISPLAY_UNSEEN, dtype=np.uint8)
     display[state == STATE_UNSEEN] = DISPLAY_UNSEEN
     display[state == STATE_QUEUED] = DISPLAY_QUEUED
-    display[state == STATE_RETRYABLE_FAILED] = DISPLAY_RETRYABLE_FAILED
+    # If these exist in your atlas, treat as "dead failed" for display purposes.
+    display[state == STATE_RETRYABLE_FAILED] = DISPLAY_DEAD_FAILED
     display[state == STATE_DEAD_FAILED] = DISPLAY_DEAD_FAILED
 
     solved = (state == STATE_SOLVED)
-    display[solved & (branch_map == BRANCH_LEFT)] = DISPLAY_SOLVED_LEFT
-    display[solved & (branch_map == BRANCH_RIGHT)] = DISPLAY_SOLVED_RIGHT
-    display[solved & (branch_map == BRANCH_UNDEFINED)] = DISPLAY_SOLVED_UNDEFINED
+
+    # Mark boundary-mismatched solved cells with the special color (repurposed DISPLAY_RETRYABLE_FAILED).
+    display[solved & mismatch_map] = DISPLAY_RETRYABLE_FAILED
+
+    # Normal solved cells: shade by branch family.
+    ok = solved & (~mismatch_map)
+    display[ok & (branch_map == BRANCH_LEFT)] = DISPLAY_SOLVED_LEFT
+    display[ok & (branch_map == BRANCH_RIGHT)] = DISPLAY_SOLVED_RIGHT
+    display[ok & (branch_map == BRANCH_UNDEFINED)] = DISPLAY_SOLVED_UNDEFINED
     return display
 
 
-def make_status_figure(display_state, state, branch_map, rho_grid, kappa_grid, theta_grid, nrows=3, ncols=4, figsize=(16, 10)):
+def make_status_figure(display_state, state, branch_map, mismatch_map, rho_grid, kappa_grid, theta_grid, nrows=3, ncols=4, figsize=(16, 10)):
     expected_shape = (len(rho_grid), len(kappa_grid), len(theta_grid))
     if display_state.shape != expected_shape:
         raise ValueError(f"display_state.shape={display_state.shape}, expected {expected_shape}")
@@ -193,7 +247,7 @@ def make_status_figure(display_state, state, branch_map, rho_grid, kappa_grid, t
         "#0b6e3a",  # solved: Sun left
         "#54a24b",  # solved: Sun right
         "#b7e4c7",  # solved: undefined / far
-        "#f2cf5b",  # retryable failed
+        "#f2cf5b",  # solved: boundary mismatch
         "#e45756",  # dead failed
     ])
     norm = BoundaryNorm(np.arange(-0.5, 7.5, 1.0), cmap.N)
@@ -240,19 +294,22 @@ def make_status_figure(display_state, state, branch_map, rho_grid, kappa_grid, t
     cbar.set_label("Cell state / trajectory family")
 
     solved = int(np.count_nonzero(state == STATE_SOLVED))
-    solved_left = int(np.count_nonzero((state == STATE_SOLVED) & (branch_map == BRANCH_LEFT)))
-    solved_right = int(np.count_nonzero((state == STATE_SOLVED) & (branch_map == BRANCH_RIGHT)))
-    solved_undefined = int(np.count_nonzero((state == STATE_SOLVED) & (branch_map == BRANCH_UNDEFINED)))
+    mismatch = int(np.count_nonzero((state == STATE_SOLVED) & mismatch_map))
+    ok = solved - mismatch
+
+    solved_left = int(np.count_nonzero((state == STATE_SOLVED) & (~mismatch_map) & (branch_map == BRANCH_LEFT)))
+    solved_right = int(np.count_nonzero((state == STATE_SOLVED) & (~mismatch_map) & (branch_map == BRANCH_RIGHT)))
+    solved_undefined = int(np.count_nonzero((state == STATE_SOLVED) & (~mismatch_map) & (branch_map == BRANCH_UNDEFINED)))
+
     queued = int(np.count_nonzero(state == STATE_QUEUED))
-    retryable = int(np.count_nonzero(state == STATE_RETRYABLE_FAILED))
-    dead = int(np.count_nonzero(state == STATE_DEAD_FAILED))
+    dead = int(np.count_nonzero((state == STATE_DEAD_FAILED) | (state == STATE_RETRYABLE_FAILED)))
     unseen = int(np.count_nonzero(state == STATE_UNSEEN))
     total = int(state.size)
 
     fig.suptitle(
-        "Atlas state slices — solved cells are shaded by trajectory family around the Sun\n"
-        f"solved={solved} (left={solved_left}, right={solved_right}, undefined={solved_undefined}), "
-        f"queued={queued}, retryable={retryable}, dead={dead}, unseen={unseen}, total={total}",
+        "Atlas state slices — solved cells shaded by trajectory family; yellow marks boundary mismatch"
+        f"solved={solved} (ok={ok}: left={solved_left}, right={solved_right}, undefined={solved_undefined}; mismatch={mismatch}), "
+        f"queued={queued}, dead={dead}, unseen={unseen}, total={total}",
         fontsize=14,
     )
     return fig, axes, rho_edges, kappa_edges
@@ -260,7 +317,7 @@ def make_status_figure(display_state, state, branch_map, rho_grid, kappa_grid, t
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Interactive atlas viewer: solved cells are shaded by whether the trajectory goes Sun-left, Sun-right, or neither."
+        description="Interactive atlas viewer: solved cells are shaded by whether the trajectory goes Sun-left, Sun-right, or neither; boundary mismatches are highlighted."
     )
     parser.add_argument("--npz_path", help="Path to trajectory_atlas.npz / trajectory_atlas_final.npz")
     parser.add_argument(
@@ -270,6 +327,8 @@ def main():
     )
     parser.add_argument("--nrows", type=int, default=3, help="Number of subplot rows")
     parser.add_argument("--ncols", type=int, default=4, help="Number of subplot columns")
+    parser.add_argument("--skip_mod", type=int, default=2,
+                        help="Subsample factor for rho/kappa/theta axes (e.g., 5 shows every 5th)")
     args = parser.parse_args()
 
     solver = load_module_from_path(args.solver)
@@ -278,8 +337,9 @@ def main():
     if missing:
         raise AttributeError(f"Solver module is missing required names: {missing}")
 
-    skip_mod = 5
     bundle = np.load(args.npz_path)
+    skip_mod = int(args.skip_mod)
+
     rho_grid = bundle["rho"][::skip_mod]
     kappa_grid = bundle["kappa"][::skip_mod]
     theta_grid = bundle["theta"][::skip_mod]
@@ -291,11 +351,11 @@ def main():
     if data.shape[-1] < 6:
         raise ValueError(f"Expected last axis of data to hold at least 6 values [params..., t_days], got shape {data.shape}")
 
-    branch_map, winding_map = classify_all_solved_points(state, data, rho_grid, kappa_grid, solver)
-    display_state = make_display_state(state, branch_map)
+    branch_map, winding_map, mismatch_map = classify_all_solved_points(state, data, rho_grid, kappa_grid, theta_grid, solver)
+    display_state = make_display_state(state, branch_map, mismatch_map)
 
     fig, axes, rho_edges, kappa_edges = make_status_figure(
-        display_state, state, branch_map, rho_grid, kappa_grid, theta_grid, nrows=args.nrows, ncols=args.ncols
+        display_state, state, branch_map, mismatch_map, rho_grid, kappa_grid, theta_grid, nrows=args.nrows, ncols=args.ncols
     )
 
     status_text = fig.text(
@@ -326,11 +386,11 @@ def main():
         cell_state = np.uint8(state[i, j, k])
         rho = float(rho_grid[i])
         kappa = float(kappa_grid[j])
-        theta = float(theta_grid[k])
+        theta_target = float(theta_grid[k])
 
         summary = (
             f"Cell (i={i}, j={j}, k={k}) | rho={rho:.6g}, kappa={kappa:.6g}, "
-            f"theta={np.degrees(theta):.2f}° | state={STATE_NAMES.get(cell_state, str(cell_state))}"
+            f"theta={np.degrees(theta_target):.2f}° | state={STATE_NAMES.get(cell_state, str(cell_state))}"
         )
         print(summary)
 
@@ -348,15 +408,28 @@ def main():
         t_days = float(row[5])
         _, config = get_canonical_mission_config(rho, kappa)
         params = row[:5]
+
         branch = int(branch_map[i, j, k])
         winding = int(winding_map[i, j, k])
+        is_mismatch = bool(mismatch_map[i, j, k])
 
         status_text.set_text(
-            summary + f" — {BRANCH_NAMES.get(branch, 'unknown')} (winding={winding}), replaying t={t_days:.3f} d"
+            summary
+            + f" — {BRANCH_NAMES.get(branch, 'unknown')} (winding={winding}), "
+            + ("BOUNDARY MISMATCH, " if is_mismatch else "")
+            + f"replaying t={t_days:.3f} d"
         )
         fig.canvas.draw_idle()
 
         sol_opt = solver.integrate_fixed_time(params, t_days, config=config)
+
+        # Print endpoint residuals when replaying.
+        mismatch, r_end, dr, dtheta = check_boundary_mismatch(sol_opt, rho, theta_target, solver)
+        print(
+            f"  endpoint check: r_end={r_end:.6g} AU (dr={dr:+.3e}), "
+            f"dtheta={np.degrees(dtheta):+.3f} deg, mismatch={mismatch}"
+        )
+
         solver.make_plots(sol_opt, params, show=True, config=config)
 
     fig.canvas.mpl_connect("button_press_event", on_click)
