@@ -11,6 +11,7 @@ Output: 'trajectory_atlas.npz'
 import time
 import multiprocessing as mp
 import os
+import argparse
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, BoundaryNorm
 import numpy as np
@@ -64,7 +65,7 @@ NEIGHBOR_OFFSETS = [
 ]
 
 PROGRESS_INTERVAL_SEC = 30.0
-SAVE_INTERVAL_SEC = 120.0
+SAVE_INTERVAL_SEC = 4*120.0
 MAX_IN_FLIGHT_FACTOR = 4   # allow a few waves of queued work beyond worker count
 
 
@@ -155,8 +156,14 @@ def worker_task(task_data):
             config=config,
         )
 
-        # print(info.fun, info.success)
-        success = info.success
+        # Acceptance check: apply the same endpoint tolerances as the viewer.
+        # If not satisfied, report failure (the wavefront can try another seed).
+        sol_check = rh.integrate_fixed_time(params, t_days, config=config)
+        mismatch, _r_end, _dr, _dtheta = rh.check_boundary_mismatch(
+            sol_check, r_target_au, theta, config=config
+        )
+
+        success = bool(info.success) and (not mismatch)
         return (indices, success, params, t_days)
 
     except Exception:
@@ -207,7 +214,19 @@ def save_checkpoint(filename, rho_grid, kappa_grid, theta_grid, atlas, state, re
     )
 
 
-def generate():
+def load_checkpoint(filename):
+    """Load a restart/checkpoint snapshot."""
+    bundle = np.load(filename)
+    rho_grid = bundle["rho"]
+    kappa_grid = bundle["kappa"]
+    theta_grid = bundle["theta"]
+    atlas = bundle["data"]
+    state = bundle["state"]
+    retry_count = bundle.get("retry_count", np.zeros(state.shape, dtype=np.uint8))
+    return rho_grid, kappa_grid, theta_grid, atlas, state, retry_count
+
+
+def generate(resume_path=None):
     # Windows support for multiprocessing
     mp.freeze_support()
 
@@ -223,7 +242,38 @@ def generate():
     state = np.zeros(data_shape[:3], dtype=np.uint8)
     retry_count = np.zeros(data_shape[:3], dtype=np.uint8)
 
-    print(f"[-] Initializing Parallel Atlas: {data_shape} points.")
+    if resume_path is not None and os.path.exists(resume_path):
+        print(f"[-] Resuming from checkpoint: {resume_path}")
+        r2, k2, t2, atlas2, state2, retry2 = load_checkpoint(resume_path)
+
+        if (len(r2) != N_RHO) or (len(k2) != N_KAPPA) or (len(t2) != N_THETA):
+            raise ValueError(
+                "Checkpoint grid sizes do not match this script's grid constants. "
+                "(Update N_RHO/N_KAPPA/N_THETA or regenerate the checkpoint.)"
+            )
+
+        # Copy arrays into our preallocated buffers for consistent dtype.
+        rho_grid = r2
+        kappa_grid = k2
+        theta_grid = t2
+        atlas[...] = atlas2
+        state[...] = state2
+        retry_count[...] = retry2
+
+        # Requested restart behavior:
+        # - Remove all cells that are in state queued and mark them as unknown.
+        queued_mask = (state == STATE_QUEUED)
+        if np.any(queued_mask):
+            state[queued_mask] = STATE_UNSEEN
+
+        print(
+            f"    checkpoint stats: solved={int(np.count_nonzero(state==STATE_SOLVED))}, "
+            f"queued(reset)={int(np.count_nonzero(queued_mask))}, "
+            f"retryable={int(np.count_nonzero(state==STATE_RETRYABLE_FAILED))}, "
+            f"dead={int(np.count_nonzero(state==STATE_DEAD_FAILED))}"
+        )
+    else:
+        print(f"[-] Initializing Parallel Atlas: {data_shape} points.")
 
     num_workers = max(1, mp.cpu_count() - 1)
     print(f"[-] Spawning {num_workers} worker processes...")
@@ -235,14 +285,15 @@ def generate():
     start_node = (idx_rho_start, idx_kappa_start, idx_theta_start)
 
     total_points = N_RHO * N_KAPPA * N_THETA
-    solved_count = 0
+    # If resuming, keep solved_count in sync with the checkpoint.
+    solved_count = int(np.count_nonzero(state == STATE_SOLVED))
     failed_count = 0
     submitted_count = 0
     completed_count = 0
     start_time = time.time()
     last_progress_time = start_time
     last_save_time = start_time
-    last_solved_count = 0
+    last_solved_count = solved_count
     last_completed_count = 0
 
     viz_dir = "atlas_state_plots"
@@ -342,9 +393,34 @@ def generate():
             print(f"    [checkpoint] Saved {checkpoint_filename}")
             last_save_time = now
 
-    # Seed initial task
-    enqueue_task(start_node, None, None)
-    print("[-] Anchor queued. Starting asynchronous frontier expansion...")
+    def seed_frontier_from_solved():
+        """Rebuild the wavefront from existing solved cells."""
+        solved_indices = np.argwhere(state == STATE_SOLVED)
+        if len(solved_indices) == 0:
+            # No solved cells to expand from; fall back to the anchor.
+            enqueue_task(start_node, None, None)
+            return
+
+        for i, j, k in solved_indices:
+            row = atlas[int(i), int(j), int(k), :]
+            if not np.all(np.isfinite(row)):
+                continue
+            seed_params = row[:5]
+            seed_time = float(row[5])
+
+            for di, dj, dk in NEIGHBOR_OFFSETS:
+                ni, nj, nk = int(i) + di, int(j) + dj, int(k) + dk
+                if not in_bounds(ni, nj, nk):
+                    continue
+                enqueue_task((ni, nj, nk), seed_params, seed_time)
+
+    # Seed initial work
+    if resume_path is not None and os.path.exists(resume_path):
+        seed_frontier_from_solved()
+        print("[-] Wavefront rebuilt from solved cells. Restarting solvers...")
+    else:
+        enqueue_task(start_node, None, None)
+        print("[-] Anchor queued. Starting asynchronous frontier expansion...")
 
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
         submit_ready_tasks(executor)
@@ -603,4 +679,11 @@ def visualize_atlas_state_slices(
 
 
 if __name__ == "__main__":
-    generate()
+    parser = argparse.ArgumentParser(description="Generate / resume the Time-Optimal Trajectory Atlas")
+    parser.add_argument(
+        "--resume",
+        default=None,
+        help="Path to an existing trajectory_atlas*.npz to resume from (queued cells are reset to unseen)",
+    )
+    args = parser.parse_args()
+    generate(resume_path=args.resume)
