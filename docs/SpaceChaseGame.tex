@@ -1,0 +1,360 @@
+
+\documentclass[journal, a4paper]{IEEEtran}
+%\documentclass[12pt,onecolumn]{IEEEtran}
+
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{stfloats}
+\usepackage{placeins}
+\usepackage{url}
+\usepackage{cuted}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{siunitx}
+\sisetup{output-exponent-marker=\ensuremath{\mathrm{e}}}
+
+\begin{document}
+
+\title{A Constant-Power, Variable-$I_{\!sp}$ Pursuit--Evasion Game in Free Space}
+
+\author{Jan~Ol\v{s}ina\\[1ex] Independent Researcher\\
+email: \texttt{jan.olsina@gmail.com}.}
+
+\maketitle
+
+\begin{abstract}
+We formulate and solve a two-player pursuit--evasion game in two-dimensional free space for the constant-power, variable-$I_{\!sp}$ rocket model. Ship~A (the evader) aims to reach a fixed base point~$Z$ and arrive with zero velocity. Ship~B (the pursuer) wins by intercepting ship~A before docking, either by matching both position and velocity (boarding) or by reaching the same position without velocity matching (shooting). By rewriting the mass-flow constraint in inverse-mass form, the rocket model reduces exactly to a double integrator with an $L^2$ control budget. This converts the game into a reach--avoid problem with quadratic energy constraints. We derive closed-form minimum-energy costs for fixed-time transfers, explicit capture conditions in relative coordinates, and sharp win criteria for both variants. The analysis explains direct escape, detour-and-return escape, and blocking strategies as different feasible solutions of the reach--avoid inequalities.
+\end{abstract}
+
+\section{Introduction}
+In free space, a constant-power engine that can vary its exhaust speed transforms the traditional ``thrust-limited'' picture into an ``energy-limited'' one: the propellant expenditure depends on the square of the commanded acceleration.
+This property yields closed-form solutions for minimum-time and minimum-energy transfers and makes it possible to analyze pursuit--evasion games with analytic reachable sets.
+
+This manuscript is self-contained. It adopts the same rocket model and notation as the companion work on time-optimal transfers and focuses exclusively on the gravity-free benchmark and its two-player extension.
+
+\section{Rocket Model and Energy Budget}
+\label{sec:model}
+
+We consider planar motion. A ship has position $r(t)\in\mathbb{R}^2$, velocity $v(t)\in\mathbb{R}^2$, mass $m(t)>0$, and control acceleration $a(t)\in\mathbb{R}^2$.
+The constant-power, variable-$I_{\!sp}$ model is
+\begin{equation}
+\dot r = v,\qquad
+\dot v = a,\qquad
+\dot m = -\frac{m^2\|a\|^2}{2P},
+\label{eq:rocket}
+\end{equation}
+where $P>0$ is the useful jet power.
+Define the inverse-mass state $\mu(t)\equiv 1/m(t)$. Then
+\begin{equation}
+\dot\mu = \frac{\|a\|^2}{2P}.
+\label{eq:mu_dot}
+\end{equation}
+Let $m_i$ be the initial mass and $m_{\rm dry}$ the dry mass. The ship is feasible only while $m(t)\ge m_{\rm dry}$, equivalently
+\begin{equation}
+\mu(t)\le \mu_{\rm dry}\equiv \frac{1}{m_{\rm dry}}.
+\end{equation}
+The total available change in inverse mass is therefore the constant
+\begin{equation}
+\Delta \equiv \mu_{\rm dry}-\mu(0) = \frac{1}{m_{\rm dry}}-\frac{1}{m_i}>0.
+\label{eq:Delta_def}
+\end{equation}
+Integrating \eqref{eq:mu_dot} implies the exact quadratic control budget
+\begin{equation}
+\int_0^{T} \|a(t)\|^2 dt \le 2P\Delta
+\qquad\text{for any finite horizon $T$.}
+\label{eq:L2_budget}
+\end{equation}
+Hence, in free space the rocket \eqref{eq:rocket} is exactly a double integrator with an $L^2$ constraint.
+
+For each ship $S\in\{A,B\}$ we define
+\begin{equation}
+\Lambda_S \equiv 2P_S\Delta_S
+= 2P_S\!\left(\frac{1}{m_{{\rm dry},S}}-\frac{1}{m_{i,S}}\right),
+\label{eq:Lambda_def}
+\end{equation}
+and we denote $e_S\equiv \sqrt{\Lambda_S}$.
+The set of admissible controls is
+\begin{equation}
+\mathcal{U}_S(T)=\left\{a(\cdot): \int_0^T \|a(t)\|^2dt \le \Lambda_S\right\}.
+\end{equation}
+
+\section{Single-Agent Fixed-Time Minimum-Energy Transfer}
+\label{sec:single_agent}
+
+This section summarizes the minimum required energy to meet boundary conditions in a prescribed time. These formulas are the workhorses of the game solution.
+
+\subsection{State-to-state transfer}
+Given $(r_0,v_0)$ at $t=0$ and $(r_1,v_1)$ at $t=T$, the minimum of $\int_0^T \|a(t)\|^2dt$ subject to $\dot r=v$, $\dot v=a$ is achieved by an acceleration that is affine in time, $a(t)=\alpha t+\beta$, in each component.
+The resulting minimum energy is
+\begin{equation}
+C(T;r_0,v_0\!\to r_1,v_1)
+=
+\frac{\|\Delta v\|^2}{T}
++
+\frac{12}{T^3}
+\left\|
+\Delta r-\frac{(v_0+v_1)T}{2}
+\right\|^2,
+\label{eq:C_state}
+\end{equation}
+where $\Delta r=r_1-r_0$ and $\Delta v=v_1-v_0$.
+
+A state-to-state transfer is feasible for ship $S$ in time $T$ if and only if
+\begin{equation}
+C(T;\cdot)\le \Lambda_S.
+\label{eq:feasible_state}
+\end{equation}
+
+\subsection{Position-only transfer}
+If only the final position $r(T)=r_1$ is constrained and $v(T)$ is free, minimizing over $v(T)$ yields
+\begin{equation}
+C_{\rm pos}(T;r_0,v_0\!\to r_1)
+=
+\frac{3}{T^3}\,
+\left\|r_1-r_0-v_0T\right\|^2.
+\label{eq:C_pos}
+\end{equation}
+Thus ship $S$ can reach $r_1$ in time $T$ (with arbitrary terminal velocity) iff
+\begin{equation}
+C_{\rm pos}(T;\cdot)\le \Lambda_S.
+\end{equation}
+Equivalently, at time $T$ ship $S$ can reach any point within the disk
+\begin{equation}
+\Bigl\|r-(r_0+v_0T)\Bigr\| \le \sqrt{\frac{\Lambda_S}{3}}\,T^{3/2}.
+\label{eq:pos_disk}
+\end{equation}
+
+\subsection{Docking at a base point}
+In the game, ship~A must reach $Z$ and arrive with zero velocity:
+\begin{equation}
+r_A(T)=Z,\qquad v_A(T)=0.
+\label{eq:dock_bc}
+\end{equation}
+By \eqref{eq:C_state}, docking in time $T$ is feasible iff
+\begin{equation}
+C(T;r_{A0},v_{A0}\!\to Z,0)\le \Lambda_A.
+\label{eq:A_dock_feasible}
+\end{equation}
+
+\section{Game Definition}
+\label{sec:game_def}
+
+Two ships move according to $\dot r=v$, $\dot v=a$ with budgets \eqref{eq:Lambda_def}.
+Ship~A chooses a control $a_A(\cdot)$ and a docking time $T>0$ and wins if \eqref{eq:dock_bc} holds and its budget is respected:
+\begin{equation}
+a_A(\cdot)\in\mathcal{U}_A(T).
+\end{equation}
+Ship~B chooses a control $a_B(\cdot)$ and a capture time $\tau\in(0,T)$.
+
+\paragraph{Variant 1 (boarding).}
+Ship~B wins if for some $\tau<T$,
+\begin{equation}
+r_B(\tau)=r_A(\tau),\qquad v_B(\tau)=v_A(\tau),
+\label{eq:boarding}
+\end{equation}
+and $a_B(\cdot)\in\mathcal{U}_B(\tau)$.
+
+\paragraph{Variant 2 (shooting).}
+Ship~B wins if for some $\tau<T$,
+\begin{equation}
+r_B(\tau)=r_A(\tau),
+\label{eq:shooting}
+\end{equation}
+and $a_B(\cdot)\in\mathcal{U}_B(\tau)$.
+
+This is a reach--avoid game: A must reach the docking target while avoiding the capture set.
+
+\section{Exact Reach--Avoid Characterization}
+\label{sec:reach_avoid}
+
+Let $\gamma_A=(r_A(\cdot),v_A(\cdot),T)$ be any feasible docking trajectory of A, i.e. \eqref{eq:dock_bc} and $\int_0^T\|a_A\|^2\le\Lambda_A$.
+For any time $t\in(0,T)$ define the minimum energy required for B to intercept the instantaneous state of A.
+
+\subsection{Boarding energy along a given A-trajectory}
+By \eqref{eq:C_state}, the least energy B needs to satisfy \eqref{eq:boarding} at time $t$ is
+\begin{equation}
+E_B^{\rm board}(t;\gamma_A)
+\equiv
+C\!\left(t;\,r_{B0},v_{B0}\!\to r_A(t),v_A(t)\right).
+\label{eq:Eboard}
+\end{equation}
+Thus B can board at time $t$ iff $E_B^{\rm board}(t;\gamma_A)\le\Lambda_B$.
+
+\subsection{Shooting energy along a given A-trajectory}
+Similarly, by \eqref{eq:C_pos},
+\begin{equation}
+E_B^{\rm shoot}(t;\gamma_A)
+\equiv
+C_{\rm pos}\!\left(t;\,r_{B0},v_{B0}\!\to r_A(t)\right)
+=
+\frac{3}{t^3}\|r_A(t)-r_{B0}-v_{B0}t\|^2.
+\label{eq:EShoot}
+\end{equation}
+Thus B can shoot at time $t$ iff $E_B^{\rm shoot}(t;\gamma_A)\le\Lambda_B$.
+
+\subsection{Win conditions (exact)}
+\paragraph{Theorem 1 (Exact win conditions).}
+Ship~A wins the boarding game if and only if there exists a feasible docking trajectory $\gamma_A$ such that
+\begin{equation}
+E_B^{\rm board}(t;\gamma_A)>\Lambda_B
+\qquad\forall t\in(0,T).
+\label{eq:avoid_board}
+\end{equation}
+Ship~A wins the shooting game if and only if there exists a feasible docking trajectory $\gamma_A$ such that
+\begin{equation}
+E_B^{\rm shoot}(t;\gamma_A)>\Lambda_B
+\qquad\forall t\in(0,T).
+\label{eq:avoid_shoot}
+\end{equation}
+Otherwise, ship~B wins the corresponding game.
+\hfill$\square$
+
+Theorem~1 is a complete solution in the sense of reachability: it reduces the game to checking the inequalities \eqref{eq:avoid_board} or \eqref{eq:avoid_shoot} for at least one feasible docking path.
+
+\section{Relative-Coordinate Capture Guarantees}
+\label{sec:relative}
+
+The reach--avoid characterization is exact but path-dependent.
+This section derives capture criteria that depend only on initial relative state and energy budgets.
+
+Define the relative state
+\begin{equation}
+q(t)\equiv r_A(t)-r_B(t),\qquad w(t)\equiv v_A(t)-v_B(t).
+\end{equation}
+Then
+\begin{equation}
+\dot q = w,\qquad \dot w = u,
+\qquad u(t)\equiv a_A(t)-a_B(t).
+\label{eq:relative_dyn}
+\end{equation}
+
+\subsection{Energy advantage and surplus control}
+Let A spend energy at most $\Lambda_A$ over $[0,T]$. If $e_B\ge e_A$, B can choose $a_B=a_A+\delta$ and enforce $u=-\delta$.
+By the triangle inequality in $L^2$,
+\begin{equation}
+\sqrt{\int_0^T\|a_B\|^2dt}\le
+\sqrt{\int_0^T\|a_A\|^2dt}+\sqrt{\int_0^T\|\delta\|^2dt}.
+\end{equation}
+Therefore B can always reserve a \emph{surplus} relative-control budget
+\begin{equation}
+\int_0^T \|u(t)\|^2dt \le (e_B-e_A)^2
+\quad\text{whenever }e_B\ge e_A,
+\label{eq:surplus}
+\end{equation}
+independently of A's detailed time history.
+
+\subsection{Guaranteed shooting capture}
+For shooting, capture at time $T$ requires $q(T)=0$ with free $w(T)$.
+If the relative control $u$ has budget $\int_0^T\|u\|^2dt\le \Gamma^2$, the minimum required $\Gamma$ follows from \eqref{eq:C_pos}:
+\begin{equation}
+\Gamma_{\rm shoot}(T)
+=
+\sqrt{\frac{3}{T^3}}\ \|q_0+w_0T\|,
+\label{eq:Gamma_shoot}
+\end{equation}
+where $q_0=q(0)$ and $w_0=w(0)$.
+
+\paragraph{Theorem 2 (Guaranteed shooting capture).}
+If $e_B>e_A$ then for sufficiently large $T$ inequality
+\begin{equation}
+\Gamma_{\rm shoot}(T)\le e_B-e_A
+\label{eq:shoot_guarantee}
+\end{equation}
+holds and ship~B can force shooting capture by time $T$, regardless of A's strategy.
+\hfill$\square$
+
+Define the guaranteed capture time
+\begin{equation}
+T_*^{\rm shoot}
+\equiv
+\inf\{T>0:\Gamma_{\rm shoot}(T)\le e_B-e_A\}.
+\end{equation}
+
+\subsection{Guaranteed boarding capture}
+For boarding, capture at time $T$ requires $q(T)=0$ and $w(T)=0$.
+The minimum relative-control norm required follows from \eqref{eq:C_state}:
+\begin{equation}
+\Gamma_{\rm board}(T)
+=
+\left[
+\frac{\|w_0\|^2}{T}
++
+\frac{12}{T^3}\left\|q_0+\frac12 w_0T\right\|^2
+\right]^{1/2}.
+\label{eq:Gamma_board}
+\end{equation}
+
+\paragraph{Theorem 3 (Guaranteed boarding capture).}
+If $e_B>e_A$ then for sufficiently large $T$ inequality
+\begin{equation}
+\Gamma_{\rm board}(T)\le e_B-e_A
+\label{eq:board_guarantee}
+\end{equation}
+holds and ship~B can force boarding capture by time $T$, regardless of A's strategy.
+\hfill$\square$
+
+Define
+\begin{equation}
+T_*^{\rm board}
+\equiv
+\inf\{T>0:\Gamma_{\rm board}(T)\le e_B-e_A\}.
+\end{equation}
+
+\subsection{Tie and dominance cases}
+If $e_A>e_B$, B has no surplus and cannot force capture against an evasive A that keeps a reserve for docking. If $e_B>e_A$, B has positive surplus and can force eventual capture unless A docks earlier. In the tie case $e_A=e_B$, B can win only if capture occurs without requiring surplus control: for shooting this requires $q_0+w_0T=0$ for some $T>0$, while for boarding it requires $(q_0,w_0)=(0,0)$.
+
+\section{Direct Escape, Detours, and Blocking}
+\label{sec:detour}
+
+\subsection{Direct-to-base attempt}
+A direct docking transfer of duration $T$ exists iff \eqref{eq:A_dock_feasible} holds.
+Let $\gamma_A^{\rm dir}$ denote the corresponding minimum-energy trajectory.
+B defeats this direct attempt in variant~1 if and only if
+\begin{equation}
+\exists\,t\in(0,T):\ 
+E_B^{\rm board}(t;\gamma_A^{\rm dir})\le \Lambda_B,
+\end{equation}
+and similarly in variant~2 by replacing $E_B^{\rm board}$ with $E_B^{\rm shoot}$.
+
+\subsection{One-turn detour (run away then return)}
+A one-turn detour is defined by an intermediate waypoint state $(Y,u)$ reached at time $\tau$, followed by docking at time $T$:
+\begin{equation}
+(r_A(\tau),v_A(\tau))=(Y,u),\qquad (r_A(T),v_A(T))=(Z,0).
+\end{equation}
+The minimum energy for such a two-arc plan equals the sum of the arc costs:
+\begin{equation}
+C\!\left(\tau;\,r_{A0},v_{A0}\!\to Y,u\right)
++
+C\!\left(T-\tau;\,Y,u\!\to Z,0\right)
+\le \Lambda_A.
+\label{eq:detour_feasible}
+\end{equation}
+Given $(Y,u,\tau,T)$, A wins by this detour iff the resulting concatenated trajectory $\gamma_A^{\rm det}$ satisfies the appropriate avoidance inequality \eqref{eq:avoid_board} or \eqref{eq:avoid_shoot}.
+
+\subsection{Blocking and waiting by B}
+A ``blocking'' response means that B does not attempt an early intercept along the outward leg but instead targets a later intercept along the return.
+This behavior occurs when
+\begin{equation}
+\min_{t\in(0,\tau)} E_B(t;\gamma_A^{\rm det})>\Lambda_B
+\quad\text{but}\quad
+\min_{t\in(\tau,T)} E_B(t;\gamma_A^{\rm det})\le\Lambda_B,
+\label{eq:block_condition}
+\end{equation}
+with $E_B=E_B^{\rm board}$ or $E_B^{\rm shoot}$ depending on the variant.
+
+\section{Conclusion}
+In free space, the constant-power, variable-$I_{\!sp}$ rocket model reduces exactly to a double integrator with an $L^2$ control budget.
+This makes the pursuit--evasion game analytically tractable.
+The complete solution is given by the reach--avoid inequalities of Theorem~1, while Theorems~2--3 provide sharp guaranteed-capture bounds based only on initial relative state and the energy advantage $e_B-e_A$.
+Detours and blocking strategies correspond to different feasible solutions of the same inequalities and can be detected algorithmically by scanning the closed-form intercept energies along candidate trajectories.
+
+\section*{Acknowledgment}
+The author wishes to acknowledge the use of large language models for assistance in improving the language and clarity of the manuscript.
+
+\bibliographystyle{IEEEtran}
+\begin{thebibliography}{1}
+\bibitem{dummy}
+This manuscript is self-contained and does not require external references for its core derivations.
+\end{thebibliography}
+
+\end{document}
