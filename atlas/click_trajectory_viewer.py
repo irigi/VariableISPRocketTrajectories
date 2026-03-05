@@ -2,6 +2,8 @@ import argparse
 import importlib.util
 from pathlib import Path
 
+import multiprocessing as mp
+
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import BoundaryNorm, ListedColormap
@@ -52,17 +54,10 @@ BRANCH_NAMES = {
     BRANCH_UNDEFINED: "undefined / not enclosing Sun",
 }
 
-# --- Tunables ---------------------------------------------------------------
-# Reduced undefined threshold: classify to left/right if |turns| exceeds this value.
-# (Old behavior effectively required |turns| >= 0.5 due to rounding.)
 BRANCH_UNDEFINED_TURNS_EPS = 0.15  # smaller => more willing to decide
-
-# Flag a "solved" cell as boundary-mismatched if the integrated fixed-time endpoint
-# misses rho/theta by more than these tolerances.
 RHO_TOL_REL = 1e-2     # relative tolerance on rho (r_end / AU)
 # RHO_TOL_ABS = 1e-2     # absolute tolerance on rho
 THETA_TOL_DEG = 1.0    # degrees (wrapped to [-180, 180])
-# ---------------------------------------------------------------------------
 
 
 def load_module_from_path(module_path: str, module_name: str = "user_solver_module"):
@@ -172,6 +167,52 @@ def check_boundary_mismatch(sol, rho_target, theta_target_rad, solver):
     return mismatch, r_end, dr, float(dtheta)
 
 
+# --- Multiprocessing helpers (classification) ----------------------------
+
+_CLASSIFY_SOLVER = None
+_CLASSIFY_RHO_GRID = None
+_CLASSIFY_KAPPA_GRID = None
+_CLASSIFY_THETA_GRID = None
+
+
+def _init_classify_pool(solver_path: str, rho_grid, kappa_grid, theta_grid):
+    """Initializer for multiprocessing workers."""
+    global _CLASSIFY_SOLVER, _CLASSIFY_RHO_GRID, _CLASSIFY_KAPPA_GRID, _CLASSIFY_THETA_GRID
+    _CLASSIFY_SOLVER = load_module_from_path(solver_path, module_name="user_solver_module_worker")
+    _CLASSIFY_RHO_GRID = np.asarray(rho_grid, dtype=float)
+    _CLASSIFY_KAPPA_GRID = np.asarray(kappa_grid, dtype=float)
+    _CLASSIFY_THETA_GRID = np.asarray(theta_grid, dtype=float)
+
+
+def _classify_one_solved_cell(task):
+    """Worker: classify a single solved cell. Returns (i, j, k, branch, winding, mismatch)."""
+    i, j, k, row6 = task
+    row = np.asarray(row6, dtype=float)
+
+    if row.size < 6 or (not np.all(np.isfinite(row[:6]))):
+        return int(i), int(j), int(k), int(BRANCH_UNDEFINED), 0, True
+
+    rho = float(_CLASSIFY_RHO_GRID[int(i)])
+    kappa = float(_CLASSIFY_KAPPA_GRID[int(j)])
+    theta_target = float(_CLASSIFY_THETA_GRID[int(k)])
+
+    t_days = float(row[5])
+    params = row[:5]
+    _, config = get_canonical_mission_config(rho, kappa)
+
+    try:
+        sol = _CLASSIFY_SOLVER.integrate_fixed_time(params, t_days, config=config)
+        branch, winding, _turns = classify_solution_branch(sol, _CLASSIFY_SOLVER)
+        mismatch, _r_end, _dr, _dtheta = check_boundary_mismatch(sol, rho, theta_target, _CLASSIFY_SOLVER)
+    except Exception:
+        branch, winding, mismatch = BRANCH_UNDEFINED, 0, True
+
+    winding = int(np.clip(int(winding), -9, 9))
+    return int(i), int(j), int(k), int(branch), int(winding), bool(mismatch)
+
+# -----------------------------------------------------------------------
+
+
 def classify_all_solved_points(state, data, rho_grid, kappa_grid, theta_grid, solver):
     branch_map = np.full(state.shape, BRANCH_UNDEFINED, dtype=np.int8)
     winding_map = np.zeros(state.shape, dtype=np.int8)
@@ -181,36 +222,31 @@ def classify_all_solved_points(state, data, rho_grid, kappa_grid, theta_grid, so
     total = int(len(solved_indices))
     print(f"Classifying {total} solved trajectories into Sun-left / Sun-right / undefined...")
 
-    for n, (i, j, k) in enumerate(solved_indices, start=1):
-        row = np.asarray(data[i, j, k], dtype=float)
-        if row.size < 6 or not np.all(np.isfinite(row[:6])):
-            branch_map[i, j, k] = BRANCH_UNDEFINED
-            winding_map[i, j, k] = 0
-            mismatch_map[i, j, k] = True
-            continue
+    if total == 0:
+        return branch_map, winding_map, mismatch_map
 
-        rho = float(rho_grid[i])
-        kappa = float(kappa_grid[j])
-        theta_target = float(theta_grid[k])
+    solver_path = getattr(solver, "__file__", None)
+    if not solver_path:
+        raise ValueError("Solver module does not have a __file__ attribute; cannot spawn worker processes safely")
 
-        t_days = float(row[5])
-        params = row[:5]
-        _, config = get_canonical_mission_config(rho, kappa)
+    tasks = (
+        (int(i), int(j), int(k), np.asarray(data[i, j, k, :6], dtype=float))
+        for (i, j, k) in solved_indices
+    )
 
-        try:
-            sol = solver.integrate_fixed_time(params, t_days, config=config)
-            branch, winding, _turns = classify_solution_branch(sol, solver)
-            mismatch, _r_end, _dr, _dtheta = check_boundary_mismatch(sol, rho, theta_target, solver)
-        except Exception as exc:
-            print(f"  Warning: classification failed for cell {(int(i), int(j), int(k))}: {exc}")
-            branch, winding, mismatch = BRANCH_UNDEFINED, 0, True
+    with mp.Pool(
+        initializer=_init_classify_pool,
+        initargs=(str(solver_path), rho_grid, kappa_grid, theta_grid),
+    ) as pool:
+        for n, (i, j, k, branch, winding, mismatch) in enumerate(
+            pool.imap_unordered(_classify_one_solved_cell, tasks, chunksize=50), start=1
+        ):
+            branch_map[i, j, k] = np.int8(branch)
+            winding_map[i, j, k] = np.int8(winding)
+            mismatch_map[i, j, k] = bool(mismatch)
 
-        branch_map[i, j, k] = np.int8(branch)
-        winding_map[i, j, k] = np.int8(np.clip(winding, -9, 9))
-        mismatch_map[i, j, k] = bool(mismatch)
-
-        if (n % 100 == 0) or (n == total):
-            print(f"  classified {n}/{total}")
+            if (n % 100 == 0) or (n == total):
+                print(f"  classified {n}/{total}")
 
     return branch_map, winding_map, mismatch_map
 
@@ -327,7 +363,7 @@ def main():
     )
     parser.add_argument("--nrows", type=int, default=3, help="Number of subplot rows")
     parser.add_argument("--ncols", type=int, default=4, help="Number of subplot columns")
-    parser.add_argument("--skip_mod", type=int, default=2,
+    parser.add_argument("--skip_mod", type=int, default=1,
                         help="Subsample factor for rho/kappa/theta axes (e.g., 5 shows every 5th)")
     args = parser.parse_args()
 
@@ -353,6 +389,31 @@ def main():
 
     branch_map, winding_map, mismatch_map = classify_all_solved_points(state, data, rho_grid, kappa_grid, theta_grid, solver)
     display_state = make_display_state(state, branch_map, mismatch_map)
+
+    if True:
+        mismatch_solved = (state == STATE_SOLVED) & mismatch_map
+        n_bad = int(np.count_nonzero(mismatch_solved))
+
+        out_path = Path(args.npz_path)
+        cleaned_path = out_path.with_name(out_path.stem + "_solution_cleanup" + out_path.suffix)
+
+        if n_bad > 0:
+            state_full = state.copy()
+            data_full = data.copy()
+            state_full[mismatch_solved] = STATE_UNSEEN
+            data_full[mismatch_solved, :] = np.nan
+
+            save_payload = {}
+            for key in bundle.files:
+                if key == "state":
+                    save_payload[key] = state_full
+                elif key == "data":
+                    save_payload[key] = data_full
+                else:
+                    save_payload[key] = bundle[key]
+
+            np.savez_compressed(cleaned_path, **save_payload)
+            print(f"Saved cleaned atlas to: {cleaned_path}  (reverted {n_bad} boundary-mismatch cells)")
 
     fig, axes, rho_edges, kappa_edges = make_status_figure(
         display_state, state, branch_map, mismatch_map, rho_grid, kappa_grid, theta_grid, nrows=args.nrows, ncols=args.ncols

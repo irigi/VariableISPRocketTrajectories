@@ -220,6 +220,28 @@ def angle_wrap(x):
     return (x + np.pi) % (2 * np.pi) - np.pi
 
 
+# ----------------------------- #
+#  Endpoint acceptance checks   #
+# ----------------------------- #
+RHO_TOL_REL = 1e-2
+THETA_TOL_DEG = 1.0
+
+
+def check_boundary_mismatch(sol, rho_target, theta_target_rad, config=DEFAULT_CONFIG):
+    """Return (mismatch, r_end, dr, dtheta) using viewer-matching criteria."""
+    r_end = float(sol.y[0, -1] / AU)
+    theta_end = float(sol.y[1, -1])
+
+    dr = r_end - float(rho_target)
+    rho_tol = max(0.0, RHO_TOL_REL * float(rho_target))
+
+    dtheta = angle_wrap(theta_end - float(theta_target_rad))
+    theta_tol = np.deg2rad(THETA_TOL_DEG)
+
+    mismatch = (abs(dr) > rho_tol) or (abs(dtheta) > theta_tol)
+    return mismatch, r_end, dr, float(dtheta)
+
+
 def boundary_residual(z, r_target, theta_target, config=DEFAULT_CONFIG):
     """
     Residual for direct boundary solve.
@@ -289,6 +311,20 @@ def solve_target_fast(r_target, theta_target, seed_params, t_guess_days=500.0,
 
     best_params = unpack(best.x[:4])
     best_time_days = np.clip(best.x[4] * 365.0, 5.0, 3650.0)
+
+    # Final acceptance check: even if the optimizer reports success, reject
+    # solutions that miss the boundary within the viewer tolerances.
+    try:
+        sol_check = integrate_fixed_time(best_params, best_time_days, config=config)
+        mismatch, _r_end, _dr, _dtheta = check_boundary_mismatch(
+            sol_check, r_target, theta_target, config=config
+        )
+        if mismatch:
+            best.success = False
+    except Exception:
+        # If we can't validate, treat as failure to avoid false "solved" flags.
+        best.success = False
+
     return best_params, best_time_days, best
 
 
