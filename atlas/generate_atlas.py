@@ -345,7 +345,7 @@ def generate(resume_path=None):
         should_save = force or (now - last_save_time >= SAVE_INTERVAL_SEC)
 
         if should_report:
-            solved_rate_avg = solved_count / max(elapsed, 1e-9)
+            solved_rate_avg = completed_count / max(elapsed, 1e-9)
             solved_rate_now = (solved_count - last_solved_count) / max(now - last_progress_time, 1e-9)
             completed_rate_now = (completed_count - last_completed_count) / max(now - last_progress_time, 1e-9)
 
