@@ -67,59 +67,311 @@ function getTrajectory2D(r0, v0, rf, vf, T, t) {
   return { pos: [sx.x, sy.x], vel: [sx.v, sy.v], acc: [sx.a, sy.a] };
 }
 
-// ─── Main solver ───
-function solveChase(A, B, baseZ) {
-  const DeltaA = 1 / A.mDry - 1 / A.mWet;
-  const DeltaB = 1 / B.mDry - 1 / B.mWet;
+// ─── Main solver / scenario planner ───
+// We model each ship as a 2D double-integrator with an L2 acceleration budget:
+//   ∫ ||a||^2 dt ≤ Λ   where Λ = 2 P Δ,   Δ = 1/m_dry - 1/m_wet
+// In this UI we keep using Δ-units (i.e. fuelCost() returns "Δ required") to match the paper.
 
+function clamp01(x) { return Math.max(0, Math.min(1, x)); }
+
+function buildLeg(r0, v0, rf, vf, T) {
+  return { r0, v0, rf, vf, T };
+}
+
+function legState(leg, t) {
+  return getTrajectory2D(leg.r0, leg.v0, leg.rf, leg.vf, leg.T, t);
+}
+
+function planState(plan, t) {
+  // plan.legs concatenated
+  let accT = 0;
+  for (const leg of plan.legs) {
+    if (t <= accT + leg.T || leg === plan.legs[plan.legs.length - 1]) {
+      const localT = Math.max(0, Math.min(leg.T, t - accT));
+      const st = legState(leg, localT);
+      return { ...st, t, legIndex: plan.legs.indexOf(leg), localT, legStart: accT };
+    }
+    accT += leg.T;
+  }
+  // fallback
+  const last = plan.legs[plan.legs.length - 1];
+  const st = legState(last, last.T);
+  return { ...st, t, legIndex: plan.legs.length - 1, localT: last.T, legStart: plan.T - last.T };
+}
+
+function planTrajectory(plan, steps = 140) {
+  const pts = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = (i / steps) * plan.T;
+    pts.push(planState(plan, t).pos);
+  }
+  return pts;
+}
+
+function deltaFromShip(ship) {
+  return 1 / ship.mDry - 1 / ship.mWet;
+}
+
+function planDirectToZ(A, baseZ) {
+  const DeltaA = deltaFromShip(A);
   const TA = findMinTime(A.P, DeltaA, A.pos, A.vel, baseZ, [0, 0], true);
-  if (!isFinite(TA)) return { TA: Infinity, feasibleA: false, DeltaA, DeltaB };
+  if (!isFinite(TA)) return null;
+  const fuel = fuelCost2D_fixed(A.P, A.pos, A.vel, baseZ, [0, 0], TA);
+  return {
+    type: "direct",
+    legs: [buildLeg(A.pos, A.vel, baseZ, [0, 0], TA)],
+    T: TA,
+    fuelUsed: fuel,
+    turnTime: null,
+  };
+}
 
-  const N = 500;
-  const scanResults = [];
-  let bestV1 = { tInt: null, fuelNeeded: Infinity };  // min-fuel point
-  let bestV2 = { tInt: null, fuelNeeded: Infinity };
-  let earliestV1 = null;  // earliest feasible interception
-  let earliestV2 = null;
+function planDetourStopTurn(A, baseZ, B, variant) {
+  // Two-leg plan: A -> Y (stop), then Y -> Z (stop)
+  // Choose Y by sampling; objective is to maximize B's minimum-required Δ along the whole A path.
+  const DeltaA = deltaFromShip(A);
+  const DeltaB = deltaFromShip(B);
+  const LZ = Math.hypot(baseZ[0] - A.pos[0], baseZ[1] - A.pos[1]) || 1;
+
+  const dirs = [];
+  const awayB = [A.pos[0] - B.pos[0], A.pos[1] - B.pos[1]];
+  const awayZ = [A.pos[0] - baseZ[0], A.pos[1] - baseZ[1]];
+  const norm = (u) => {
+    const n = Math.hypot(u[0], u[1]) || 1;
+    return [u[0] / n, u[1] / n];
+  };
+  const rot = (u, ang) => [u[0] * Math.cos(ang) - u[1] * Math.sin(ang), u[0] * Math.sin(ang) + u[1] * Math.cos(ang)];
+  const seeds = [norm(awayB), norm(awayZ), norm([awayB[0] + awayZ[0], awayB[1] + awayZ[1]])];
+  for (const s of seeds) {
+    for (let k = 0; k < 12; k++) {
+      const ang = (k / 12) * Math.PI * 2;
+      dirs.push(rot(s, ang));
+    }
+  }
+  const radii = [0.6, 1.0, 1.5].map(m => m * LZ);
+
+  const stepsScan = 260;
+
+  const bCostAt = (t, stA) => {
+    if (variant === 1) return fuelCost2D_fixed(B.P, B.pos, B.vel, stA.pos, stA.vel, t);
+    return fuelCost2D_freeVf(B.P, B.pos, B.vel, stA.pos, t);
+  };
+
+  const scorePlan = (plan) => {
+    let minB = Infinity;
+    for (let i = 1; i <= stepsScan; i++) {
+      const t = (i / stepsScan) * plan.T;
+      const stA = planState(plan, t);
+      const cB = bCostAt(t, stA);
+      if (cB < minB) minB = cB;
+    }
+    return { minB, margin: minB - DeltaB };
+  };
+
+  let best = null;
+
+  for (const d of dirs) {
+    for (const R of radii) {
+      const Y = [A.pos[0] + d[0] * R, A.pos[1] + d[1] * R];
+
+      const t1 = findMinTime(A.P, DeltaA, A.pos, A.vel, Y, [0, 0], true);
+      if (!isFinite(t1)) continue;
+      const c1 = fuelCost2D_fixed(A.P, A.pos, A.vel, Y, [0, 0], t1);
+      if (c1 > DeltaA) continue;
+
+      const t2 = findMinTime(A.P, DeltaA - c1, Y, [0, 0], baseZ, [0, 0], true);
+      if (!isFinite(t2)) continue;
+      const c2 = fuelCost2D_fixed(A.P, Y, [0, 0], baseZ, [0, 0], t2);
+
+      const cTot = c1 + c2;
+      if (cTot > DeltaA) continue;
+
+      const plan = {
+        type: "detour",
+        legs: [buildLeg(A.pos, A.vel, Y, [0, 0], t1), buildLeg(Y, [0, 0], baseZ, [0, 0], t2)],
+        T: t1 + t2,
+        fuelUsed: cTot,
+        turnTime: t1,
+        waypoint: Y,
+      };
+
+      const sc = scorePlan(plan);
+      if (!best || sc.margin > best.score.margin) {
+        best = { plan, score: sc };
+      }
+    }
+  }
+
+  return best ? best.plan : null;
+}
+
+function chooseAPlan(A, B, baseZ, variant) {
+  const direct = planDirectToZ(A, baseZ);
+  if (!direct) return { plan: null, reason: "A cannot reach Z" };
+
+  // If direct is already safe, take it.
+  const detour = planDetourStopTurn(A, baseZ, B, variant);
+
+  return { direct, detour };
+}
+
+function pickBIntercept(A, B, baseZ, variant, aPlan) {
+  const DeltaB = deltaFromShip(B);
+  const N = 520;
+
+  const bCostAt = (t, stA) => {
+    if (variant === 1) return fuelCost2D_fixed(B.P, B.pos, B.vel, stA.pos, stA.vel, t);
+    return fuelCost2D_freeVf(B.P, B.pos, B.vel, stA.pos, t);
+  };
+
+  let minFuel = Infinity;
+  let minFuelT = null;
+
+  let earliest = null;
+
+  // Track whether any capture exists before a detour turn (for labeling block vs chase)
+  const turnT = aPlan.turnTime ?? null;
+  let hasBeforeTurn = false;
 
   for (let i = 1; i <= N; i++) {
-    const tInt = (i / N) * TA;
-    const stateA = getTrajectory2D(A.pos, A.vel, baseZ, [0, 0], TA, tInt);
-    const fuelV1 = fuelCost2D_fixed(B.P, B.pos, B.vel, stateA.pos, stateA.vel, tInt);
-    const fuelV2 = fuelCost2D_freeVf(B.P, B.pos, B.vel, stateA.pos, tInt);
+    const t = (i / N) * aPlan.T;
+    const stA = planState(aPlan, t);
+    const cB = bCostAt(t, stA);
+
+    if (cB < minFuel) { minFuel = cB; minFuelT = t; }
+
+    if (cB <= DeltaB && earliest === null) {
+      earliest = { tInt: t, fuelNeeded: cB, stateA: stA };
+    }
+    if (turnT != null && t < turnT && cB <= DeltaB) hasBeforeTurn = true;
+  }
+
+  const wins = minFuel <= DeltaB;
+
+  // "Block" option: if A has a turn and B cannot intercept before turn, pick a feasible intercept after the turn
+  // such that B can plausibly arrive early (min-time ≤ 0.85 * tInt).
+  let block = null;
+  if (turnT != null && !hasBeforeTurn) {
+    for (let i = 1; i <= N; i++) {
+      const t = (i / N) * aPlan.T;
+      if (t <= turnT * 1.05) continue; // after the turn
+      const stA = planState(aPlan, t);
+      const cB = bCostAt(t, stA);
+      if (cB > DeltaB) continue;
+
+      // Can B get there early?
+      const tMin = findMinTime(
+        B.P, DeltaB,
+        B.pos, B.vel,
+        stA.pos, variant === 1 ? stA.vel : [0, 0],
+        variant === 1
+      );
+      if (!isFinite(tMin) || tMin > 0.85 * t) continue;
+
+      // prefer earlier after-turn capture
+      block = { tInt: t, fuelNeeded: cB, stateA: stA };
+      break;
+    }
+  }
+
+  let chosen = null;
+  let strategy = "none";
+  if (wins) {
+    if (block) { chosen = block; strategy = "block"; }
+    else { chosen = earliest; strategy = "chase"; }
+  } else {
+    // best attempt for display
+    chosen = { tInt: minFuelT, fuelNeeded: minFuel, stateA: planState(aPlan, minFuelT) };
+    strategy = "fail";
+  }
+
+  return { wins, earliest, minFuelTInt: minFuelT, minFuel, chosen, strategy };
+}
+
+function solveScenario(A, B, baseZ, variant, scenarioMode = "auto") {
+  const DeltaA = deltaFromShip(A);
+  const DeltaB = deltaFromShip(B);
+
+  const { direct, detour } = chooseAPlan(A, B, baseZ, variant);
+  if (!direct) return { feasibleA: false, DeltaA, DeltaB, variant };
+
+  // Evaluate safety of a plan: does B have ANY feasible intercept along it?
+  const planIsSafe = (plan) => {
+    const N = 420;
+    for (let i = 1; i <= N; i++) {
+      const t = (i / N) * plan.T;
+      const stA = planState(plan, t);
+      const cB = variant === 1
+        ? fuelCost2D_fixed(B.P, B.pos, B.vel, stA.pos, stA.vel, t)
+        : fuelCost2D_freeVf(B.P, B.pos, B.vel, stA.pos, t);
+      if (cB <= DeltaB) return false;
+    }
+    return true;
+  };
+
+  const safeDirect = planIsSafe(direct);
+  const safeDetour = detour ? planIsSafe(detour) : false;
+
+  // Choose A's plan depending on scenario mode
+  let aPlan = direct;
+  let aPolicy = "direct";
+  if (scenarioMode === "auto") {
+    if (safeDirect) { aPlan = direct; aPolicy = "direct"; }
+    else if (detour && safeDetour) { aPlan = detour; aPolicy = "detour"; }
+    else {
+      // choose the plan that maximizes B's minimum-fuel margin, even if still losing (best evasion attempt)
+      if (detour) {
+        const evalMargin = (plan) => {
+          let minB = Infinity;
+          const N = 300;
+          for (let i = 1; i <= N; i++) {
+            const t = (i / N) * plan.T;
+            const stA = planState(plan, t);
+            const cB = variant === 1
+              ? fuelCost2D_fixed(B.P, B.pos, B.vel, stA.pos, stA.vel, t)
+              : fuelCost2D_freeVf(B.P, B.pos, B.vel, stA.pos, t);
+            if (cB < minB) minB = cB;
+          }
+          return minB - DeltaB;
+        };
+        const mD = evalMargin(direct);
+        const m2 = evalMargin(detour);
+        if (m2 > mD) { aPlan = detour; aPolicy = "detour"; }
+      }
+    }
+  } else if (scenarioMode === "force_direct") {
+    aPlan = direct; aPolicy = "direct";
+  } else if (scenarioMode === "force_detour") {
+    aPlan = detour || direct; aPolicy = detour ? "detour" : "direct";
+  }
+
+  const bRes = pickBIntercept(A, B, baseZ, variant, aPlan);
+
+  // Build scan results for the fuel plot: always show both variants' Δ_B(t) curves against THIS A-plan
+  const Nplot = 500;
+  const scanResults = [];
+  for (let i = 1; i <= Nplot; i++) {
+    const tInt = (i / Nplot) * aPlan.T;
+    const stA = planState(aPlan, tInt);
+    const fuelV1 = fuelCost2D_fixed(B.P, B.pos, B.vel, stA.pos, stA.vel, tInt);
+    const fuelV2 = fuelCost2D_freeVf(B.P, B.pos, B.vel, stA.pos, tInt);
     scanResults.push({ tInt, fuelV1, fuelV2 });
-    if (fuelV1 < bestV1.fuelNeeded) bestV1 = { tInt, fuelNeeded: fuelV1 };
-    if (fuelV2 < bestV2.fuelNeeded) bestV2 = { tInt, fuelNeeded: fuelV2 };
-    // Track earliest feasible intercept (B's strategic optimum: catch A ASAP)
-    if (fuelV1 <= DeltaB && earliestV1 === null) earliestV1 = { tInt, fuelNeeded: fuelV1 };
-    if (fuelV2 <= DeltaB && earliestV2 === null) earliestV2 = { tInt, fuelNeeded: fuelV2 };
   }
 
-  const v1Wins = bestV1.fuelNeeded <= DeltaB;
-  const v2Wins = bestV2.fuelNeeded <= DeltaB;
+  // Trajectories for display
+  const steps = 140;
+  const trajectoryA = planTrajectory(aPlan, steps);
 
-  // For trajectory display: use earliest feasible if B can win, else min-fuel attempt
-  const displayV1 = earliestV1 || bestV1;
-  const displayV2 = earliestV2 || bestV2;
-
-  const steps = 120;
-  const trajectoryA = [];
-  for (let i = 0; i <= steps; i++) {
-    const t = (i / steps) * TA;
-    trajectoryA.push(getTrajectory2D(A.pos, A.vel, baseZ, [0, 0], TA, t).pos);
-  }
-
-  const buildTrajB = (tInt, fixed) => {
+  const buildTrajB_toState = (tInt, stA, fixed) => {
     if (!tInt || !isFinite(tInt)) return [];
-    const stateA = getTrajectory2D(A.pos, A.vel, baseZ, [0, 0], TA, tInt);
     const pts = [];
     for (let i = 0; i <= steps; i++) {
       const t = (i / steps) * tInt;
       if (fixed) {
-        const s = getTrajectory2D(B.pos, B.vel, stateA.pos, stateA.vel, tInt, t);
+        const s = getTrajectory2D(B.pos, B.vel, stA.pos, stA.vel, tInt, t);
         pts.push(s.pos);
       } else {
-        const Lx = stateA.pos[0] - B.pos[0], Ly = stateA.pos[1] - B.pos[1];
+        const Lx = stA.pos[0] - B.pos[0], Ly = stA.pos[1] - B.pos[1];
         const Kx = 3 * (Lx - B.vel[0] * tInt) / (tInt * tInt * tInt);
         const Ky = 3 * (Ly - B.vel[1] * tInt) / (tInt * tInt * tInt);
         pts.push([
@@ -131,27 +383,65 @@ function solveChase(A, B, baseZ) {
     return pts;
   };
 
+  const chosen = bRes.chosen;
+  const trajB = chosen?.stateA
+    ? buildTrajB_toState(chosen.tInt, chosen.stateA, variant === 1)
+    : [];
+
+  const intercept = chosen?.stateA
+    ? { t: chosen.tInt, pos: chosen.stateA.pos, vel: chosen.stateA.vel, fuel: chosen.fuelNeeded }
+    : null;
+
   return {
-    TA, DeltaA, DeltaB, feasibleA: true,
-    v1: {
-      wins: v1Wins, minFuelTInt: bestV1.tInt, fuelNeeded: bestV1.fuelNeeded, fuelRatio: bestV1.fuelNeeded / DeltaB,
-      displayTInt: displayV1.tInt, displayFuel: displayV1.fuelNeeded,
-      earliestTInt: earliestV1?.tInt ?? null,
-    },
-    v2: {
-      wins: v2Wins, minFuelTInt: bestV2.tInt, fuelNeeded: bestV2.fuelNeeded, fuelRatio: bestV2.fuelNeeded / DeltaB,
-      displayTInt: displayV2.tInt, displayFuel: displayV2.fuelNeeded,
-      earliestTInt: earliestV2?.tInt ?? null,
+    feasibleA: true,
+    DeltaA, DeltaB,
+    variant,
+    aPolicy,
+    aPlan,
+    safeDirect,
+    safeDetour,
+    b: {
+      wins: bRes.wins,
+      strategy: bRes.strategy,
+      minFuelTInt: bRes.minFuelTInt,
+      fuelNeeded: bRes.minFuel,
+      fuelRatio: bRes.minFuel / DeltaB,
+      earliestTInt: bRes.earliest?.tInt ?? null,
+      chosenTInt: chosen?.tInt ?? null,
+      chosenFuel: chosen?.fuelNeeded ?? null,
     },
     trajectoryA,
-    trajectoryB_v1: buildTrajB(displayV1.tInt, true),
-    trajectoryB_v2: buildTrajB(displayV2.tInt, false),
+    trajectoryB: trajB,
     scanResults,
+    intercept,
   };
 }
 
-// ─── Presets ───
+// ─── Presets (tuned so AUTO picks the intended behavior) ───
 const PRESETS = {
+  // Direct escape: A can dock before B has any feasible intercept window (both variants tend to show escape).
+  "A escapes (direct)": {
+    A: { x: 0, y: 0, vx: 2.0, vy: 0.3, P: 1.2, mWet: 3.2, mDry: 1.0 },
+    B: { x: -45, y: 25, vx: 0, vy: 0, P: 1.0, mWet: 2.8, mDry: 1.0 },
+    Z: { x: 70, y: 0 },
+  },
+
+  // B catches: B has clear mobility advantage; AUTO will keep A direct unless detour truly helps, but B still intercepts.
+  "B catches (chase)": {
+    A: { x: 0, y: 0, vx: 0.5, vy: 0, P: 0.7, mWet: 2.2, mDry: 1.0 },
+    B: { x: 18, y: 14, vx: 0, vy: 0, P: 2.2, mWet: 4.2, mDry: 1.0 },
+    Z: { x: 85, y: 0 },
+  },
+
+  // Block-and-wait demo: A has just enough mobility to make a detour worthwhile in V1,
+  // and B cannot catch before the turn but can position for the return leg.
+  "B blocks return": {
+    A: { x: 0, y: 0, vx: 0, vy: 0, P: 1.05, mWet: 3.2, mDry: 1.0 },
+    B: { x: 40, y: 14, vx: 0, vy: -0.2, P: 1.1, mWet: 3.0, mDry: 1.0 },
+    Z: { x: 110, y: 0 },
+  },
+
+  // Your original demos (kept)
   "Balanced duel": {
     A: { x: 0, y: 0, vx: 0, vy: 0, P: 1, mWet: 3, mDry: 1 },
     B: { x: 30, y: 20, vx: 0, vy: 0, P: 1, mWet: 3, mDry: 1 },
@@ -172,6 +462,15 @@ const PRESETS = {
     B: { x: 50, y: 5, vx: 0, vy: 0, P: 0.8, mWet: 3, mDry: 1 },
     Z: { x: 100, y: 0 },
   },
+};
+
+// ─── Scenario modes ───
+// "Auto" makes A choose direct vs detour based on whether B has an intercept window,
+// and makes B choose chase vs block (when A detours and B can't catch before the turn).
+const SCENARIO_MODES = {
+  "Auto (game)": { mode: "auto" },
+  "Force: A direct to Z": { mode: "force_direct" },
+  "Force: A detour + return": { mode: "force_detour" },
 };
 
 // ─── Small UI pieces ───
@@ -237,7 +536,7 @@ function drawMap(canvas, result, shipA, shipB, baseZ, activeVariant) {
   ctx.scale(dpr, dpr);
   const W = rect.width, H = rect.height;
 
-  const trajB = activeVariant === 1 ? result.trajectoryB_v1 : result.trajectoryB_v2;
+  const trajB = result.trajectoryB || [];
   const allPts = [
     [shipA.x, shipA.y], [shipB.x, shipB.y], [baseZ.x, baseZ.y],
     ...(result.trajectoryA || []), ...(trajB || []),
@@ -274,18 +573,17 @@ function drawMap(canvas, result, shipA, shipB, baseZ, activeVariant) {
     ctx.stroke(); ctx.setLineDash([]);
   }
 
-  // Interception point
-  const vRes = activeVariant === 1 ? result.v1 : result.v2;
-  if (vRes?.displayTInt && result.feasibleA) {
-    const st = getTrajectory2D([shipA.x, shipA.y], [shipA.vx, shipA.vy], [baseZ.x, baseZ.y], [0, 0], result.TA, vRes.displayTInt);
-    const ix = tx(st.pos[0]), iy = ty(st.pos[1]);
+  // Interception point (for the currently-selected variant + scenario plan)
+  if (result?.intercept?.t && activeRes?.feasibleA) {
+    const ix = tx(result.intercept.pos[0]), iy = ty(result.intercept.pos[1]);
     ctx.beginPath(); ctx.arc(ix, iy, 7, 0, Math.PI * 2);
-    ctx.strokeStyle = vRes.wins ? "#ff4466" : "#445566"; ctx.lineWidth = 2; ctx.stroke();
-    if (vRes.wins) {
+    const bWins = result.b?.wins;
+    ctx.strokeStyle = bWins ? "#ff4466" : "#445566"; ctx.lineWidth = 2; ctx.stroke();
+    if (bWins) {
       ctx.beginPath(); ctx.arc(ix, iy, 12, 0, Math.PI * 2);
       ctx.strokeStyle = "#ff446644"; ctx.lineWidth = 1; ctx.stroke();
       ctx.fillStyle = "#ff446699"; ctx.font = "bold 10px monospace";
-      ctx.fillText("intercept t=" + vRes.displayTInt.toFixed(1), ix + 16, iy + 3);
+      ctx.fillText("intercept t=" + result.intercept.t.toFixed(1), ix + 16, iy + 3);
     } else {
       ctx.fillStyle = "#44556688"; ctx.font = "9px monospace";
       ctx.fillText("best attempt", ix + 12, iy + 3);
@@ -293,6 +591,7 @@ function drawMap(canvas, result, shipA, shipB, baseZ, activeVariant) {
   }
 
   // Velocity arrows
+
   const drawArrow = (x, y, vx, vy, col) => {
     if (Math.hypot(vx, vy) < 0.01) return;
     const s2 = sc * 3;
@@ -396,43 +695,43 @@ function drawFuelPlot(canvas, result) {
   data.forEach(d => { if (d.fuelV2 <= yMax * 1.5) { if (!started2) { ctx.moveTo(px(d.tInt), py(d.fuelV2)); started2 = true; } else ctx.lineTo(px(d.tInt), py(d.fuelV2)); } });
   ctx.stroke();
 
-  // Best intercept dots (min-fuel)
-  const drawDot = (vr, col, label) => {
-    if (!vr?.minFuelTInt) return;
-    if (vr.fuelNeeded <= yMax) {
-      const cx = px(vr.minFuelTInt), cy = py(vr.fuelNeeded);
+  // Best intercept dots (computed from scanResults)
+  const getMin = (key) => {
+    let best = { t: null, f: Infinity };
+    data.forEach(d => { if (d[key] < best.f) best = { t: d.tInt, f: d[key] }; });
+    return best;
+  };
+  const minV1 = getMin("fuelV1");
+  const minV2 = getMin("fuelV2");
+
+  const drawDot = (best, col, label) => {
+    if (!best?.t || !isFinite(best.f)) return;
+    if (best.f <= yMax) {
+      const cx = px(best.t), cy = py(best.f);
       ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2);
       ctx.fillStyle = col; ctx.fill();
       ctx.strokeStyle = "#060d18"; ctx.lineWidth = 2; ctx.stroke();
       ctx.fillStyle = col + "cc"; ctx.font = "9px monospace"; ctx.textAlign = "left";
-      ctx.fillText(`min Δ=${vr.fuelNeeded.toFixed(4)}`, cx + 10, cy + 3);
+      ctx.fillText(`${label} min Δ=${best.f.toFixed(4)}`, cx + 10, cy + 3);
     }
   };
-  drawDot(result.v1, "#ffaa22", "V1");
-  drawDot(result.v2, "#ff4466", "V2");
+  drawDot(minV1, "#ffaa22", "V1");
+  drawDot(minV2, "#ff4466", "V2");
 
-  // Earliest feasible interception markers
-  const drawEarliest = (vr, col) => {
-    if (!vr?.earliestTInt) return;
-    const fuel = result.scanResults.find(d => Math.abs(d.tInt - vr.earliestTInt) < maxT / 400);
-    const fuelVal = col === "#ffaa22" ? fuel?.fuelV1 : fuel?.fuelV2;
-    if (!fuelVal || fuelVal > yMax) return;
-    const cx = px(vr.earliestTInt), cy = py(fuelVal);
-    // Diamond marker
-    ctx.save(); ctx.translate(cx, cy); ctx.rotate(Math.PI / 4);
-    ctx.fillStyle = col; ctx.fillRect(-4, -4, 8, 8);
-    ctx.strokeStyle = "#060d18"; ctx.lineWidth = 1.5; ctx.strokeRect(-4, -4, 8, 8);
-    ctx.restore();
-    // Vertical line to show the interception time
+  // Chosen intercept marker for the active variant (if any)
+  if (result?.intercept?.t && isFinite(result.intercept.fuel) && result.intercept.fuel <= yMax) {
+    const cx = px(result.intercept.t), cy = py(result.intercept.fuel);
+    ctx.beginPath(); ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+    ctx.strokeStyle = "#e0f0ffcc"; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = "#e0f0ff"; ctx.font = "bold 9px monospace"; ctx.textAlign = "left";
+    ctx.fillText("chosen", cx + 10, cy - 8);
+
     ctx.beginPath(); ctx.moveTo(cx, mT); ctx.lineTo(cx, mT + pH);
-    ctx.strokeStyle = col + "33"; ctx.setLineDash([3, 3]); ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle = col; ctx.font = "bold 9px monospace"; ctx.textAlign = "left";
-    ctx.fillText(`earliest t=${vr.earliestTInt.toFixed(1)}`, cx + 10, cy - 8);
-  };
-  drawEarliest(result.v1, "#ffaa22");
-  drawEarliest(result.v2, "#ff4466");
+    ctx.strokeStyle = "#e0f0ff33"; ctx.setLineDash([3, 3]); ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
+  }
 
   // Axis labels
+
   ctx.fillStyle = "#7788aa"; ctx.font = "12px monospace"; ctx.textAlign = "center";
   ctx.fillText("Interception time (t.u.)", mL + pW / 2, H - 8);
   ctx.save(); ctx.translate(16, mT + pH / 2); ctx.rotate(-Math.PI / 2);
@@ -456,6 +755,7 @@ function drawFuelPlot(canvas, result) {
 // ─── Main Component ───
 export default function SpaceChaseSimulator() {
   const [preset, setPreset] = useState("Balanced duel");
+  const [scenario, setScenario] = useState("Auto (game)");
   const [shipA, setShipA] = useState(PRESETS["Balanced duel"].A);
   const [shipB, setShipB] = useState(PRESETS["Balanced duel"].B);
   const [baseZ, setBaseZ] = useState(PRESETS["Balanced duel"].Z);
@@ -471,22 +771,26 @@ export default function SpaceChaseSimulator() {
   // Explicit primitive dependencies so React always recomputes when any slider changes
   const result = useMemo(() => {
     try {
-      return solveChase(
-        { pos: [shipA.x, shipA.y], vel: [shipA.vx, shipA.vy], P: shipA.P, mWet: shipA.mWet, mDry: shipA.mDry },
-        { pos: [shipB.x, shipB.y], vel: [shipB.vx, shipB.vy], P: shipB.P, mWet: shipB.mWet, mDry: shipB.mDry },
-        [baseZ.x, baseZ.y]
-      );
+      const A = { pos: [shipA.x, shipA.y], vel: [shipA.vx, shipA.vy], P: shipA.P, mWet: shipA.mWet, mDry: shipA.mDry };
+      const B = { pos: [shipB.x, shipB.y], vel: [shipB.vx, shipB.vy], P: shipB.P, mWet: shipB.mWet, mDry: shipB.mDry };
+      const Z = [baseZ.x, baseZ.y];
+      const mode = SCENARIO_MODES[scenario]?.mode || "auto";
+      return {
+        v1: solveScenario(A, B, Z, 1, mode),
+        v2: solveScenario(A, B, Z, 2, mode),
+      };
     } catch { return null; }
   }, [shipA.x, shipA.y, shipA.vx, shipA.vy, shipA.P, shipA.mWet, shipA.mDry,
       shipB.x, shipB.y, shipB.vx, shipB.vy, shipB.P, shipB.mWet, shipB.mDry,
-      baseZ.x, baseZ.y]);
+      baseZ.x, baseZ.y, activeVariant, scenario]);
 
   useEffect(() => {
-    if (viewMode !== "fuel") drawMap(mapRef.current, result, shipA, shipB, baseZ, activeVariant);
-    if (viewMode !== "map") drawFuelPlot(fuelRef.current, result);
+    const activeRes = activeVariant === 1 ? result?.v1 : result?.v2;
+    if (viewMode !== "fuel") drawMap(mapRef.current, activeRes, shipA, shipB, baseZ, activeVariant);
+    if (viewMode !== "map") drawFuelPlot(fuelRef.current, activeRes);
   });
 
-  const vRes = result ? (activeVariant === 1 ? result.v1 : result.v2) : null;
+    const activeRes = result ? (activeVariant === 1 ? result.v1 : result.v2) : null;
 
   return (
     <div style={{
@@ -513,7 +817,17 @@ export default function SpaceChaseSimulator() {
             borderRadius: 4, padding: "3px 8px", fontSize: 10, cursor: "pointer", fontFamily: "inherit",
           }}>{n}</button>
         ))}
-      </div>
+      
+        <span style={{ width: 10 }} />
+        {Object.keys(SCENARIO_MODES).map(n => (
+          <button key={n} onClick={() => setScenario(n)} style={{
+            background: scenario === n ? "#22dd8822" : "transparent",
+            border: `1px solid ${scenario === n ? "#22dd88" : "#1a2a40"}`,
+            color: scenario === n ? "#22dd88" : "#556677",
+            borderRadius: 4, padding: "3px 8px", fontSize: 10, cursor: "pointer", fontFamily: "inherit",
+          }}>{n}</button>
+        ))}
+</div>
 
       <div style={{ display: "flex", height: "calc(100vh - 46px)" }}>
         {/* Left: Controls + Results */}
@@ -562,19 +876,24 @@ export default function SpaceChaseSimulator() {
               borderRadius: 6, padding: 10,
             }}>
               <div style={{ fontSize: 10, fontWeight: 700, color: "#6688aa", marginBottom: 6, letterSpacing: 1 }}>RESULTS</div>
-              {!result.feasibleA ? (
+              {!activeRes?.feasibleA ? (
                 <div style={{ color: "#ff6644", fontSize: 11 }}>
                   Ship A cannot reach base Z.<br />
-                  <span style={{ fontSize: 10, color: "#886644" }}>Insufficient fuel (Δ_A = {result.DeltaA.toFixed(4)})</span>
+                  <span style={{ fontSize: 10, color: "#886644" }}>Insufficient fuel (Δ_A = {activeRes.DeltaA.toFixed(4)})</span>
                 </div>
               ) : (
                 <>
                   <div style={{ fontSize: 11, marginBottom: 2 }}>
-                    <span style={{ color: "#22dd88" }}>A</span> flight time: <b style={{ color: "#e0f0ff" }}>{result.TA.toFixed(2)}</b> t.u.
+                    <span style={{ color: "#22dd88" }}>A</span> flight time: <b style={{ color: "#e0f0ff" }}>{activeRes.aPlan.T.toFixed(2)}</b> t.u.
                   </div>
                   <div style={{ fontSize: 10, color: "#556677", marginBottom: 6 }}>
-                    Δ_A = {result.DeltaA.toFixed(4)} · Δ_B = {result.DeltaB.toFixed(4)}
+                    Δ_A = {activeRes.DeltaA.toFixed(4)} · Δ_B = {activeRes.DeltaB.toFixed(4)}
+                  
+                  <div style={{ fontSize: 10, color: "#556677", marginBottom: 6 }}>
+                    A strategy: <span style={{ color: "#c0d8f0" }}>{activeRes.aPolicy}</span>{" "}
+                    · B strategy: <span style={{ color: "#c0d8f0" }}>{activeRes.b?.strategy}</span>
                   </div>
+</div>
 
                   {[1, 2].map(v => {
                     const r = v === 1 ? result.v1 : result.v2;
@@ -591,15 +910,16 @@ export default function SpaceChaseSimulator() {
                           V{v}: {v === 1 ? "Boarding" : "Shooting"}
                         </div>
                         <div style={{ fontSize: 10, color: "#8899aa", lineHeight: 1.6 }}>
-                          Min-fuel t = {r.minFuelTInt?.toFixed(2)} · Δ = {r.fuelNeeded.toFixed(4)} ({(r.fuelRatio * 100).toFixed(1)}% of Δ_B)<br />
-                          {r.wins && r.earliestTInt != null
-                            ? <>Earliest intercept t = {r.earliestTInt.toFixed(2)} ({(r.earliestTInt / result.TA * 100).toFixed(0)}% of A's trip)</>
+                          Min-fuel t = {r.b.minFuelTInt?.toFixed(2)} · Δ = {r.b.fuelNeeded.toFixed(4)} ({(r.b.fuelRatio * 100).toFixed(1)}% of Δ_B)<br />                          Plan: A {r.aPolicy} · B {r.b?.strategy}<br />
+
+                          {r.b.wins && r.b.earliestTInt != null
+                            ? <>Earliest intercept t = {r.b.earliestTInt.toFixed(2)} ({(r.b.earliestTInt / r.aPlan.T * 100).toFixed(0)}% of A's trip)</>
                             : <>No feasible interception window</>}
                         </div>
                         <div style={{ width: "100%", height: 8, background: "#0a1525", borderRadius: 4, marginTop: 4, overflow: "hidden", position: "relative" }}>
                           <div style={{
-                            width: `${Math.min(r.fuelRatio * 100, 100)}%`, height: "100%",
-                            background: r.wins
+                            width: `${Math.min(r.b.fuelRatio * 100, 100)}%`, height: "100%",
+                            background: r.b.wins
                               ? `linear-gradient(90deg, ${v === 1 ? "#ffaa22" : "#ff4466"}, ${v === 1 ? "#ff8800" : "#cc2244"})`
                               : "#223344",
                             borderRadius: 4, transition: "width 0.3s",
@@ -607,9 +927,9 @@ export default function SpaceChaseSimulator() {
                         </div>
                         <div style={{
                           fontSize: 13, fontWeight: 800, marginTop: 5,
-                          color: r.wins ? "#ff4466" : "#22dd88",
+                          color: r.b.wins ? "#ff4466" : "#22dd88",
                         }}>
-                          {r.wins ? "⚠ B INTERCEPTS" : "✓ A ESCAPES"}
+                          {r.b.wins ? "⚠ B INTERCEPTS" : "✓ A ESCAPES"}
                         </div>
                       </div>
                     );
@@ -623,7 +943,7 @@ export default function SpaceChaseSimulator() {
             Model: constant-P, variable-Isp, gravity-free 2D.<br />
             Optimal a(t) linear per axis (PMP).<br />
             Δ = 1/m_dry − 1/m_wet.<br />
-            A takes min-time brachistochrone to Z (v_f=0).
+            A chooses direct vs detour; B chooses chase vs block (when applicable).
           </div>
         </div>
 
