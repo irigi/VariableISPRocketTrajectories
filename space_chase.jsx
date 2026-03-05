@@ -126,29 +126,32 @@ function planDirectToZ(A, baseZ) {
   };
 }
 
-function planDetourStopTurn(A, baseZ, B, variant) {
-  // Two-leg plan: A -> Y (stop), then Y -> Z (stop)
-  // Choose Y by sampling; objective is to maximize B's minimum-required Δ along the whole A path.
+function planDetour(A, baseZ, B, variant) {
+  // Two-leg plan: A -> (Y, u) then (Y, u) -> (Z, 0)
+  // Searches over waypoint position, AND intermediate velocity (fly-through, not just stop-turn).
+  // Objective: maximize B's minimum-required Δ along the whole A path.
   const DeltaA = deltaFromShip(A);
   const DeltaB = deltaFromShip(B);
   const LZ = Math.hypot(baseZ[0] - A.pos[0], baseZ[1] - A.pos[1]) || 1;
 
-  const dirs = [];
-  const awayB = [A.pos[0] - B.pos[0], A.pos[1] - B.pos[1]];
-  const awayZ = [A.pos[0] - baseZ[0], A.pos[1] - baseZ[1]];
   const norm = (u) => {
     const n = Math.hypot(u[0], u[1]) || 1;
     return [u[0] / n, u[1] / n];
   };
   const rot = (u, ang) => [u[0] * Math.cos(ang) - u[1] * Math.sin(ang), u[0] * Math.sin(ang) + u[1] * Math.cos(ang)];
+
+  // Build direction set
+  const dirs = [];
+  const awayB = [A.pos[0] - B.pos[0], A.pos[1] - B.pos[1]];
+  const awayZ = [A.pos[0] - baseZ[0], A.pos[1] - baseZ[1]];
   const seeds = [norm(awayB), norm(awayZ), norm([awayB[0] + awayZ[0], awayB[1] + awayZ[1]])];
   for (const s of seeds) {
-    for (let k = 0; k < 12; k++) {
-      const ang = (k / 12) * Math.PI * 2;
+    for (let k = 0; k < 16; k++) {
+      const ang = (k / 16) * Math.PI * 2;
       dirs.push(rot(s, ang));
     }
   }
-  const radii = [0.6, 1.0, 1.5].map(m => m * LZ);
+  const radii = [0.4, 0.7, 1.0, 1.5, 2.2].map(m => m * LZ);
 
   const stepsScan = 260;
 
@@ -168,36 +171,192 @@ function planDetourStopTurn(A, baseZ, B, variant) {
     return { minB, margin: minB - DeltaB };
   };
 
+  const tryPlan = (Y, uWay) => {
+    // Leg 1: A.pos,A.vel -> Y,uWay
+    const t1 = findMinTime(A.P, DeltaA, A.pos, A.vel, Y, uWay, true);
+    if (!isFinite(t1)) return null;
+    const c1 = fuelCost2D_fixed(A.P, A.pos, A.vel, Y, uWay, t1);
+    if (c1 > DeltaA * 0.95) return null;
+
+    // Leg 2: Y,uWay -> Z,[0,0]
+    const remaining = DeltaA - c1;
+    const t2 = findMinTime(A.P, remaining, Y, uWay, baseZ, [0, 0], true);
+    if (!isFinite(t2)) return null;
+    const c2 = fuelCost2D_fixed(A.P, Y, uWay, baseZ, [0, 0], t2);
+    const cTot = c1 + c2;
+    if (cTot > DeltaA) return null;
+
+    return {
+      type: "detour",
+      legs: [buildLeg(A.pos, A.vel, Y, uWay, t1), buildLeg(Y, uWay, baseZ, [0, 0], t2)],
+      T: t1 + t2,
+      fuelUsed: cTot,
+      turnTime: t1,
+      waypoint: Y,
+      waypointVel: uWay,
+    };
+  };
+
   let best = null;
+  const consider = (plan) => {
+    if (!plan) return;
+    const sc = scorePlan(plan);
+    if (!best || sc.margin > best.score.margin) {
+      best = { plan, score: sc };
+    }
+  };
 
   for (const d of dirs) {
     for (const R of radii) {
       const Y = [A.pos[0] + d[0] * R, A.pos[1] + d[1] * R];
 
-      const t1 = findMinTime(A.P, DeltaA, A.pos, A.vel, Y, [0, 0], true);
-      if (!isFinite(t1)) continue;
-      const c1 = fuelCost2D_fixed(A.P, A.pos, A.vel, Y, [0, 0], t1);
-      if (c1 > DeltaA) continue;
+      // Stop-turn (v=0 at Y)
+      consider(tryPlan(Y, [0, 0]));
 
-      const t2 = findMinTime(A.P, DeltaA - c1, Y, [0, 0], baseZ, [0, 0], true);
-      if (!isFinite(t2)) continue;
-      const c2 = fuelCost2D_fixed(A.P, Y, [0, 0], baseZ, [0, 0], t2);
+      // Fly-through: velocity pointing back toward Z from Y
+      const toZ = norm([baseZ[0] - Y[0], baseZ[1] - Y[1]]);
+      const vScale = Math.sqrt(2 * A.P * DeltaA) * 0.15; // characteristic speed scale
+      for (const sp of [0.3, 0.7, 1.2]) {
+        consider(tryPlan(Y, [toZ[0] * vScale * sp, toZ[1] * vScale * sp]));
+      }
 
-      const cTot = c1 + c2;
-      if (cTot > DeltaA) continue;
+      // Fly-through: velocity continuing outward from A (grazing pass)
+      for (const sp of [0.3, 0.7]) {
+        consider(tryPlan(Y, [d[0] * vScale * sp, d[1] * vScale * sp]));
+      }
+    }
+  }
 
-      const plan = {
-        type: "detour",
-        legs: [buildLeg(A.pos, A.vel, Y, [0, 0], t1), buildLeg(Y, [0, 0], baseZ, [0, 0], t2)],
-        T: t1 + t2,
-        fuelUsed: cTot,
-        turnTime: t1,
-        waypoint: Y,
-      };
+  return best ? best.plan : null;
+}
 
-      const sc = scorePlan(plan);
-      if (!best || sc.margin > best.score.margin) {
-        best = { plan, score: sc };
+function planRunAndWait(A, baseZ, B, variant) {
+  // Three-leg plan: A burns away from B, coasts, then returns to Z.
+  // The idea: A escapes to a safe distance where B cannot reach, coasts to let B
+  // exhaust fuel if B chases, then uses reserved fuel to dock at Z.
+  //
+  // Leg 1: powered escape  A.pos,A.vel -> Y,uCoast  (burn fuel_1)
+  // Leg 2: coast at constant velocity uCoast for time tCoast  (zero fuel)
+  // Leg 3: powered return  coastEnd,uCoast -> Z,[0,0]  (burn fuel_3)
+  //
+  // fuel_1 + fuel_3 <= DeltaA
+  // We search over escape direction, fuel split, and coast duration.
+
+  const DeltaA = deltaFromShip(A);
+  const DeltaB = deltaFromShip(B);
+  const LZ = Math.hypot(baseZ[0] - A.pos[0], baseZ[1] - A.pos[1]) || 1;
+
+  const norm = (u) => {
+    const n = Math.hypot(u[0], u[1]) || 1;
+    return [u[0] / n, u[1] / n];
+  };
+  const rot = (u, ang) => [u[0] * Math.cos(ang) - u[1] * Math.sin(ang), u[0] * Math.sin(ang) + u[1] * Math.cos(ang)];
+
+  const awayB = [A.pos[0] - B.pos[0], A.pos[1] - B.pos[1]];
+  const awayZ = [A.pos[0] - baseZ[0], A.pos[1] - baseZ[1]];
+  // Escape directions: away from B, perpendicular, and mixes
+  const escapeDirs = [];
+  const seedsE = [norm(awayB), norm(awayZ), norm([awayB[0] + awayZ[0], awayB[1] + awayZ[1]])];
+  for (const s of seedsE) {
+    for (let k = 0; k < 12; k++) {
+      escapeDirs.push(rot(s, (k / 12) * Math.PI * 2));
+    }
+  }
+
+  const stepsScan = 260;
+  const bCostAt = (t, stA) => {
+    if (variant === 1) return fuelCost2D_fixed(B.P, B.pos, B.vel, stA.pos, stA.vel, t);
+    return fuelCost2D_freeVf(B.P, B.pos, B.vel, stA.pos, t);
+  };
+
+  const scorePlan = (plan) => {
+    let minB = Infinity;
+    for (let i = 1; i <= stepsScan; i++) {
+      const t = (i / stepsScan) * plan.T;
+      const stA = planState(plan, t);
+      const cB = bCostAt(t, stA);
+      if (cB < minB) minB = cB;
+    }
+    return { minB, margin: minB - DeltaB };
+  };
+
+  let best = null;
+
+  // Fuel split ratios for escape vs return
+  const fuelSplits = [0.15, 0.25, 0.35, 0.45];
+  // Coast durations as multiples of direct flight time
+  const directT = findMinTime(A.P, DeltaA, A.pos, A.vel, baseZ, [0, 0], true);
+  const coastMults = [0.5, 1.0, 2.0, 4.0];
+
+  for (const d of escapeDirs) {
+    for (const fSplit of fuelSplits) {
+      const fuel1Budget = DeltaA * fSplit;
+      const fuel3Budget = DeltaA * (1 - fSplit);
+
+      // Escape: burn fuel1Budget in direction d for minimum time
+      // We need an escape endpoint. Use the characteristic distance from fuel budget.
+      // For a stop-start from rest: Δ = 6L²/(P·T³), so L ~ (P·Δ·T³/6)^(1/2)
+      // But we want to END with velocity (coast), not stop.
+      // Use free-final-velocity: C_pos = 3(L-v0·T)²/T³ => with L = R·d direction
+      // Pick escape distance by scanning a few radii
+      const escapeRadii = [0.3, 0.6, 1.0, 1.5].map(m => m * LZ);
+
+      for (const R of escapeRadii) {
+        const Y = [A.pos[0] + d[0] * R, A.pos[1] + d[1] * R];
+
+        // Find minimum-time escape to Y with free final velocity
+        const t1 = findMinTime(A.P, fuel1Budget, A.pos, A.vel, Y, [0, 0], false);
+        if (!isFinite(t1) || t1 < 0.01) continue;
+
+        // Compute the actual final velocity at Y using free-Vf optimal trajectory
+        // For free-Vf, the optimal a(t) = K·(T-t) where K = 3(L-v0·T)/T³
+        // v(T) = v0 + K·T²/2 - K·T²/2... let me compute properly:
+        // a(t) = K*(T-t), v(t) = v0 + K*T*t - K*t²/2, v(T) = v0 + K*T²/2
+        const Kx = 3 * (Y[0] - A.pos[0] - A.vel[0] * t1) / (t1 * t1 * t1);
+        const Ky = 3 * (Y[1] - A.pos[1] - A.vel[1] * t1) / (t1 * t1 * t1);
+        const uCoast = [A.vel[0] + Kx * t1 * t1 / 2, A.vel[1] + Ky * t1 * t1 / 2];
+
+        const c1 = fuelCost2D_freeVf(A.P, A.pos, A.vel, Y, t1);
+        if (c1 > fuel1Budget) continue;
+
+        for (const cMult of coastMults) {
+          const tCoast = (isFinite(directT) ? directT : LZ) * cMult;
+          if (tCoast < 0.1) continue;
+
+          // Coast endpoint
+          const coastEnd = [Y[0] + uCoast[0] * tCoast, Y[1] + uCoast[1] * tCoast];
+
+          // Return: coastEnd,uCoast -> Z,[0,0]
+          const t3 = findMinTime(A.P, fuel3Budget, coastEnd, uCoast, baseZ, [0, 0], true);
+          if (!isFinite(t3)) continue;
+          const c3 = fuelCost2D_fixed(A.P, coastEnd, uCoast, baseZ, [0, 0], t3);
+          if (c1 + c3 > DeltaA) continue;
+
+          // Build 3-leg plan. Coast leg: position moves linearly, velocity constant.
+          // We model coast as a "leg" with rf = coastEnd, vf = uCoast (constant v).
+          // But our leg model uses polynomial acceleration — for a coast, a(t)=0,
+          // so rf = r0 + v0*T, vf = v0. This is exactly buildLeg(Y, uCoast, coastEnd, uCoast, tCoast).
+          const plan = {
+            type: "escape",
+            legs: [
+              buildLeg(A.pos, A.vel, Y, uCoast, t1),
+              buildLeg(Y, uCoast, coastEnd, uCoast, tCoast),
+              buildLeg(coastEnd, uCoast, baseZ, [0, 0], t3),
+            ],
+            T: t1 + tCoast + t3,
+            fuelUsed: c1 + c3,
+            turnTime: t1,
+            coastStart: t1,
+            coastEnd: t1 + tCoast,
+            waypoint: Y,
+            waypointVel: uCoast,
+          };
+
+          const sc = scorePlan(plan);
+          if (!best || sc.margin > best.score.margin) {
+            best = { plan, score: sc };
+          }
+        }
       }
     }
   }
@@ -209,10 +368,10 @@ function chooseAPlan(A, B, baseZ, variant) {
   const direct = planDirectToZ(A, baseZ);
   if (!direct) return { plan: null, reason: "A cannot reach Z" };
 
-  // If direct is already safe, take it.
-  const detour = planDetourStopTurn(A, baseZ, B, variant);
+  const detour = planDetour(A, baseZ, B, variant);
+  const escape = planRunAndWait(A, baseZ, B, variant);
 
-  return { direct, detour };
+  return { direct, detour, escape };
 }
 
 function pickBIntercept(A, B, baseZ, variant, aPlan) {
@@ -292,7 +451,7 @@ function solveScenario(A, B, baseZ, variant, scenarioMode = "auto") {
   const DeltaA = deltaFromShip(A);
   const DeltaB = deltaFromShip(B);
 
-  const { direct, detour } = chooseAPlan(A, B, baseZ, variant);
+  const { direct, detour, escape } = chooseAPlan(A, B, baseZ, variant);
   if (!direct) return { feasibleA: false, DeltaA, DeltaB, variant };
 
   // Evaluate safety of a plan: does B have ANY feasible intercept along it?
@@ -309,40 +468,55 @@ function solveScenario(A, B, baseZ, variant, scenarioMode = "auto") {
     return true;
   };
 
+  // Evaluate margin: how far above Δ_B is B's cheapest intercept?
+  const evalMargin = (plan) => {
+    let minB = Infinity;
+    const N = 300;
+    for (let i = 1; i <= N; i++) {
+      const t = (i / N) * plan.T;
+      const stA = planState(plan, t);
+      const cB = variant === 1
+        ? fuelCost2D_fixed(B.P, B.pos, B.vel, stA.pos, stA.vel, t)
+        : fuelCost2D_freeVf(B.P, B.pos, B.vel, stA.pos, t);
+      if (cB < minB) minB = cB;
+    }
+    return minB - DeltaB;
+  };
+
   const safeDirect = planIsSafe(direct);
   const safeDetour = detour ? planIsSafe(detour) : false;
+  const safeEscape = escape ? planIsSafe(escape) : false;
+
+  // Collect all candidate plans with their margins
+  const candidates = [{ plan: direct, policy: "direct", margin: evalMargin(direct) }];
+  if (detour) candidates.push({ plan: detour, policy: "detour", margin: evalMargin(detour) });
+  if (escape) candidates.push({ plan: escape, policy: "escape", margin: evalMargin(escape) });
 
   // Choose A's plan depending on scenario mode
   let aPlan = direct;
   let aPolicy = "direct";
   if (scenarioMode === "auto") {
-    if (safeDirect) { aPlan = direct; aPolicy = "direct"; }
-    else if (detour && safeDetour) { aPlan = detour; aPolicy = "detour"; }
-    else {
-      // choose the plan that maximizes B's minimum-fuel margin, even if still losing (best evasion attempt)
-      if (detour) {
-        const evalMargin = (plan) => {
-          let minB = Infinity;
-          const N = 300;
-          for (let i = 1; i <= N; i++) {
-            const t = (i / N) * plan.T;
-            const stA = planState(plan, t);
-            const cB = variant === 1
-              ? fuelCost2D_fixed(B.P, B.pos, B.vel, stA.pos, stA.vel, t)
-              : fuelCost2D_freeVf(B.P, B.pos, B.vel, stA.pos, t);
-            if (cB < minB) minB = cB;
-          }
-          return minB - DeltaB;
-        };
-        const mD = evalMargin(direct);
-        const m2 = evalMargin(detour);
-        if (m2 > mD) { aPlan = detour; aPolicy = "detour"; }
-      }
+    // Pick the plan with the best margin (highest min-B cost relative to Δ_B)
+    // Among safe plans prefer shortest; if none safe, pick best margin
+    const safeCands = candidates.filter(c => c.margin > 0);
+    if (safeCands.length > 0) {
+      // Among safe plans, prefer shortest total time
+      safeCands.sort((a, b) => a.plan.T - b.plan.T);
+      aPlan = safeCands[0].plan;
+      aPolicy = safeCands[0].policy;
+    } else {
+      // No safe plan: pick the one that maximizes margin (best evasion attempt)
+      candidates.sort((a, b) => b.margin - a.margin);
+      aPlan = candidates[0].plan;
+      aPolicy = candidates[0].policy;
     }
   } else if (scenarioMode === "force_direct") {
     aPlan = direct; aPolicy = "direct";
   } else if (scenarioMode === "force_detour") {
     aPlan = detour || direct; aPolicy = detour ? "detour" : "direct";
+  } else if (scenarioMode === "force_escape") {
+    aPlan = escape || detour || direct;
+    aPolicy = escape ? "escape" : (detour ? "detour" : "direct");
   }
 
   const bRes = pickBIntercept(A, B, baseZ, variant, aPlan);
@@ -400,6 +574,7 @@ function solveScenario(A, B, baseZ, variant, scenarioMode = "auto") {
     aPlan,
     safeDirect,
     safeDetour,
+    safeEscape,
     b: {
       wins: bRes.wins,
       strategy: bRes.strategy,
@@ -441,7 +616,20 @@ const PRESETS = {
     Z: { x: 110, y: 0 },
   },
 
-  // Your original demos (kept)
+  // A runs away, coasts, and returns after B can't chase effectively
+  "A escapes (run+wait)": {
+    A: { x: 0, y: 0, vx: 0, vy: 0.5, P: 1.2, mWet: 3.5, mDry: 1.0 },
+    B: { x: 35, y: 0, vx: -0.3, vy: 0, P: 1.0, mWet: 2.8, mDry: 1.0 },
+    Z: { x: 90, y: 0 },
+  },
+
+  // A has energy advantage: can outlast B by running away
+  "A outlasts B": {
+    A: { x: 0, y: 0, vx: 0, vy: 0, P: 1.5, mWet: 4.0, mDry: 1.0 },
+    B: { x: 25, y: 15, vx: 0, vy: 0, P: 1.2, mWet: 2.5, mDry: 1.0 },
+    Z: { x: 80, y: 0 },
+  },
+
   "Balanced duel": {
     A: { x: 0, y: 0, vx: 0, vy: 0, P: 1, mWet: 3, mDry: 1 },
     B: { x: 30, y: 20, vx: 0, vy: 0, P: 1, mWet: 3, mDry: 1 },
@@ -469,8 +657,9 @@ const PRESETS = {
 // and makes B choose chase vs block (when A detours and B can't catch before the turn).
 const SCENARIO_MODES = {
   "Auto (game)": { mode: "auto" },
-  "Force: A direct to Z": { mode: "force_direct" },
-  "Force: A detour + return": { mode: "force_detour" },
+  "Force: A direct": { mode: "force_direct" },
+  "Force: A detour": { mode: "force_detour" },
+  "Force: A escape": { mode: "force_escape" },
 };
 
 // ─── Small UI pieces ───
@@ -566,6 +755,17 @@ function drawMap(canvas, result, shipA, shipB, baseZ, activeVariant) {
     result.trajectoryA.forEach(([x, y], i) => i === 0 ? ctx.moveTo(tx(x), ty(y)) : ctx.lineTo(tx(x), ty(y)));
     ctx.stroke();
   }
+  // Waypoint marker (for detour/escape plans)
+  if (result.aPlan?.waypoint) {
+    const wp = result.aPlan.waypoint;
+    const wx = tx(wp[0]), wy = ty(wp[1]);
+    ctx.beginPath(); ctx.arc(wx, wy, 5, 0, Math.PI * 2);
+    ctx.fillStyle = "#22dd8866"; ctx.fill();
+    ctx.strokeStyle = "#22dd88"; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.fillStyle = "#22dd8899"; ctx.font = "9px monospace";
+    const label = result.aPlan.type === "escape" ? "escape" : "waypoint";
+    ctx.fillText(label, wx + 9, wy + 3);
+  }
   // B trajectory
   if (trajB?.length > 1) {
     ctx.beginPath(); ctx.strokeStyle = "#ff4466"; ctx.lineWidth = 2; ctx.setLineDash([7, 5]);
@@ -574,7 +774,7 @@ function drawMap(canvas, result, shipA, shipB, baseZ, activeVariant) {
   }
 
   // Interception point (for the currently-selected variant + scenario plan)
-  if (result?.intercept?.t && activeRes?.feasibleA) {
+  if (result?.intercept?.t && result?.feasibleA) {
     const ix = tx(result.intercept.pos[0]), iy = ty(result.intercept.pos[1]);
     ctx.beginPath(); ctx.arc(ix, iy, 7, 0, Math.PI * 2);
     const bWins = result.b?.wins;
@@ -644,7 +844,7 @@ function drawFuelPlot(canvas, result) {
   const allFuels = data.map(d => Math.min(d.fuelV1, d.fuelV2)).filter(isFinite);
   const allMin = allFuels.length ? Math.min(...allFuels) : DeltaB;
   const yMax = Math.max(DeltaB * 2.5, allMin * 4, DeltaB * 1.3);
-  const maxT = result.TA;
+  const maxT = result.aPlan.T;
 
   const px = t => mL + (t / maxT) * pW;
   const py = f => mT + pH - (Math.min(f, yMax) / yMax) * pH;
@@ -681,6 +881,26 @@ function drawFuelPlot(canvas, result) {
     ctx.fillText("Δ_B = " + DeltaB.toFixed(4) + "  (B's fuel budget)", mL + 10, yLine - 8);
     ctx.fillStyle = "#22dd8844"; ctx.font = "9px monospace";
     ctx.fillText("← A escapes (B lacks fuel)", mL + 10, yLine + 14);
+  }
+
+  // Turn / coast markers for detour and escape plans
+  if (result.aPlan?.turnTime && maxT > 0) {
+    const turnX = px(result.aPlan.turnTime);
+    ctx.beginPath(); ctx.moveTo(turnX, mT); ctx.lineTo(turnX, mT + pH);
+    ctx.strokeStyle = "#22dd8844"; ctx.setLineDash([4, 4]); ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = "#22dd8866"; ctx.font = "9px monospace"; ctx.textAlign = "center";
+    ctx.fillText("turn", turnX, mT + pH + 12);
+  }
+  if (result.aPlan?.coastEnd && maxT > 0) {
+    const ceX = px(result.aPlan.coastEnd);
+    ctx.beginPath(); ctx.moveTo(ceX, mT); ctx.lineTo(ceX, mT + pH);
+    ctx.strokeStyle = "#22dd8844"; ctx.setLineDash([4, 4]); ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = "#22dd8866"; ctx.font = "9px monospace"; ctx.textAlign = "center";
+    ctx.fillText("coast end", ceX, mT + pH + 12);
+    // Shade coast region
+    const csX = px(result.aPlan.coastStart || result.aPlan.turnTime);
+    ctx.fillStyle = "#22dd8806";
+    ctx.fillRect(csX, mT, ceX - csX, pH);
   }
 
   // V1 curve
@@ -943,7 +1163,7 @@ export default function SpaceChaseSimulator() {
             Model: constant-P, variable-Isp, gravity-free 2D.<br />
             Optimal a(t) linear per axis (PMP).<br />
             Δ = 1/m_dry − 1/m_wet.<br />
-            A chooses direct vs detour; B chooses chase vs block (when applicable).
+            A chooses direct / detour / escape; B chooses chase vs block.
           </div>
         </div>
 
