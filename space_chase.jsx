@@ -1,649 +1,637 @@
-import { useState, useMemo, useRef, useEffect } from "react";
+const { useState, useMemo } = React;
 
-// ─── Physics Engine (from the paper's free-space brachistochrone) ───
-// Key model: constant power P, variable Isp, no gravity
-// ṁ = -m²a²/(2P), fuel budget Δ = 1/m_dry - 1/m_i
-// Optimal acceleration is LINEAR in time for each spatial component (PMP result)
+// Analytic pursuit-evasion applet for the free-space, constant-power, variable-Isp model.
+// All motion is built from the closed-form transfer laws derived from the manuscript:
+//   J_fixed(T) = ||dv||^2 / T + 12 ||dr - (v0+vf)T/2||^2 / T^3
+//   J_hit(T)   = 3 ||dr - v0 T||^2 / T^3
+// with total maneuver budget Lambda = 2 P (1/m_dry - 1/m_wet).
 
-function fuelIntegral1D_fixedBC(x0, v0, xf, vf, T) {
-  if (T <= 1e-12) return Infinity;
-  const L = xf - x0;
-  const K1 = -12 * (L - 0.5 * (v0 + vf) * T) / (T * T * T);
-  const K0 = (vf - v0) / T - 0.5 * K1 * T;
-  return K1 * K1 * T * T * T / 3 + K1 * K0 * T * T + K0 * K0 * T;
-}
+const EPS = 1e-9;
+const DEFAULT_MODE = "boarding";
 
-function fuelIntegral1D_freeVf(x0, v0, xf, T) {
-  if (T <= 1e-12) return Infinity;
-  const L = xf - x0;
-  const K = 3 * (L - v0 * T) / (T * T * T);
-  return K * K * T * T * T / 3;
-}
-
-function fuelCost2D_fixed(P, r0, v0, rf, vf, T) {
-  const Ix = fuelIntegral1D_fixedBC(r0[0], v0[0], rf[0], vf[0], T);
-  const Iy = fuelIntegral1D_fixedBC(r0[1], v0[1], rf[1], vf[1], T);
-  return (Ix + Iy) / (2 * P);
-}
-
-function fuelCost2D_freeVf(P, r0, v0, rf, T) {
-  const Ix = fuelIntegral1D_freeVf(r0[0], v0[0], rf[0], T);
-  const Iy = fuelIntegral1D_freeVf(r0[1], v0[1], rf[1], T);
-  return (Ix + Iy) / (2 * P);
-}
-
-function findMinTime(P, Delta, r0, v0, rf, vf, fixedVf = true) {
-  let lo = 1e-4, hi = 200;
-  for (let i = 0; i < 40; i++) {
-    const cost = fixedVf ? fuelCost2D_fixed(P, r0, v0, rf, vf, hi)
-                         : fuelCost2D_freeVf(P, r0, v0, rf, hi);
-    if (cost <= Delta) break;
-    hi *= 2;
-    if (hi > 1e9) return Infinity;
-  }
-  for (let i = 0; i < 80; i++) {
-    const mid = (lo + hi) / 2;
-    const cost = fixedVf ? fuelCost2D_fixed(P, r0, v0, rf, vf, mid)
-                         : fuelCost2D_freeVf(P, r0, v0, rf, mid);
-    if (cost > Delta) lo = mid; else hi = mid;
-  }
-  return (lo + hi) / 2;
-}
-
-function getTrajectory1D(x0, v0, xf, vf, T, t) {
-  const L = xf - x0;
-  const K1 = -12 * (L - 0.5 * (v0 + vf) * T) / (T * T * T);
-  const K0 = (vf - v0) / T - 0.5 * K1 * T;
-  return {
-    x: x0 + v0 * t + 0.5 * K0 * t * t + K1 * t * t * t / 6,
-    v: v0 + K0 * t + 0.5 * K1 * t * t,
-    a: K1 * t + K0,
-  };
-}
-
-function getTrajectory2D(r0, v0, rf, vf, T, t) {
-  const sx = getTrajectory1D(r0[0], v0[0], rf[0], vf[0], T, t);
-  const sy = getTrajectory1D(r0[1], v0[1], rf[1], vf[1], T, t);
-  return { pos: [sx.x, sy.x], vel: [sx.v, sy.v], acc: [sx.a, sy.a] };
-}
-
-// ─── Main solver ───
-function solveChase(A, B, baseZ) {
-  const DeltaA = 1 / A.mDry - 1 / A.mWet;
-  const DeltaB = 1 / B.mDry - 1 / B.mWet;
-
-  const TA = findMinTime(A.P, DeltaA, A.pos, A.vel, baseZ, [0, 0], true);
-  if (!isFinite(TA)) return { TA: Infinity, feasibleA: false, DeltaA, DeltaB };
-
-  const N = 500;
-  const scanResults = [];
-  let bestV1 = { tInt: null, fuelNeeded: Infinity };  // min-fuel point
-  let bestV2 = { tInt: null, fuelNeeded: Infinity };
-  let earliestV1 = null;  // earliest feasible interception
-  let earliestV2 = null;
-
-  for (let i = 1; i <= N; i++) {
-    const tInt = (i / N) * TA;
-    const stateA = getTrajectory2D(A.pos, A.vel, baseZ, [0, 0], TA, tInt);
-    const fuelV1 = fuelCost2D_fixed(B.P, B.pos, B.vel, stateA.pos, stateA.vel, tInt);
-    const fuelV2 = fuelCost2D_freeVf(B.P, B.pos, B.vel, stateA.pos, tInt);
-    scanResults.push({ tInt, fuelV1, fuelV2 });
-    if (fuelV1 < bestV1.fuelNeeded) bestV1 = { tInt, fuelNeeded: fuelV1 };
-    if (fuelV2 < bestV2.fuelNeeded) bestV2 = { tInt, fuelNeeded: fuelV2 };
-    // Track earliest feasible intercept (B's strategic optimum: catch A ASAP)
-    if (fuelV1 <= DeltaB && earliestV1 === null) earliestV1 = { tInt, fuelNeeded: fuelV1 };
-    if (fuelV2 <= DeltaB && earliestV2 === null) earliestV2 = { tInt, fuelNeeded: fuelV2 };
-  }
-
-  const v1Wins = bestV1.fuelNeeded <= DeltaB;
-  const v2Wins = bestV2.fuelNeeded <= DeltaB;
-
-  // For trajectory display: use earliest feasible if B can win, else min-fuel attempt
-  const displayV1 = earliestV1 || bestV1;
-  const displayV2 = earliestV2 || bestV2;
-
-  const steps = 120;
-  const trajectoryA = [];
-  for (let i = 0; i <= steps; i++) {
-    const t = (i / steps) * TA;
-    trajectoryA.push(getTrajectory2D(A.pos, A.vel, baseZ, [0, 0], TA, t).pos);
-  }
-
-  const buildTrajB = (tInt, fixed) => {
-    if (!tInt || !isFinite(tInt)) return [];
-    const stateA = getTrajectory2D(A.pos, A.vel, baseZ, [0, 0], TA, tInt);
-    const pts = [];
-    for (let i = 0; i <= steps; i++) {
-      const t = (i / steps) * tInt;
-      if (fixed) {
-        const s = getTrajectory2D(B.pos, B.vel, stateA.pos, stateA.vel, tInt, t);
-        pts.push(s.pos);
-      } else {
-        const Lx = stateA.pos[0] - B.pos[0], Ly = stateA.pos[1] - B.pos[1];
-        const Kx = 3 * (Lx - B.vel[0] * tInt) / (tInt * tInt * tInt);
-        const Ky = 3 * (Ly - B.vel[1] * tInt) / (tInt * tInt * tInt);
-        pts.push([
-          B.pos[0] + B.vel[0] * t + Kx * (tInt * t * t / 2 - t * t * t / 6),
-          B.pos[1] + B.vel[1] * t + Ky * (tInt * t * t / 2 - t * t * t / 6),
-        ]);
-      }
-    }
-    return pts;
-  };
-
-  return {
-    TA, DeltaA, DeltaB, feasibleA: true,
-    v1: {
-      wins: v1Wins, minFuelTInt: bestV1.tInt, fuelNeeded: bestV1.fuelNeeded, fuelRatio: bestV1.fuelNeeded / DeltaB,
-      displayTInt: displayV1.tInt, displayFuel: displayV1.fuelNeeded,
-      earliestTInt: earliestV1?.tInt ?? null,
-    },
-    v2: {
-      wins: v2Wins, minFuelTInt: bestV2.tInt, fuelNeeded: bestV2.fuelNeeded, fuelRatio: bestV2.fuelNeeded / DeltaB,
-      displayTInt: displayV2.tInt, displayFuel: displayV2.fuelNeeded,
-      earliestTInt: earliestV2?.tInt ?? null,
-    },
-    trajectoryA,
-    trajectoryB_v1: buildTrajB(displayV1.tInt, true),
-    trajectoryB_v2: buildTrajB(displayV2.tInt, false),
-    scanResults,
-  };
-}
-
-// ─── Presets ───
 const PRESETS = {
   "Balanced duel": {
-    A: { x: 0, y: 0, vx: 0, vy: 0, P: 1, mWet: 3, mDry: 1 },
-    B: { x: 30, y: 20, vx: 0, vy: 0, P: 1, mWet: 3, mDry: 1 },
+    A: { x: 0, y: 0, vx: 0, vy: 0, P: 1.0, mWet: 3.0, mDry: 1.0 },
+    B: { x: 30, y: 20, vx: 0, vy: 0, P: 1.0, mWet: 3.0, mDry: 1.0 },
     Z: { x: 100, y: 0 },
   },
   "Pursuer advantage": {
-    A: { x: 0, y: 0, vx: 0, vy: 0, P: 0.5, mWet: 2, mDry: 1 },
-    B: { x: 20, y: 10, vx: 0, vy: 0, P: 2, mWet: 4, mDry: 1 },
+    A: { x: 0, y: 0, vx: 0, vy: 0, P: 0.7, mWet: 2.4, mDry: 1.0 },
+    B: { x: 20, y: 10, vx: 0, vy: 0, P: 1.8, mWet: 3.5, mDry: 1.0 },
     Z: { x: 80, y: 0 },
   },
   "Head start escape": {
-    A: { x: 0, y: 0, vx: 2, vy: 0, P: 1, mWet: 3, mDry: 1 },
-    B: { x: -40, y: 30, vx: 0, vy: 0, P: 1.5, mWet: 3, mDry: 1 },
+    A: { x: 0, y: 0, vx: 2, vy: 0, P: 1.0, mWet: 3.0, mDry: 1.0 },
+    B: { x: -40, y: 30, vx: 0, vy: 0, P: 1.4, mWet: 3.0, mDry: 1.0 },
     Z: { x: 60, y: 0 },
   },
   "Blocking position": {
-    A: { x: 0, y: 0, vx: 0, vy: 0, P: 1, mWet: 3, mDry: 1 },
-    B: { x: 50, y: 5, vx: 0, vy: 0, P: 0.8, mWet: 3, mDry: 1 },
+    A: { x: 0, y: 0, vx: 0, vy: 0, P: 1.0, mWet: 3.0, mDry: 1.0 },
+    B: { x: 50, y: 5, vx: 0, vy: 0, P: 0.8, mWet: 3.0, mDry: 1.0 },
+    Z: { x: 100, y: 0 },
+  },
+  "Forced draw demo": {
+    A: { x: 20, y: 0, vx: 0, vy: 0, P: 1.0, mWet: 3.0, mDry: 1.0 },
+    B: { x: 30, y: 20, vx: 0, vy: 0, P: 1.0, mWet: 3.0, mDry: 1.0 },
     Z: { x: 100, y: 0 },
   },
 };
 
-// ─── Small UI pieces ───
+function v(x = 0, y = 0) { return [x, y]; }
+function add(a, b) { return [a[0] + b[0], a[1] + b[1]]; }
+function sub(a, b) { return [a[0] - b[0], a[1] - b[1]]; }
+function mul(a, s) { return [a[0] * s, a[1] * s]; }
+function dot(a, b) { return a[0] * b[0] + a[1] * b[1]; }
+function norm2(a) { return dot(a, a); }
+function norm(a) { return Math.sqrt(norm2(a)); }
+function mix(a, b, t) { return add(mul(a, 1 - t), mul(b, t)); }
+function normalize(a, fallback = [1, 0]) {
+  const n = norm(a);
+  return n > 1e-12 ? [a[0] / n, a[1] / n] : fallback;
+}
+function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
+function fmt(x, digits = 3) {
+  if (!isFinite(x)) return "∞";
+  const ax = Math.abs(x);
+  if ((ax >= 1000 || (ax > 0 && ax < 0.01)) && ax !== 0) return x.toExponential(2);
+  return x.toFixed(digits);
+}
+
+function shipState(ship) {
+  return { r: [ship.x, ship.y], v: [ship.vx, ship.vy] };
+}
+function deltaBudget(ship) {
+  return 1 / ship.mDry - 1 / ship.mWet;
+}
+function lambdaBudget(ship) {
+  return 2 * ship.P * deltaBudget(ship);
+}
+
+function fixedCost(lambdaUnused, r0, v0, rf, vf, T) {
+  if (T <= 0) return Infinity;
+  const dv = sub(vf, v0);
+  const residual = sub(sub(rf, r0), mul(add(v0, vf), 0.5 * T));
+  return norm2(dv) / T + 12 * norm2(residual) / (T * T * T);
+}
+
+function hitCost(r0, v0, rf, T) {
+  if (T <= 0) return Infinity;
+  const residual = sub(sub(rf, r0), mul(v0, T));
+  return 3 * norm2(residual) / (T * T * T);
+}
+
+function minTimeToState(lambda, r0, v0, rf, vf, mode = "fixed") {
+  const costFn = mode === "fixed"
+    ? (T) => fixedCost(lambda, r0, v0, rf, vf, T)
+    : (T) => hitCost(r0, v0, rf, T);
+  let lo = 1e-4;
+  let hi = 1;
+  while (costFn(hi) > lambda && hi < 1e6) hi *= 2;
+  if (hi >= 1e6 && costFn(hi) > lambda) return Infinity;
+  for (let i = 0; i < 80; i++) {
+    const mid = 0.5 * (lo + hi);
+    if (costFn(mid) > lambda) lo = mid; else hi = mid;
+  }
+  return 0.5 * (lo + hi);
+}
+
+function fixedTrajectory(r0, v0, rf, vf, T) {
+  const alpha = mul(sub(mul(add(v0, vf), 0.5 * T), sub(rf, r0)), 12 / (T * T * T));
+  const beta = sub(mul(sub(vf, v0), 1 / T), mul(alpha, 0.5 * T));
+  return {
+    kind: "fixed",
+    T,
+    r0,
+    v0,
+    rf,
+    vf,
+    alpha,
+    beta,
+    lambdaUsed: fixedCost(0, r0, v0, rf, vf, T),
+    stateAt(t) {
+      const tt = clamp(t, 0, T);
+      const pos = add(add(add(r0, mul(v0, tt)), mul(beta, 0.5 * tt * tt)), mul(alpha, tt * tt * tt / 6));
+      const vel = add(add(v0, mul(beta, tt)), mul(alpha, 0.5 * tt * tt));
+      const acc = add(beta, mul(alpha, tt));
+      return { pos, vel, acc };
+    },
+    costUntil(t) {
+      const tt = clamp(t, 0, T);
+      const a2 = norm2(alpha);
+      const b2 = norm2(beta);
+      const ab = dot(alpha, beta);
+      return (a2 * tt * tt * tt) / 3 + ab * tt * tt + b2 * tt;
+    },
+  };
+}
+
+function freePositionTrajectory(r0, v0, rf, T) {
+  const K = mul(sub(sub(rf, r0), mul(v0, T)), 3 / (T * T * T));
+  const vf = add(v0, mul(K, 0.5 * T * T));
+  return {
+    kind: "free",
+    T,
+    r0,
+    v0,
+    rf,
+    vf,
+    K,
+    lambdaUsed: hitCost(r0, v0, rf, T),
+    stateAt(t) {
+      const tt = clamp(t, 0, T);
+      const pos = add(add(r0, mul(v0, tt)), mul(K, 0.5 * T * tt * tt - tt * tt * tt / 6));
+      const vel = add(v0, mul(K, T * tt - 0.5 * tt * tt));
+      const acc = mul(K, T - tt);
+      return { pos, vel, acc };
+    },
+    costUntil(t) {
+      const tt = clamp(t, 0, T);
+      return norm2(K) * (T * T * tt - T * tt * tt + tt * tt * tt / 3);
+    },
+  };
+}
+
+function goldenSectionMin(fn, a, b, iterations = 50) {
+  const gr = (Math.sqrt(5) - 1) / 2;
+  let c = b - gr * (b - a);
+  let d = a + gr * (b - a);
+  let fc = fn(c);
+  let fd = fn(d);
+  for (let i = 0; i < iterations; i++) {
+    if (fc < fd) {
+      b = d; d = c; fd = fc; c = b - gr * (b - a); fc = fn(c);
+    } else {
+      a = c; c = d; fc = fd; d = a + gr * (b - a); fd = fn(d);
+    }
+  }
+  const x = fc < fd ? c : d;
+  return { x, fx: Math.min(fc, fd) };
+}
+
+function minimizeOnInterval(fn, tMin, tMax, samples = 600) {
+  let bestT = tMin;
+  let bestV = fn(tMin);
+  const step = (tMax - tMin) / samples;
+  for (let i = 1; i <= samples; i++) {
+    const t = tMin + step * i;
+    const val = fn(t);
+    if (val < bestV) {
+      bestV = val;
+      bestT = t;
+    }
+  }
+  const left = Math.max(tMin, bestT - step);
+  const right = Math.min(tMax, bestT + step);
+  const refined = goldenSectionMin(fn, left, right, 60);
+  return { t: refined.x, value: refined.fx };
+}
+
+function earliestFeasible(fn, budget, tMin, tMax, samples = 1000) {
+  let prevT = tMin;
+  let prevS = fn(prevT) - budget;
+  if (prevS <= 0) return tMin;
+  for (let i = 1; i <= samples; i++) {
+    const t = tMin + (tMax - tMin) * i / samples;
+    const s = fn(t) - budget;
+    if (s <= 0) {
+      let lo = prevT;
+      let hi = t;
+      for (let k = 0; k < 60; k++) {
+        const mid = 0.5 * (lo + hi);
+        if (fn(mid) <= budget) hi = mid; else lo = mid;
+      }
+      return hi;
+    }
+    prevT = t;
+    prevS = s;
+  }
+  return null;
+}
+
+function buildPursuerTrajectory(B, targetStateFn, tInt, mode) {
+  const { r: rB, v: vB } = shipState(B);
+  const target = targetStateFn(tInt);
+  if (mode === "boarding") return fixedTrajectory(rB, vB, target.pos, target.vel, tInt);
+  return freePositionTrajectory(rB, vB, target.pos, tInt);
+}
+
+function analyzeIntercept(B, targetStateFn, horizon, mode) {
+  const lambdaB = lambdaBudget(B);
+  const { r: rB, v: vB } = shipState(B);
+  const costFn = (t) => {
+    const s = targetStateFn(t);
+    return mode === "boarding"
+      ? fixedCost(0, rB, vB, s.pos, s.vel, t)
+      : hitCost(rB, vB, s.pos, t);
+  };
+  const tMin = Math.max(1e-3, horizon * 1e-4);
+  const minRes = minimizeOnInterval(costFn, tMin, horizon, 900);
+  const tEarliest = earliestFeasible(costFn, lambdaB, tMin, horizon, 1400);
+  const tChosen = tEarliest != null ? tEarliest : minRes.t;
+  const trajB = buildPursuerTrajectory(B, targetStateFn, tChosen, mode);
+  return {
+    wins: tEarliest != null,
+    earliestT: tEarliest,
+    bestT: minRes.t,
+    minCost: minRes.value,
+    margin: minRes.value / Math.max(lambdaB, EPS) - 1,
+    costFn,
+    trajectory: trajB,
+  };
+}
+
+function sampleTrajectory(traj, samples = 220) {
+  const pts = [];
+  for (let i = 0; i <= samples; i++) {
+    const t = traj.T * i / samples;
+    pts.push(traj.stateAt(t).pos);
+  }
+  return pts;
+}
+
+function chooseEscapeEndpoint(A, B, Z, H) {
+  const lambdaA = lambdaBudget(A);
+  const { r: rA, v: vA } = shipState(A);
+  const { r: rB, v: vB } = shipState(B);
+  const cA = add(rA, mul(vA, H));
+  const cB = add(rB, mul(vB, H));
+  const rReach = Math.sqrt(lambdaA / 3) * Math.pow(H, 1.5);
+  const awayB = sub(cA, cB);
+  const awayZ = sub(cA, [Z.x, Z.y]);
+  const dir = normalize(add(awayB, mul(awayZ, 0.35)), normalize(awayB, [1, 0]));
+  const endpoint = add(cA, mul(dir, rReach));
+  const gap = norm(awayB) + rReach - Math.sqrt(lambdaBudget(B) / 3) * Math.pow(H, 1.5);
+  return { endpoint, gap, dir, cA, cB, rReach };
+}
+
+function searchDrawStrategy(A, B, Z, mode, TA) {
+  const lambdaA = lambdaBudget(A);
+  const lambdaB = lambdaBudget(B);
+  const asymptoticAdvantage = lambdaA > lambdaB + 1e-8;
+  const Hmin = Math.max(10, isFinite(TA) ? TA * 0.6 : 10);
+  const Hmax = Math.max(120, isFinite(TA) ? TA * 4 : 180);
+  const Hs = [];
+  for (let i = 0; i < 24; i++) {
+    const u = i / 23;
+    Hs.push(Hmin * Math.pow(Hmax / Hmin, u));
+  }
+
+  let best = null;
+  for (const H of Hs) {
+    const escape = chooseEscapeEndpoint(A, B, Z, H);
+    if (escape.gap <= 0 && !asymptoticAdvantage) continue;
+    const { r: rA, v: vA } = shipState(A);
+    const trajA = freePositionTrajectory(rA, vA, escape.endpoint, H);
+    const intercept = analyzeIntercept(B, (t) => trajA.stateAt(t), H, mode);
+    const score = (intercept.minCost / Math.max(lambdaB, EPS) - 1) + 0.15 * Math.max(0, escape.gap);
+    if (!best || (intercept.wins === false && score > best.score) || (best.intercept.wins && !intercept.wins)) {
+      best = { H, trajA, intercept, escape, score };
+    }
+  }
+
+  if (!best) return null;
+  if (!asymptoticAdvantage) return null;
+  if (best.intercept.wins) return null;
+  return {
+    kind: "draw",
+    horizon: best.H,
+    trajectoryA: best.trajA,
+    trajectoryB: best.intercept.trajectory,
+    intercept: best.intercept,
+    note: `${mode === "boarding" ? "A keeps B outside the rendezvous set" : "A stays outside B's hit-reachable disk"} over the displayed horizon, and Λ_A > Λ_B gives the long-run escape edge.`,
+  };
+}
+
+function solveMode(A, B, Z, mode) {
+  const lambdaA = lambdaBudget(A);
+  const lambdaB = lambdaBudget(B);
+  const { r: rA, v: vA } = shipState(A);
+  const base = [Z.x, Z.y];
+  const TA = minTimeToState(lambdaA, rA, vA, base, [0, 0], "fixed");
+  const result = {
+    mode,
+    lambdaA,
+    lambdaB,
+    deltaA: deltaBudget(A),
+    deltaB: deltaBudget(B),
+    TA,
+  };
+  if (!isFinite(TA)) {
+    const draw = searchDrawStrategy(A, B, Z, mode, Infinity);
+    if (draw) return { ...result, outcome: "draw", strategy: "evade", ...draw };
+    return { ...result, outcome: "b_win", strategy: "no-base", reason: "A cannot reach base Z with zero terminal velocity." };
+  }
+
+  const trajBase = fixedTrajectory(rA, vA, base, [0, 0], TA);
+  const interceptBase = analyzeIntercept(B, (t) => trajBase.stateAt(t), TA, mode);
+  if (!interceptBase.wins) {
+    return {
+      ...result,
+      outcome: "a_win",
+      strategy: "base",
+      horizon: TA,
+      trajectoryA: trajBase,
+      trajectoryB: interceptBase.trajectory,
+      intercept: interceptBase,
+      note: "B cannot reach A's optimal base-transfer trajectory before A reaches Z.",
+    };
+  }
+
+  const draw = searchDrawStrategy(A, B, Z, mode, TA);
+  if (draw) {
+    return { ...result, outcome: "draw", strategy: "evade", ...draw };
+  }
+
+  return {
+    ...result,
+    outcome: "b_win",
+    strategy: "base-blocked",
+    horizon: TA,
+    trajectoryA: trajBase,
+    trajectoryB: interceptBase.trajectory,
+    intercept: interceptBase,
+    note: mode === "boarding"
+      ? "B has a feasible rendezvous with A's fastest route to base, and A does not have a surviving break-away strategy under the applet's analytic draw test."
+      : "B has a feasible hit on A's fastest route to base, and A does not have a surviving break-away strategy under the applet's analytic draw test.",
+  };
+}
+
+function fuelSeries(solution, samples = 180) {
+  if (!solution.trajectoryA) return [];
+  const rows = [];
+  const H = solution.horizon;
+  for (let i = 0; i <= samples; i++) {
+    const t = H * i / samples;
+    const a = solution.trajectoryA ? solution.trajectoryA.costUntil(t) / Math.max(solution.lambdaA, EPS) : 0;
+    const b = solution.trajectoryB ? solution.trajectoryB.costUntil(Math.min(t, solution.trajectoryB.T)) / Math.max(solution.lambdaB, EPS) : 0;
+    rows.push({ t, a, b });
+  }
+  return rows;
+}
+
+function extentFromSolutions(solutions, A, B, Z) {
+  let xs = [A.x, B.x, Z.x];
+  let ys = [A.y, B.y, Z.y];
+  for (const sol of solutions) {
+    if (!sol.trajectoryA) continue;
+    for (const p of sampleTrajectory(sol.trajectoryA, 180)) { xs.push(p[0]); ys.push(p[1]); }
+    if (sol.trajectoryB) for (const p of sampleTrajectory(sol.trajectoryB, 160)) { xs.push(p[0]); ys.push(p[1]); }
+  }
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const padX = Math.max(15, 0.12 * (maxX - minX + 1));
+  const padY = Math.max(15, 0.12 * (maxY - minY + 1));
+  return { minX: minX - padX, maxX: maxX + padX, minY: minY - padY, maxY: maxY + padY };
+}
+
 function Slider({ label, value, onChange, min, max, step, unit }) {
   return (
-    <div style={{ marginBottom: 5 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#8899aa", marginBottom: 1 }}>
+    <div style={{ marginBottom: 6 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#8da3bc", marginBottom: 1 }}>
         <span>{label}</span>
-        <span style={{ color: "#c0d8f0", fontFamily: "monospace" }}>
-          {Number.isInteger(step) ? value : value.toFixed(2)}{unit || ""}
-        </span>
+        <span style={{ color: "#dcecff" }}>{fmt(value, step >= 1 ? 0 : 2)}{unit || ""}</span>
       </div>
-      <input type="range" min={min} max={max} step={step} value={value}
-        onChange={e => onChange(parseFloat(e.target.value))}
-        style={{ width: "100%", height: 3, accentColor: "#4a9eff" }} />
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        style={{ width: "100%", accentColor: "#4a9eff" }}
+      />
     </div>
   );
 }
 
-function ShipPanel({ title, color, params, keys, onChange }) {
-  const set = (k, v) => onChange({ ...params, [k]: v });
+function ShipPanel({ title, color, params, onChange, withDynamics = true }) {
+  const set = (k, val) => onChange({ ...params, [k]: val });
   return (
-    <div style={{
-      background: "rgba(10,20,35,0.85)", border: `1px solid ${color}33`,
-      borderLeft: `3px solid ${color}`, borderRadius: 6, padding: "8px 10px", marginBottom: 8,
-    }}>
-      <div style={{ fontSize: 12, fontWeight: 700, color, marginBottom: 6, letterSpacing: 1 }}>{title}</div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 10px" }}>
-        <Slider label="x₀" value={params.x} onChange={v => set("x", v)} min={-100} max={200} step={1} />
-        <Slider label="y₀" value={params.y} onChange={v => set("y", v)} min={-100} max={100} step={1} />
+    <div style={{ background: "rgba(8,18,32,0.95)", border: `1px solid ${color}40`, borderLeft: `3px solid ${color}`, borderRadius: 8, padding: 10, marginBottom: 10 }}>
+      <div style={{ color, fontSize: 13, fontWeight: 700, letterSpacing: 1, marginBottom: 6 }}>{title}</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <Slider label="x₀" value={params.x} onChange={(v) => set("x", v)} min={-100} max={200} step={1} />
+        <Slider label="y₀" value={params.y} onChange={(v) => set("y", v)} min={-100} max={100} step={1} />
+        {withDynamics && <Slider label="vx₀" value={params.vx} onChange={(v) => set("vx", v)} min={-5} max={5} step={0.1} />}
+        {withDynamics && <Slider label="vy₀" value={params.vy} onChange={(v) => set("vy", v)} min={-5} max={5} step={0.1} />}
       </div>
-      {keys.includes("vx") && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 10px" }}>
-          <Slider label="vx₀" value={params.vx} onChange={v => set("vx", v)} min={-5} max={5} step={0.1} />
-          <Slider label="vy₀" value={params.vy} onChange={v => set("vy", v)} min={-5} max={5} step={0.1} />
+      {withDynamics && <>
+        <Slider label="Power P" value={params.P} onChange={(v) => set("P", v)} min={0.1} max={5} step={0.1} unit=" GW" />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <Slider label="m_wet" value={params.mWet} onChange={(v) => set("mWet", v)} min={1.1} max={10} step={0.1} unit=" kt" />
+          <Slider label="m_dry" value={params.mDry} onChange={(v) => set("mDry", Math.min(v, params.mWet - 0.1))} min={0.5} max={Math.max(0.6, params.mWet - 0.1)} step={0.1} unit=" kt" />
         </div>
-      )}
-      {keys.includes("P") && (
-        <>
-          <Slider label="Power P" value={params.P} onChange={v => set("P", v)} min={0.1} max={5} step={0.1} unit=" GW" />
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 10px" }}>
-            <Slider label="m_wet" value={params.mWet} onChange={v => set("mWet", v)} min={1.1} max={10} step={0.1} unit=" kt" />
-            <Slider label="m_dry" value={params.mDry} onChange={v => set("mDry", v)}
-              min={0.5} max={Math.min(params.mWet - 0.1, 9)} step={0.1} unit=" kt" />
-          </div>
-          <div style={{ fontSize: 9, color: "#556677", marginTop: 2 }}>
-            Δ = {(1 / params.mDry - 1 / params.mWet).toFixed(4)} · fuel = {((params.mWet - params.mDry) / params.mWet * 100).toFixed(0)}%
-          </div>
-        </>
-      )}
+        <div style={{ fontSize: 10, color: "#6f859d" }}>
+          Δ = {fmt(deltaBudget(params), 4)} · Λ = {fmt(lambdaBudget(params), 4)}
+        </div>
+      </>}
     </div>
   );
 }
 
-// ─── Canvas: trajectory map ───
-function drawMap(canvas, result, shipA, shipB, baseZ, activeVariant) {
-  if (!canvas || !result) return;
-  const ctx = canvas.getContext("2d");
-  const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
-  canvas.width = rect.width * dpr;
-  canvas.height = rect.height * dpr;
-  ctx.scale(dpr, dpr);
-  const W = rect.width, H = rect.height;
-
-  const trajB = activeVariant === 1 ? result.trajectoryB_v1 : result.trajectoryB_v2;
-  const allPts = [
-    [shipA.x, shipA.y], [shipB.x, shipB.y], [baseZ.x, baseZ.y],
-    ...(result.trajectoryA || []), ...(trajB || []),
-  ].filter(p => isFinite(p[0]) && isFinite(p[1]));
-
-  let mnX = Infinity, mxX = -Infinity, mnY = Infinity, mxY = -Infinity;
-  allPts.forEach(([x, y]) => { mnX = Math.min(mnX, x); mxX = Math.max(mxX, x); mnY = Math.min(mnY, y); mxY = Math.max(mxY, y); });
-  const pad = Math.max(mxX - mnX, mxY - mnY) * 0.15 + 5;
-  mnX -= pad; mxX += pad; mnY -= pad; mxY += pad;
-  const rX = mxX - mnX || 1, rY = mxY - mnY || 1;
-  const sc = Math.min(W / rX, H / rY);
-  const ox = (W - rX * sc) / 2, oy = (H - rY * sc) / 2;
-  const tx = x => ox + (x - mnX) * sc;
-  const ty = y => H - (oy + (y - mnY) * sc);
-
-  ctx.fillStyle = "#060d18"; ctx.fillRect(0, 0, W, H);
-
-  // Grid
-  const gs = Math.pow(10, Math.floor(Math.log10(rX / 5)));
-  ctx.strokeStyle = "#0a1828"; ctx.lineWidth = 0.5;
-  for (let x = Math.ceil(mnX / gs) * gs; x <= mxX; x += gs) { ctx.beginPath(); ctx.moveTo(tx(x), 0); ctx.lineTo(tx(x), H); ctx.stroke(); }
-  for (let y = Math.ceil(mnY / gs) * gs; y <= mxY; y += gs) { ctx.beginPath(); ctx.moveTo(0, ty(y)); ctx.lineTo(W, ty(y)); ctx.stroke(); }
-
-  // A trajectory
-  if (result.trajectoryA?.length > 1) {
-    ctx.beginPath(); ctx.strokeStyle = "#22dd88"; ctx.lineWidth = 2.5; ctx.setLineDash([]);
-    result.trajectoryA.forEach(([x, y], i) => i === 0 ? ctx.moveTo(tx(x), ty(y)) : ctx.lineTo(tx(x), ty(y)));
-    ctx.stroke();
-  }
-  // B trajectory
-  if (trajB?.length > 1) {
-    ctx.beginPath(); ctx.strokeStyle = "#ff4466"; ctx.lineWidth = 2; ctx.setLineDash([7, 5]);
-    trajB.forEach(([x, y], i) => i === 0 ? ctx.moveTo(tx(x), ty(y)) : ctx.lineTo(tx(x), ty(y)));
-    ctx.stroke(); ctx.setLineDash([]);
-  }
-
-  // Interception point
-  const vRes = activeVariant === 1 ? result.v1 : result.v2;
-  if (vRes?.displayTInt && result.feasibleA) {
-    const st = getTrajectory2D([shipA.x, shipA.y], [shipA.vx, shipA.vy], [baseZ.x, baseZ.y], [0, 0], result.TA, vRes.displayTInt);
-    const ix = tx(st.pos[0]), iy = ty(st.pos[1]);
-    ctx.beginPath(); ctx.arc(ix, iy, 7, 0, Math.PI * 2);
-    ctx.strokeStyle = vRes.wins ? "#ff4466" : "#445566"; ctx.lineWidth = 2; ctx.stroke();
-    if (vRes.wins) {
-      ctx.beginPath(); ctx.arc(ix, iy, 12, 0, Math.PI * 2);
-      ctx.strokeStyle = "#ff446644"; ctx.lineWidth = 1; ctx.stroke();
-      ctx.fillStyle = "#ff446699"; ctx.font = "bold 10px monospace";
-      ctx.fillText("intercept t=" + vRes.displayTInt.toFixed(1), ix + 16, iy + 3);
-    } else {
-      ctx.fillStyle = "#44556688"; ctx.font = "9px monospace";
-      ctx.fillText("best attempt", ix + 12, iy + 3);
-    }
-  }
-
-  // Velocity arrows
-  const drawArrow = (x, y, vx, vy, col) => {
-    if (Math.hypot(vx, vy) < 0.01) return;
-    const s2 = sc * 3;
-    ctx.beginPath(); ctx.moveTo(tx(x), ty(y));
-    ctx.lineTo(tx(x) + vx * s2, ty(y) - vy * s2);
-    ctx.strokeStyle = col + "88"; ctx.lineWidth = 2; ctx.stroke();
-  };
-
-  // Ship A
-  ctx.beginPath(); ctx.arc(tx(shipA.x), ty(shipA.y), 7, 0, Math.PI * 2);
-  ctx.fillStyle = "#22dd88"; ctx.fill();
-  ctx.font = "bold 13px monospace"; ctx.fillText("A", tx(shipA.x) + 11, ty(shipA.y) + 4);
-  drawArrow(shipA.x, shipA.y, shipA.vx, shipA.vy, "#22dd88");
-
-  // Ship B
-  ctx.beginPath(); ctx.arc(tx(shipB.x), ty(shipB.y), 7, 0, Math.PI * 2);
-  ctx.fillStyle = "#ff4466"; ctx.fill();
-  ctx.fillStyle = "#ff4466"; ctx.font = "bold 13px monospace"; ctx.fillText("B", tx(shipB.x) + 11, ty(shipB.y) + 4);
-  drawArrow(shipB.x, shipB.y, shipB.vx, shipB.vy, "#ff4466");
-
-  // Base Z hexagon
-  const zx = tx(baseZ.x), zy = ty(baseZ.y);
-  ctx.save(); ctx.translate(zx, zy); ctx.beginPath();
-  for (let i = 0; i < 6; i++) { const a = Math.PI / 3 * i - Math.PI / 6; const r = 11; i === 0 ? ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r) : ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r); }
-  ctx.closePath(); ctx.fillStyle = "#4a9eff22"; ctx.fill();
-  ctx.strokeStyle = "#4a9eff"; ctx.lineWidth = 2; ctx.stroke(); ctx.restore();
-  ctx.fillStyle = "#4a9eff"; ctx.font = "bold 13px monospace"; ctx.fillText("Z", zx + 15, zy + 4);
+function OutcomeCard({ title, color, solution }) {
+  const label = solution.outcome === "a_win" ? "A reaches base" : solution.outcome === "draw" ? "Forced draw / evasion" : "B intercepts";
+  return (
+    <div style={{ background: "rgba(8,18,32,0.95)", border: `1px solid ${color}40`, borderLeft: `3px solid ${color}`, borderRadius: 8, padding: 10, marginBottom: 10 }}>
+      <div style={{ color, fontSize: 13, fontWeight: 700, marginBottom: 6 }}>{title}</div>
+      <div style={{ color, fontWeight: 700, marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 11, color: "#9eb4ca", lineHeight: 1.5 }}>
+        A strategy: {solution.strategy}<br />
+        {isFinite(solution.TA) ? <>A minimum base time: t = {fmt(solution.TA, 2)}<br /></> : <>A cannot complete the Z transfer.<br /></>}
+        {solution.intercept && <>B best intercept cost ratio: {fmt(solution.intercept.minCost / Math.max(solution.lambdaB, EPS), 3)}<br /></>}
+        {solution.intercept?.earliestT != null && <>Earliest feasible intercept: t = {fmt(solution.intercept.earliestT, 2)}<br /></>}
+        <span style={{ color: "#7f94ac" }}>{solution.note || solution.reason}</span>
+      </div>
+    </div>
+  );
 }
 
-// ─── Canvas: fuel cost plot ───
-function drawFuelPlot(canvas, result) {
-  if (!canvas || !result?.scanResults) return;
-  const ctx = canvas.getContext("2d");
-  const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
-  canvas.width = rect.width * dpr;
-  canvas.height = rect.height * dpr;
-  ctx.scale(dpr, dpr);
-  const W = rect.width, H = rect.height;
-  const data = result.scanResults;
-  const DeltaB = result.DeltaB;
-
-  ctx.fillStyle = "#060d18"; ctx.fillRect(0, 0, W, H);
-
-  const mL = 70, mR = 30, mT = 50, mB = 55;
-  const pW = W - mL - mR, pH = H - mT - mB;
-  if (pW < 10 || pH < 10) return;
-
-  // Y scale
-  const allFuels = data.map(d => Math.min(d.fuelV1, d.fuelV2)).filter(isFinite);
-  const allMin = allFuels.length ? Math.min(...allFuels) : DeltaB;
-  const yMax = Math.max(DeltaB * 2.5, allMin * 4, DeltaB * 1.3);
-  const maxT = result.TA;
-
-  const px = t => mL + (t / maxT) * pW;
-  const py = f => mT + pH - (Math.min(f, yMax) / yMax) * pH;
-
-  // Grid
-  ctx.strokeStyle = "#0f1d30"; ctx.lineWidth = 0.5;
-  const nGridY = 6, nGridX = 8;
-  ctx.font = "10px monospace"; ctx.textAlign = "right"; ctx.fillStyle = "#445566";
-  for (let i = 0; i <= nGridY; i++) {
-    const y = mT + (i / nGridY) * pH;
-    ctx.beginPath(); ctx.moveTo(mL, y); ctx.lineTo(W - mR, y); ctx.stroke();
-    ctx.fillText((yMax * (1 - i / nGridY)).toFixed(3), mL - 8, y + 3);
+function MapView({ A, B, Z, solutions, selectedMode }) {
+  const extent = extentFromSolutions(solutions, A, B, Z);
+  const width = 980;
+  const height = 420;
+  const sx = width / Math.max(extent.maxX - extent.minX, 1);
+  const sy = height / Math.max(extent.maxY - extent.minY, 1);
+  const toXY = (p) => [(p[0] - extent.minX) * sx, height - (p[1] - extent.minY) * sy];
+  const grid = [];
+  for (let x = Math.ceil(extent.minX / 10) * 10; x <= extent.maxX; x += 10) {
+    const [gx] = toXY([x, 0]);
+    grid.push(<line key={`vx${x}`} x1={gx} y1={0} x2={gx} y2={height} stroke="rgba(74,158,255,0.08)" strokeWidth="1" />);
   }
-  ctx.textAlign = "center";
-  for (let i = 0; i <= nGridX; i++) {
-    const x = mL + (i / nGridX) * pW;
-    ctx.beginPath(); ctx.moveTo(x, mT); ctx.lineTo(x, mT + pH); ctx.stroke();
-    ctx.fillText((maxT * i / nGridX).toFixed(1), x, H - mB + 16);
+  for (let y = Math.ceil(extent.minY / 10) * 10; y <= extent.maxY; y += 10) {
+    const [, gy] = toXY([0, y]);
+    grid.push(<line key={`hy${y}`} x1={0} y1={gy} x2={width} y2={gy} stroke="rgba(74,158,255,0.08)" strokeWidth="1" />);
   }
 
-  // Plot border
-  ctx.strokeStyle = "#1a2a40"; ctx.lineWidth = 1;
-  ctx.strokeRect(mL, mT, pW, pH);
-
-  // Δ_B line
-  if (DeltaB <= yMax) {
-    const yLine = py(DeltaB);
-    ctx.beginPath(); ctx.moveTo(mL, yLine); ctx.lineTo(W - mR, yLine);
-    ctx.strokeStyle = "#ffffff55"; ctx.setLineDash([5, 4]); ctx.lineWidth = 1.5; ctx.stroke(); ctx.setLineDash([]);
-    // Shaded region below
-    ctx.fillStyle = "#22dd8808";
-    ctx.fillRect(mL, yLine, pW, mT + pH - yLine);
-    ctx.fillStyle = "#ffffffbb"; ctx.font = "bold 11px monospace"; ctx.textAlign = "left";
-    ctx.fillText("Δ_B = " + DeltaB.toFixed(4) + "  (B's fuel budget)", mL + 10, yLine - 8);
-    ctx.fillStyle = "#22dd8844"; ctx.font = "9px monospace";
-    ctx.fillText("← A escapes (B lacks fuel)", mL + 10, yLine + 14);
-  }
-
-  // V1 curve
-  ctx.beginPath(); ctx.strokeStyle = "#ffaa22"; ctx.lineWidth = 2.5;
-  let started1 = false;
-  data.forEach(d => { if (d.fuelV1 <= yMax * 1.5) { if (!started1) { ctx.moveTo(px(d.tInt), py(d.fuelV1)); started1 = true; } else ctx.lineTo(px(d.tInt), py(d.fuelV1)); } });
-  ctx.stroke();
-
-  // V2 curve
-  ctx.beginPath(); ctx.strokeStyle = "#ff4466"; ctx.lineWidth = 2.5;
-  let started2 = false;
-  data.forEach(d => { if (d.fuelV2 <= yMax * 1.5) { if (!started2) { ctx.moveTo(px(d.tInt), py(d.fuelV2)); started2 = true; } else ctx.lineTo(px(d.tInt), py(d.fuelV2)); } });
-  ctx.stroke();
-
-  // Best intercept dots (min-fuel)
-  const drawDot = (vr, col, label) => {
-    if (!vr?.minFuelTInt) return;
-    if (vr.fuelNeeded <= yMax) {
-      const cx = px(vr.minFuelTInt), cy = py(vr.fuelNeeded);
-      ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2);
-      ctx.fillStyle = col; ctx.fill();
-      ctx.strokeStyle = "#060d18"; ctx.lineWidth = 2; ctx.stroke();
-      ctx.fillStyle = col + "cc"; ctx.font = "9px monospace"; ctx.textAlign = "left";
-      ctx.fillText(`min Δ=${vr.fuelNeeded.toFixed(4)}`, cx + 10, cy + 3);
-    }
+  const styles = {
+    boarding: { a: "#20e3a2", b: "#ffb01f", dash: "" },
+    shooting: { a: "#19c2ff", b: "#ff4d7a", dash: "7 5" },
   };
-  drawDot(result.v1, "#ffaa22", "V1");
-  drawDot(result.v2, "#ff4466", "V2");
 
-  // Earliest feasible interception markers
-  const drawEarliest = (vr, col) => {
-    if (!vr?.earliestTInt) return;
-    const fuel = result.scanResults.find(d => Math.abs(d.tInt - vr.earliestTInt) < maxT / 400);
-    const fuelVal = col === "#ffaa22" ? fuel?.fuelV1 : fuel?.fuelV2;
-    if (!fuelVal || fuelVal > yMax) return;
-    const cx = px(vr.earliestTInt), cy = py(fuelVal);
-    // Diamond marker
-    ctx.save(); ctx.translate(cx, cy); ctx.rotate(Math.PI / 4);
-    ctx.fillStyle = col; ctx.fillRect(-4, -4, 8, 8);
-    ctx.strokeStyle = "#060d18"; ctx.lineWidth = 1.5; ctx.strokeRect(-4, -4, 8, 8);
-    ctx.restore();
-    // Vertical line to show the interception time
-    ctx.beginPath(); ctx.moveTo(cx, mT); ctx.lineTo(cx, mT + pH);
-    ctx.strokeStyle = col + "33"; ctx.setLineDash([3, 3]); ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle = col; ctx.font = "bold 9px monospace"; ctx.textAlign = "left";
-    ctx.fillText(`earliest t=${vr.earliestTInt.toFixed(1)}`, cx + 10, cy - 8);
-  };
-  drawEarliest(result.v1, "#ffaa22");
-  drawEarliest(result.v2, "#ff4466");
-
-  // Axis labels
-  ctx.fillStyle = "#7788aa"; ctx.font = "12px monospace"; ctx.textAlign = "center";
-  ctx.fillText("Interception time (t.u.)", mL + pW / 2, H - 8);
-  ctx.save(); ctx.translate(16, mT + pH / 2); ctx.rotate(-Math.PI / 2);
-  ctx.fillText("Δ required by B", 0, 0); ctx.restore();
-
-  // Legend
-  ctx.font = "12px monospace"; ctx.textAlign = "left";
-  const ly = mT + 16;
-  ctx.fillStyle = "#ffaa22"; ctx.fillRect(mL + 12, ly - 2, 20, 3);
-  ctx.fillText("V1: boarding (match pos + vel)", mL + 38, ly + 2);
-  ctx.fillStyle = "#ff4466"; ctx.fillRect(mL + 12, ly + 16, 20, 3);
-  ctx.fillText("V2: shooting (match pos only)", mL + 38, ly + 20);
-
-  // Title
-  ctx.fillStyle = "#99aabb"; ctx.font = "bold 13px monospace"; ctx.textAlign = "left";
-  ctx.fillText("B's minimum fuel cost to intercept A at each moment", mL, mT - 18);
-  ctx.fillStyle = "#55667788"; ctx.font = "10px monospace";
-  ctx.fillText("Where curve dips below Δ_B, pursuer B has enough fuel to intercept", mL, mT - 4);
+  return (
+    <div style={{ background: "#031224", border: "1px solid #14304d", borderRadius: 8, overflow: "hidden" }}>
+      <svg viewBox={`0 0 ${width} ${height}`} style={{ width: "100%", height: 420, display: "block", background: "linear-gradient(180deg,#04121f,#02101e)" }}>
+        {grid}
+        {solutions.map((sol) => {
+          const st = styles[sol.mode];
+          if (!sol.trajectoryA) return null;
+          const pathA = sampleTrajectory(sol.trajectoryA, 240).map((p, i) => {
+            const [x, y] = toXY(p);
+            return `${i === 0 ? "M" : "L"}${x},${y}`;
+          }).join(" ");
+          const pathB = sol.trajectoryB ? sampleTrajectory(sol.trajectoryB, 200).map((p, i) => {
+            const [x, y] = toXY(p);
+            return `${i === 0 ? "M" : "L"}${x},${y}`;
+          }).join(" ") : "";
+          const opacity = sol.mode === selectedMode ? 1 : 0.6;
+          return (
+            <g key={sol.mode} opacity={opacity}>
+              <path d={pathA} fill="none" stroke={st.a} strokeWidth={sol.mode === selectedMode ? 3 : 2.1} strokeDasharray={st.dash} />
+              {pathB && <path d={pathB} fill="none" stroke={st.b} strokeWidth={sol.mode === selectedMode ? 2.6 : 2} strokeDasharray={st.dash} />}
+            </g>
+          );
+        })}
+        {(() => {
+          const [x, y] = toXY([A.x, A.y]);
+          return <g><circle cx={x} cy={y} r={7} fill="#20e3a2" /><text x={x + 10} y={y + 4} fill="#20e3a2" fontSize="14" fontWeight="700">A</text></g>;
+        })()}
+        {(() => {
+          const [x, y] = toXY([B.x, B.y]);
+          return <g><circle cx={x} cy={y} r={7} fill="#ff4d7a" /><text x={x + 10} y={y + 4} fill="#ff4d7a" fontSize="14" fontWeight="700">B</text></g>;
+        })()}
+        {(() => {
+          const [x, y] = toXY([Z.x, Z.y]);
+          return <g>
+            <polygon points={`${x},${y-13} ${x+11},${y-6.5} ${x+11},${y+6.5} ${x},${y+13} ${x-11},${y+6.5} ${x-11},${y-6.5}`} fill="none" stroke="#4a9eff" strokeWidth="2" />
+            <text x={x + 14} y={y + 4} fill="#4a9eff" fontSize="14" fontWeight="700">Z</text>
+          </g>;
+        })()}
+      </svg>
+      <div style={{ padding: "10px 14px", borderTop: "1px solid #14304d", color: "#9ab0c7", fontSize: 12 }}>
+        Solid lines = boarding game. Dashed lines = shooting game. The highlighted mode is shown with thicker curves.
+      </div>
+    </div>
+  );
 }
 
-// ─── Main Component ───
-export default function SpaceChaseSimulator() {
-  const [preset, setPreset] = useState("Balanced duel");
-  const [shipA, setShipA] = useState(PRESETS["Balanced duel"].A);
-  const [shipB, setShipB] = useState(PRESETS["Balanced duel"].B);
-  const [baseZ, setBaseZ] = useState(PRESETS["Balanced duel"].Z);
-  const [activeVariant, setActiveVariant] = useState(2);
-  const [viewMode, setViewMode] = useState("both");
-  const mapRef = useRef(null);
-  const fuelRef = useRef(null);
+function FuelPlot({ boarding, shooting, selectedMode }) {
+  const rows1 = fuelSeries(boarding, 180);
+  const rows2 = fuelSeries(shooting, 180);
+  const width = 980;
+  const height = 300;
+  const maxT = Math.max(boarding.horizon || 1, shooting.horizon || 1, 1);
+  const padL = 50, padR = 12, padT = 12, padB = 28;
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
+  const x = (t) => padL + plotW * t / maxT;
+  const y = (f) => padT + plotH * (1 - clamp(f, 0, 1));
+  const line = (rows, key) => rows.map((r, i) => `${i === 0 ? "M" : "L"}${x(r.t)},${y(r[key])}`).join(" ");
+  const ys = [0, 0.25, 0.5, 0.75, 1.0];
+  return (
+    <div style={{ background: "#031224", border: "1px solid #14304d", borderRadius: 8, overflow: "hidden" }}>
+      <svg viewBox={`0 0 ${width} ${height}`} style={{ width: "100%", height: 300, display: "block" }}>
+        {ys.map((f) => <line key={f} x1={padL} y1={y(f)} x2={width - padR} y2={y(f)} stroke="rgba(74,158,255,0.08)" />)}
+        {[0, 0.2, 0.4, 0.6, 0.8, 1].map((u) => <line key={u} x1={x(maxT * u)} y1={padT} x2={x(maxT * u)} y2={height - padB} stroke="rgba(74,158,255,0.08)" />)}
+        <path d={line(rows1, "a")} fill="none" stroke="#20e3a2" strokeWidth={selectedMode === "boarding" ? 3 : 2.2} />
+        <path d={line(rows1, "b")} fill="none" stroke="#ffb01f" strokeWidth={selectedMode === "boarding" ? 2.8 : 2.0} />
+        <path d={line(rows2, "a")} fill="none" stroke="#19c2ff" strokeWidth={selectedMode === "shooting" ? 3 : 2.2} strokeDasharray="7 5" />
+        <path d={line(rows2, "b")} fill="none" stroke="#ff4d7a" strokeWidth={selectedMode === "shooting" ? 2.8 : 2.0} strokeDasharray="7 5" />
+        {ys.map((f) => <text key={`yt${f}`} x={8} y={y(f)+4} fill="#6c8299" fontSize="11">{fmt(f,2)}</text>)}
+        <text x={width/2 - 30} y={height - 6} fill="#7f95ab" fontSize="12">Simulation time (analytic horizon)</text>
+        <text transform={`translate(14 ${height/2 + 32}) rotate(-90)`} fill="#7f95ab" fontSize="12">Fuel fraction spent</text>
+      </svg>
+      <div style={{ padding: "10px 14px", borderTop: "1px solid #14304d", color: "#9ab0c7", fontSize: 12 }}>
+        V1 A fuel <span style={{ color: "#20e3a2", fontWeight: 700 }}>■</span> · V1 B fuel <span style={{ color: "#ffb01f", fontWeight: 700 }}>■</span> · V2 A fuel <span style={{ color: "#19c2ff", fontWeight: 700 }}>■</span> · V2 B fuel <span style={{ color: "#ff4d7a", fontWeight: 700 }}>■</span>
+      </div>
+    </div>
+  );
+}
+
+function SpaceChaseSimulator() {
+  const [presetName, setPresetName] = useState("Balanced duel");
+  const [A, setA] = useState(PRESETS["Balanced duel"].A);
+  const [B, setB] = useState(PRESETS["Balanced duel"].B);
+  const [Z, setZ] = useState(PRESETS["Balanced duel"].Z);
+  const [mode, setMode] = useState(DEFAULT_MODE);
+  const [view, setView] = useState("both");
+
+  const boarding = useMemo(() => solveMode(A, B, Z, "boarding"), [A, B, Z]);
+  const shooting = useMemo(() => solveMode(A, B, Z, "shooting"), [A, B, Z]);
+  const current = mode === "boarding" ? boarding : shooting;
 
   const applyPreset = (name) => {
-    setShipA(PRESETS[name].A); setShipB(PRESETS[name].B); setBaseZ(PRESETS[name].Z); setPreset(name);
+    const p = PRESETS[name];
+    setPresetName(name);
+    setA({ ...p.A });
+    setB({ ...p.B });
+    setZ({ ...p.Z });
   };
 
-  // Explicit primitive dependencies so React always recomputes when any slider changes
-  const result = useMemo(() => {
-    try {
-      return solveChase(
-        { pos: [shipA.x, shipA.y], vel: [shipA.vx, shipA.vy], P: shipA.P, mWet: shipA.mWet, mDry: shipA.mDry },
-        { pos: [shipB.x, shipB.y], vel: [shipB.vx, shipB.vy], P: shipB.P, mWet: shipB.mWet, mDry: shipB.mDry },
-        [baseZ.x, baseZ.y]
-      );
-    } catch { return null; }
-  }, [shipA.x, shipA.y, shipA.vx, shipA.vy, shipA.P, shipA.mWet, shipA.mDry,
-      shipB.x, shipB.y, shipB.vx, shipB.vy, shipB.P, shipB.mWet, shipB.mDry,
-      baseZ.x, baseZ.y]);
-
-  useEffect(() => {
-    if (viewMode !== "fuel") drawMap(mapRef.current, result, shipA, shipB, baseZ, activeVariant);
-    if (viewMode !== "map") drawFuelPlot(fuelRef.current, result);
+  const buttonStyle = (active) => ({
+    padding: "8px 12px",
+    borderRadius: 6,
+    border: `1px solid ${active ? "#4a9eff" : "#1b3653"}`,
+    background: active ? "rgba(74,158,255,0.10)" : "transparent",
+    color: active ? "#dcecff" : "#8ea4bc",
+    cursor: "pointer",
+    fontFamily: "inherit",
+    fontSize: 12,
   });
 
-  const vRes = result ? (activeVariant === 1 ? result.v1 : result.v2) : null;
-
   return (
-    <div style={{
-      fontFamily: "'IBM Plex Mono', 'Fira Code', 'Courier New', monospace",
-      background: "linear-gradient(145deg, #050c18 0%, #0a1428 100%)",
-      color: "#c0d8f0", minHeight: "100vh",
-    }}>
-      {/* Header */}
-      <div style={{
-        padding: "10px 16px", borderBottom: "1px solid #1a2a40",
-        background: "rgba(5,10,20,0.95)",
-        display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
-      }}>
+    <div style={{ height: "100%", minHeight: 700, background: "#020c18", color: "#c8dbee", fontFamily: "IBM Plex Mono, Fira Code, monospace", display: "grid", gridTemplateRows: "auto 1fr" }}>
+      <div style={{ padding: "14px 16px", borderBottom: "1px solid #17314b", display: "flex", justifyContent: "space-between", gap: 16, alignItems: "flex-start" }}>
         <div>
-          <div style={{ fontSize: 15, fontWeight: 800, letterSpacing: 2, color: "#e0f0ff" }}>PURSUIT–EVASION</div>
-          <div style={{ fontSize: 9, color: "#4a6680", letterSpacing: 1 }}>VAR-Isp · CONST POWER · FREE SPACE</div>
+          <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: 1.5, color: "#eef7ff" }}>PURSUIT–EVASION</div>
+          <div style={{ fontSize: 12, color: "#4a9eff", letterSpacing: 1.2 }}>ANALYTIC FREE-SPACE GAME · VAR-Isp · CONST POWER</div>
         </div>
-        <div style={{ flex: 1 }} />
-        {Object.keys(PRESETS).map(n => (
-          <button key={n} onClick={() => applyPreset(n)} style={{
-            background: preset === n ? "#4a9eff22" : "transparent",
-            border: `1px solid ${preset === n ? "#4a9eff" : "#1a2a40"}`,
-            color: preset === n ? "#4a9eff" : "#556677",
-            borderRadius: 4, padding: "3px 8px", fontSize: 10, cursor: "pointer", fontFamily: "inherit",
-          }}>{n}</button>
-        ))}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "flex-end" }}>
+          {Object.keys(PRESETS).map((name) => <button key={name} style={buttonStyle(presetName === name)} onClick={() => applyPreset(name)}>{name}</button>)}
+        </div>
       </div>
 
-      <div style={{ display: "flex", height: "calc(100vh - 46px)" }}>
-        {/* Left: Controls + Results */}
-        <div style={{
-          width: 270, minWidth: 270, overflowY: "auto",
-          padding: "10px 12px", borderRight: "1px solid #1a2a40",
-          background: "rgba(5,10,20,0.5)",
-        }}>
-          <ShipPanel title="◆ SHIP A — EVADER" color="#22dd88"
-            params={shipA} keys={["vx", "P"]} onChange={setShipA} />
-          <ShipPanel title="◆ SHIP B — PURSUER" color="#ff4466"
-            params={shipB} keys={["vx", "P"]} onChange={setShipB} />
-          <ShipPanel title="⬡ BASE Z" color="#4a9eff"
-            params={baseZ} keys={[]} onChange={setBaseZ} />
+      <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", minHeight: 0 }}>
+        <div style={{ padding: 12, borderRight: "1px solid #17314b", overflowY: "auto" }}>
+          <ShipPanel title="◆ SHIP A — EVADER" color="#20e3a2" params={A} onChange={setA} />
+          <ShipPanel title="◆ SHIP B — PURSUER" color="#ff4d7a" params={B} onChange={setB} />
+          <ShipPanel title="◇ BASE Z" color="#4a9eff" params={Z} onChange={setZ} withDynamics={false} />
 
-          {/* Variant toggle */}
-          <div style={{ display: "flex", gap: 5, marginBottom: 8 }}>
-            {[1, 2].map(v => (
-              <button key={v} onClick={() => setActiveVariant(v)} style={{
-                flex: 1, padding: "5px 0", fontSize: 10,
-                background: activeVariant === v ? (v === 1 ? "#ffaa2222" : "#ff446622") : "transparent",
-                border: `1px solid ${activeVariant === v ? (v === 1 ? "#ffaa22" : "#ff4466") : "#1a2a40"}`,
-                color: activeVariant === v ? (v === 1 ? "#ffaa22" : "#ff4466") : "#556677",
-                borderRadius: 4, cursor: "pointer", fontFamily: "inherit",
-              }}>V{v}: {v === 1 ? "Board" : "Shoot"}</button>
-            ))}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
+            <button style={buttonStyle(mode === "boarding")} onClick={() => setMode("boarding")}>V1: Boarding</button>
+            <button style={buttonStyle(mode === "shooting")} onClick={() => setMode("shooting")}>V2: Shooting</button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 10 }}>
+            <button style={buttonStyle(view === "map")} onClick={() => setView("map")}>Map</button>
+            <button style={buttonStyle(view === "fuel")} onClick={() => setView("fuel")}>Fuel</button>
+            <button style={buttonStyle(view === "both")} onClick={() => setView("both")}>Both</button>
           </div>
 
-          {/* View toggle */}
-          <div style={{ display: "flex", gap: 4, marginBottom: 10 }}>
-            {[["map", "Map"], ["fuel", "Fuel Plot"], ["both", "Both"]].map(([k, l]) => (
-              <button key={k} onClick={() => setViewMode(k)} style={{
-                flex: 1, padding: "4px 0", fontSize: 9,
-                background: viewMode === k ? "#1a2a4066" : "transparent",
-                border: `1px solid ${viewMode === k ? "#3366aa" : "#1a2a40"}`,
-                color: viewMode === k ? "#88aacc" : "#445566",
-                borderRadius: 3, cursor: "pointer", fontFamily: "inherit",
-              }}>{l}</button>
-            ))}
-          </div>
+          <OutcomeCard title="V1 — BOARDING" color="#ffb01f" solution={boarding} />
+          <OutcomeCard title="V2 — SHOOTING" color="#19c2ff" solution={shooting} />
 
-          {/* Results */}
-          {result && (
-            <div style={{
-              background: "rgba(10,20,35,0.9)", border: "1px solid #1a2a40",
-              borderRadius: 6, padding: 10,
-            }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: "#6688aa", marginBottom: 6, letterSpacing: 1 }}>RESULTS</div>
-              {!result.feasibleA ? (
-                <div style={{ color: "#ff6644", fontSize: 11 }}>
-                  Ship A cannot reach base Z.<br />
-                  <span style={{ fontSize: 10, color: "#886644" }}>Insufficient fuel (Δ_A = {result.DeltaA.toFixed(4)})</span>
-                </div>
-              ) : (
-                <>
-                  <div style={{ fontSize: 11, marginBottom: 2 }}>
-                    <span style={{ color: "#22dd88" }}>A</span> flight time: <b style={{ color: "#e0f0ff" }}>{result.TA.toFixed(2)}</b> t.u.
-                  </div>
-                  <div style={{ fontSize: 10, color: "#556677", marginBottom: 6 }}>
-                    Δ_A = {result.DeltaA.toFixed(4)} · Δ_B = {result.DeltaB.toFixed(4)}
-                  </div>
-
-                  {[1, 2].map(v => {
-                    const r = v === 1 ? result.v1 : result.v2;
-                    if (!r) return null;
-                    const active = activeVariant === v;
-                    return (
-                      <div key={v} style={{
-                        marginBottom: 8, padding: "6px 8px",
-                        background: active ? "rgba(255,255,255,0.03)" : "transparent",
-                        borderRadius: 4, border: active ? "1px solid #1a2a40" : "1px solid transparent",
-                        opacity: active ? 1 : 0.5,
-                      }}>
-                        <div style={{ fontSize: 11, color: v === 1 ? "#ffaa22" : "#ff4466", fontWeight: 700, marginBottom: 3 }}>
-                          V{v}: {v === 1 ? "Boarding" : "Shooting"}
-                        </div>
-                        <div style={{ fontSize: 10, color: "#8899aa", lineHeight: 1.6 }}>
-                          Min-fuel t = {r.minFuelTInt?.toFixed(2)} · Δ = {r.fuelNeeded.toFixed(4)} ({(r.fuelRatio * 100).toFixed(1)}% of Δ_B)<br />
-                          {r.wins && r.earliestTInt != null
-                            ? <>Earliest intercept t = {r.earliestTInt.toFixed(2)} ({(r.earliestTInt / result.TA * 100).toFixed(0)}% of A's trip)</>
-                            : <>No feasible interception window</>}
-                        </div>
-                        <div style={{ width: "100%", height: 8, background: "#0a1525", borderRadius: 4, marginTop: 4, overflow: "hidden", position: "relative" }}>
-                          <div style={{
-                            width: `${Math.min(r.fuelRatio * 100, 100)}%`, height: "100%",
-                            background: r.wins
-                              ? `linear-gradient(90deg, ${v === 1 ? "#ffaa22" : "#ff4466"}, ${v === 1 ? "#ff8800" : "#cc2244"})`
-                              : "#223344",
-                            borderRadius: 4, transition: "width 0.3s",
-                          }} />
-                        </div>
-                        <div style={{
-                          fontSize: 13, fontWeight: 800, marginTop: 5,
-                          color: r.wins ? "#ff4466" : "#22dd88",
-                        }}>
-                          {r.wins ? "⚠ B INTERCEPTS" : "✓ A ESCAPES"}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </>
-              )}
-            </div>
-          )}
-
-          <div style={{ fontSize: 8, color: "#2a3a4a", marginTop: 10, lineHeight: 1.5 }}>
-            Model: constant-P, variable-Isp, gravity-free 2D.<br />
-            Optimal a(t) linear per axis (PMP).<br />
-            Δ = 1/m_dry − 1/m_wet.<br />
-            A takes min-time brachistochrone to Z (v_f=0).
+          <div style={{ fontSize: 11, color: "#758ca4", lineHeight: 1.6, padding: "2px 4px" }}>
+            The applet no longer integrates a chase step-by-step. It builds A and B trajectories from the closed-form transfer equations, then solves only scalar time searches for minimum-time base runs and interception feasibility.
           </div>
         </div>
 
-        {/* Right: Visualizations */}
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          {viewMode !== "fuel" && (
-            <div style={{ flex: viewMode === "both" ? "0 0 45%" : 1, position: "relative", minHeight: 0 }}>
-              <canvas ref={mapRef} style={{ width: "100%", height: "100%", display: "block" }} />
-            </div>
-          )}
-          {viewMode === "both" && (
-            <div style={{ height: 1, background: "#1a2a40", flexShrink: 0 }} />
-          )}
-          {viewMode !== "map" && (
-            <div style={{ flex: viewMode === "both" ? "0 0 55%" : 1, minHeight: 0 }}>
-              <canvas ref={fuelRef} style={{ width: "100%", height: "100%", display: "block" }} />
-            </div>
-          )}
+        <div style={{ padding: 12, overflow: "auto" }}>
+          <div style={{ marginBottom: 10, fontSize: 13, color: current.outcome === "a_win" ? "#20e3a2" : current.outcome === "draw" ? "#d1e6ff" : "#ffb8c5", fontWeight: 700 }}>
+            {mode === "boarding" ? "V1 • Boarding" : "V2 • Shooting"} — {current.outcome === "a_win" ? "A commits to Z successfully" : current.outcome === "draw" ? "A breaks away and forces a draw" : "B can intercept"}
+          </div>
+          {(view === "map" || view === "both") && <MapView A={A} B={B} Z={Z} solutions={[boarding, shooting]} selectedMode={mode} />}
+          {(view === "fuel" || view === "both") && <div style={{ marginTop: 12 }}><FuelPlot boarding={boarding} shooting={shooting} selectedMode={mode} /></div>}
+          <div style={{ marginTop: 12, fontSize: 12, color: "#7f95ab", lineHeight: 1.7 }}>
+            Λ_A = {fmt(current.lambdaA, 4)} · Λ_B = {fmt(current.lambdaB, 4)} · A minimum base time {isFinite(current.TA) ? `t = ${fmt(current.TA, 3)}` : "is infeasible"}. {current.note || current.reason}
+          </div>
         </div>
       </div>
     </div>
   );
+}
+
+window.SpaceChaseSimulator = SpaceChaseSimulator;
+const rootNode = document.getElementById("applet-root");
+if (rootNode) {
+  const root = ReactDOM.createRoot(rootNode);
+  root.render(React.createElement(SpaceChaseSimulator));
 }
