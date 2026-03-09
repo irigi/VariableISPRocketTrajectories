@@ -467,6 +467,13 @@ function MapView({ A, B, Z, solutions, selectedMode }) {
     boarding: { a: "#20e3a2", b: "#ffb01f", dash: "" },
     shooting: { a: "#19c2ff", b: "#ff4d7a", dash: "7 5" },
   };
+  const captureMarkers = solutions.flatMap((sol) => {
+    if (!sol.trajectoryA || !sol.intercept?.wins) return [];
+    const tCapture = sol.intercept.earliestT ?? sol.trajectoryB?.T;
+    if (!(tCapture > 0)) return [];
+    const [x, y] = toXY(sol.trajectoryA.stateAt(tCapture).pos);
+    return [{ mode: sol.mode, x, y }];
+  });
 
   return (
     <div style={{ background: "#031224", border: "1px solid #14304d", borderRadius: 8, overflow: "hidden" }}>
@@ -499,6 +506,16 @@ function MapView({ A, B, Z, solutions, selectedMode }) {
           const [x, y] = toXY([B.x, B.y]);
           return <g><circle cx={x} cy={y} r={7} fill="#ff4d7a" /><text x={x + 10} y={y + 4} fill="#ff4d7a" fontSize="14" fontWeight="700">B</text></g>;
         })()}
+        {captureMarkers.map(({ mode, x, y }) => (
+          <g key={`capture-${mode}`} opacity={mode === selectedMode ? 1 : 0.7}>
+            <circle cx={x} cy={y} r={7} fill="none" stroke="#ff3b30" strokeWidth="1.5" />
+            <circle cx={x} cy={y} r={3} fill="#ff3b30" />
+            <line x1={x - 10} y1={y} x2={x - 4} y2={y} stroke="#ff3b30" strokeWidth="1.5" strokeLinecap="round" />
+            <line x1={x + 4} y1={y} x2={x + 10} y2={y} stroke="#ff3b30" strokeWidth="1.5" strokeLinecap="round" />
+            <line x1={x} y1={y - 10} x2={x} y2={y - 4} stroke="#ff3b30" strokeWidth="1.5" strokeLinecap="round" />
+            <line x1={x} y1={y + 4} x2={x} y2={y + 10} stroke="#ff3b30" strokeWidth="1.5" strokeLinecap="round" />
+          </g>
+        ))}
         {(() => {
           const [x, y] = toXY([Z.x, Z.y]);
           return <g>

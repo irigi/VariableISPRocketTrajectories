@@ -418,7 +418,15 @@
       boarding: { a: "#20e3a2", b: "#ffb01f", dash: "" },
       shooting: { a: "#19c2ff", b: "#ff4d7a", dash: "7 5" }
     };
-    return /* @__PURE__ */ React.createElement("div", { style: { background: "#031224", border: "1px solid #14304d", borderRadius: 8, overflow: "hidden" } }, /* @__PURE__ */ React.createElement("svg", { viewBox: `0 0 ${width} ${height}`, style: { width: "100%", height: 420, display: "block", background: "linear-gradient(180deg,#04121f,#02101e)" } }, grid, solutions.map((sol) => {
+    const captureMarkers = solutions.flatMap((sol) => {
+      var _a;
+      if (!sol.trajectoryA || !((_a = sol.intercept) != null && _a.wins)) return [];
+      const tCapture = sol.intercept.earliestT ?? (sol.trajectoryB == null ? void 0 : sol.trajectoryB.T);
+      if (!(tCapture > 0)) return [];
+      const [x, y] = toXY(sol.trajectoryA.stateAt(tCapture).pos);
+      return [{ mode: sol.mode, x, y }];
+    });
+    const trajectoryEls = solutions.map((sol) => {
       const st = styles[sol.mode];
       if (!sol.trajectoryA) return null;
       const pathA = sampleTrajectory(sol.trajectoryA, 240).map((p, i) => {
@@ -431,16 +439,15 @@
       }).join(" ") : "";
       const opacity = sol.mode === selectedMode ? 1 : 0.6;
       return /* @__PURE__ */ React.createElement("g", { key: sol.mode, opacity }, /* @__PURE__ */ React.createElement("path", { d: pathA, fill: "none", stroke: st.a, strokeWidth: sol.mode === selectedMode ? 3 : 2.1, strokeDasharray: st.dash }), pathB && /* @__PURE__ */ React.createElement("path", { d: pathB, fill: "none", stroke: st.b, strokeWidth: sol.mode === selectedMode ? 2.6 : 2, strokeDasharray: st.dash }));
-    }), (() => {
-      const [x, y] = toXY([A.x, A.y]);
-      return /* @__PURE__ */ React.createElement("g", null, /* @__PURE__ */ React.createElement("circle", { cx: x, cy: y, r: 7, fill: "#20e3a2" }), /* @__PURE__ */ React.createElement("text", { x: x + 10, y: y + 4, fill: "#20e3a2", fontSize: "14", fontWeight: "700" }, "A"));
-    })(), (() => {
-      const [x, y] = toXY([B.x, B.y]);
-      return /* @__PURE__ */ React.createElement("g", null, /* @__PURE__ */ React.createElement("circle", { cx: x, cy: y, r: 7, fill: "#ff4d7a" }), /* @__PURE__ */ React.createElement("text", { x: x + 10, y: y + 4, fill: "#ff4d7a", fontSize: "14", fontWeight: "700" }, "B"));
-    })(), (() => {
-      const [x, y] = toXY([Z.x, Z.y]);
-      return /* @__PURE__ */ React.createElement("g", null, /* @__PURE__ */ React.createElement("polygon", { points: `${x},${y - 13} ${x + 11},${y - 6.5} ${x + 11},${y + 6.5} ${x},${y + 13} ${x - 11},${y + 6.5} ${x - 11},${y - 6.5}`, fill: "none", stroke: "#4a9eff", strokeWidth: "2" }), /* @__PURE__ */ React.createElement("text", { x: x + 14, y: y + 4, fill: "#4a9eff", fontSize: "14", fontWeight: "700" }, "Z"));
-    })()), /* @__PURE__ */ React.createElement("div", { style: { padding: "10px 14px", borderTop: "1px solid #14304d", color: "#9ab0c7", fontSize: 12 } }, "Solid lines = boarding game. Dashed lines = shooting game. The highlighted mode is shown with thicker curves."));
+    });
+    const [ax, ay] = toXY([A.x, A.y]);
+    const aEl = /* @__PURE__ */ React.createElement("g", null, /* @__PURE__ */ React.createElement("circle", { cx: ax, cy: ay, r: 7, fill: "#20e3a2" }), /* @__PURE__ */ React.createElement("text", { x: ax + 10, y: ay + 4, fill: "#20e3a2", fontSize: "14", fontWeight: "700" }, "A"));
+    const [bx, by] = toXY([B.x, B.y]);
+    const bEl = /* @__PURE__ */ React.createElement("g", null, /* @__PURE__ */ React.createElement("circle", { cx: bx, cy: by, r: 7, fill: "#ff4d7a" }), /* @__PURE__ */ React.createElement("text", { x: bx + 10, y: by + 4, fill: "#ff4d7a", fontSize: "14", fontWeight: "700" }, "B"));
+    const captureEls = captureMarkers.map(({ mode, x, y }) => /* @__PURE__ */ React.createElement("g", { key: `capture-${mode}`, opacity: mode === selectedMode ? 1 : 0.7 }, /* @__PURE__ */ React.createElement("circle", { cx: x, cy: y, r: 7, fill: "none", stroke: "#ff3b30", strokeWidth: "1.5" }), /* @__PURE__ */ React.createElement("circle", { cx: x, cy: y, r: 3, fill: "#ff3b30" }), /* @__PURE__ */ React.createElement("line", { x1: x - 10, y1: y, x2: x - 4, y2: y, stroke: "#ff3b30", strokeWidth: "1.5", strokeLinecap: "round" }), /* @__PURE__ */ React.createElement("line", { x1: x + 4, y1: y, x2: x + 10, y2: y, stroke: "#ff3b30", strokeWidth: "1.5", strokeLinecap: "round" }), /* @__PURE__ */ React.createElement("line", { x1: x, y1: y - 10, x2: x, y2: y - 4, stroke: "#ff3b30", strokeWidth: "1.5", strokeLinecap: "round" }), /* @__PURE__ */ React.createElement("line", { x1: x, y1: y + 4, x2: x, y2: y + 10, stroke: "#ff3b30", strokeWidth: "1.5", strokeLinecap: "round" })));
+    const [zx, zy] = toXY([Z.x, Z.y]);
+    const zEl = /* @__PURE__ */ React.createElement("g", null, /* @__PURE__ */ React.createElement("polygon", { points: `${zx},${zy - 13} ${zx + 11},${zy - 6.5} ${zx + 11},${zy + 6.5} ${zx},${zy + 13} ${zx - 11},${zy + 6.5} ${zx - 11},${zy - 6.5}`, fill: "none", stroke: "#4a9eff", strokeWidth: "2" }), /* @__PURE__ */ React.createElement("text", { x: zx + 14, y: zy + 4, fill: "#4a9eff", fontSize: "14", fontWeight: "700" }, "Z"));
+    return /* @__PURE__ */ React.createElement("div", { style: { background: "#031224", border: "1px solid #14304d", borderRadius: 8, overflow: "hidden" } }, /* @__PURE__ */ React.createElement("svg", { viewBox: `0 0 ${width} ${height}`, style: { width: "100%", height: 420, display: "block", background: "linear-gradient(180deg,#04121f,#02101e)" } }, grid, trajectoryEls, aEl, bEl, captureEls, zEl), /* @__PURE__ */ React.createElement("div", { style: { padding: "10px 14px", borderTop: "1px solid #14304d", color: "#9ab0c7", fontSize: 12 } }, "Solid lines = boarding game. Dashed lines = shooting game. The highlighted mode is shown with thicker curves."));
   }
   function FuelPlot({ boarding, shooting, selectedMode }) {
     const rows1 = fuelSeries(boarding, 180);
