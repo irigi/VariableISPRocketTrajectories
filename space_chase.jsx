@@ -491,7 +491,8 @@ function OutcomeCard({ title, color, solution }) {
   );
 }
 
-function MapView({ A, B, Z, solutions, selectedMode }) {
+function MapView({ A, B, Z, solution, selectedMode }) {
+  const solutions = solution ? [solution] : [];
   const extent = extentFromSolutions(solutions, A, B, Z);
   const width = 980;
   const height = 420;
@@ -570,7 +571,9 @@ function MapView({ A, B, Z, solutions, selectedMode }) {
         })()}
       </svg>
       <div style={{ padding: "10px 14px", borderTop: "1px solid #14304d", color: "#9ab0c7", fontSize: 12 }}>
-        Solid lines = boarding game. Dashed lines = shooting game. The highlighted mode is shown with thicker curves.
+        {selectedMode === "boarding"
+          ? "Showing only the boarding solution."
+          : "Showing only the shooting solution."}
       </div>
     </div>
   );
@@ -680,7 +683,7 @@ function SpaceChaseSimulator() {
           <div style={{ marginBottom: 10, fontSize: 13, color: current.outcome === "a_win" ? "#20e3a2" : current.outcome === "draw" ? "#d1e6ff" : "#ffb8c5", fontWeight: 700 }}>
             {mode === "boarding" ? "V1 • Boarding" : "V2 • Shooting"} — {current.outcome === "a_win" ? "A commits to Z successfully" : current.outcome === "draw" ? "A breaks away and forces a draw" : current.strategy === "delay" ? "A cannot escape, but delays capture" : "B can intercept"}
           </div>
-          {(view === "map" || view === "both") && <MapView A={A} B={B} Z={Z} solutions={[boarding, shooting]} selectedMode={mode} />}
+          {(view === "map" || view === "both") && <MapView A={A} B={B} Z={Z} solution={current} selectedMode={mode} />}
           {(view === "fuel" || view === "both") && <div style={{ marginTop: 12 }}><FuelPlot boarding={boarding} shooting={shooting} selectedMode={mode} /></div>}
           <div style={{ marginTop: 12, fontSize: 12, color: "#7f95ab", lineHeight: 1.7 }}>
             Λ_A = {fmt(current.lambdaA, 4)} · Λ_B = {fmt(current.lambdaB, 4)} · A minimum base time {isFinite(current.TA) ? `t = ${fmt(current.TA, 3)}` : "is infeasible"}. {current.note || current.reason}
