@@ -210,13 +210,63 @@ def _classify_one_solved_cell(task):
     winding = int(np.clip(int(winding), -9, 9))
     return int(i), int(j), int(k), int(branch), int(winding), bool(mismatch)
 
-# -----------------------------------------------------------------------
-
 
 def classify_all_solved_points(state, data, rho_grid, kappa_grid, theta_grid, solver):
     branch_map = np.full(state.shape, BRANCH_UNDEFINED, dtype=np.int8)
     winding_map = np.zeros(state.shape, dtype=np.int8)
     mismatch_map = np.zeros(state.shape, dtype=bool)
+
+    # return branch_map, winding_map, mismatch_map            # skip everything
+
+    from_two_files = False
+    if from_two_files:
+        threshold = 0.015
+        second_npz_path = r"c:\Programs\VariableISPRocketTrajectories\atlas\run004\trajectory_atlas.npz"
+        other_bundle = np.load(second_npz_path)
+        other_state = other_bundle["state"]
+        other_data = other_bundle["data"]
+
+        if other_state.shape != state.shape:
+            raise ValueError(
+                f"other_state.shape={other_state.shape} does not match state.shape={state.shape}"
+            )
+        if other_data.shape[:3] != state.shape:
+            raise ValueError(
+                f"other_data.shape[:3]={other_data.shape[:3]} does not match state.shape={state.shape}"
+            )
+        if other_data.shape[-1] < 6:
+            raise ValueError(
+                f"Expected other_data last axis to hold at least 6 values [params..., t_days], "
+                f"got shape {other_data.shape}"
+            )
+
+        solved_here = (state == STATE_SOLVED)
+        solved_other = (other_state == STATE_SOLVED)
+        solved_both = solved_here & solved_other
+
+        t_here = np.asarray(data[..., 5], dtype=float)
+        t_other = np.asarray(other_data[..., 5], dtype=float)
+
+        finite_both = np.isfinite(t_here) & np.isfinite(t_other)
+        comparable = solved_both & finite_both
+
+        # Relative difference with respect to the smaller of the two times.
+        min_t = np.minimum(t_here, t_other)
+        rel_diff = np.full(state.shape, np.inf, dtype=float)
+        positive_time = min_t > 0.0
+        rel_diff[positive_time] = np.abs(t_here[positive_time] - t_other[positive_time]) / min_t[positive_time]
+
+        clearly_left = comparable & (rel_diff >= threshold) & (t_here < t_other)
+        clearly_right = comparable & (rel_diff >= threshold) & (t_here > t_other)
+
+        # Leave nearly-equal solutions undefined.
+        branch_map[clearly_left] = BRANCH_LEFT
+        branch_map[clearly_right] = BRANCH_RIGHT
+
+        branch_map[solved_here & ~solved_other] = BRANCH_LEFT
+        branch_map[solved_other & ~solved_here] = BRANCH_RIGHT
+
+        return branch_map, winding_map, mismatch_map
 
     solved_indices = np.argwhere(state == STATE_SOLVED)
     total = int(len(solved_indices))
@@ -390,7 +440,8 @@ def main():
     branch_map, winding_map, mismatch_map = classify_all_solved_points(state, data, rho_grid, kappa_grid, theta_grid, solver)
     display_state = make_display_state(state, branch_map, mismatch_map)
 
-    if True:
+    write_patched_file = False
+    if write_patched_file:
         mismatch_solved = (state == STATE_SOLVED) & mismatch_map
         n_bad = int(np.count_nonzero(mismatch_solved))
 
