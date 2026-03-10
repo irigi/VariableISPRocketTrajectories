@@ -264,41 +264,81 @@ function chooseEscapeEndpoint(A, B, Z, H) {
   return { endpoint, gap, dir, cA, cB, rReach };
 }
 
-function searchDrawStrategy(A, B, Z, mode, TA) {
+function candidateEndpoint(A, B, Z, H, theta) {
+  const lambdaA = lambdaBudget(A);
+  const { r: rA, v: vA } = shipState(A);
+  const cA = add(rA, mul(vA, H));
+  const rReach = Math.sqrt(lambdaA / 3) * Math.pow(H, 1.5);
+  const endpoint = add(cA, [Math.cos(theta) * rReach, Math.sin(theta) * rReach]);
+  const { r: rB, v: vB } = shipState(B);
+  const cB = add(rB, mul(vB, H));
+  const gap = norm(sub(endpoint, cB)) - Math.sqrt(lambdaBudget(B) / 3) * Math.pow(H, 1.5);
+  const awayZ = norm(sub(endpoint, [Z.x, Z.y]));
+  return { endpoint, gap, awayZ, cA, cB, rReach };
+}
+
+function searchEvadeOrDelayStrategy(A, B, Z, mode, TA) {
   const lambdaA = lambdaBudget(A);
   const lambdaB = lambdaBudget(B);
   const asymptoticAdvantage = lambdaA > lambdaB + 1e-8;
-  const Hmin = Math.max(10, isFinite(TA) ? TA * 0.6 : 10);
-  const Hmax = Math.max(120, isFinite(TA) ? TA * 4 : 180);
+  const Hmin = Math.max(6, isFinite(TA) ? TA * 0.45 : 6);
+  const Hmax = Math.max(180, isFinite(TA) ? TA * 7 : 220);
   const Hs = [];
-  for (let i = 0; i < 24; i++) {
-    const u = i / 23;
+  for (let i = 0; i < 28; i++) {
+    const u = i / 27;
     Hs.push(Hmin * Math.pow(Hmax / Hmin, u));
   }
 
-  let best = null;
+  const { r: rA, v: vA } = shipState(A);
+  const guide = chooseEscapeEndpoint(A, B, Z, Math.max(Hmin, Math.min(Hmax, isFinite(TA) ? TA : 24)));
+  let thetaSeed = Math.atan2(guide.dir[1], guide.dir[0]);
+  let bestDraw = null;
+  let bestDelay = null;
+
   for (const H of Hs) {
-    const escape = chooseEscapeEndpoint(A, B, Z, H);
-    if (escape.gap <= 0 && !asymptoticAdvantage) continue;
-    const { r: rA, v: vA } = shipState(A);
-    const trajA = freePositionTrajectory(rA, vA, escape.endpoint, H);
-    const intercept = analyzeIntercept(B, (t) => trajA.stateAt(t), H, mode);
-    const score = (intercept.minCost / Math.max(lambdaB, EPS) - 1) + 0.15 * Math.max(0, escape.gap);
-    if (!best || (intercept.wins === false && score > best.score) || (best.intercept.wins && !intercept.wins)) {
-      best = { H, trajA, intercept, escape, score };
+    const dirCount = 28;
+    for (let j = 0; j < dirCount; j++) {
+      const theta = thetaSeed + 2 * Math.PI * j / dirCount;
+      const cand = candidateEndpoint(A, B, Z, H, theta);
+      const trajA = freePositionTrajectory(rA, vA, cand.endpoint, H);
+      const intercept = analyzeIntercept(B, (t) => trajA.stateAt(t), H, mode);
+      const surviveScore = H + 0.25 * Math.max(0, cand.gap) + 0.015 * cand.awayZ;
+      const delayScore = (intercept.earliestT ?? 0) + 0.08 * Math.max(0, intercept.minCost / Math.max(lambdaB, EPS) - 1) + 0.003 * cand.awayZ;
+      const entry = { H, theta, trajA, intercept, escape: cand, surviveScore, delayScore };
+      if (!intercept.wins && asymptoticAdvantage && cand.gap > 0) {
+        if (!bestDraw || surviveScore > bestDraw.surviveScore) bestDraw = entry;
+      }
+      if (intercept.wins) {
+        if (!bestDelay || delayScore > bestDelay.delayScore) bestDelay = entry;
+      } else if (!bestDelay || H > (bestDelay.intercept?.earliestT ?? -Infinity)) {
+        // Survived through displayed horizon even if we cannot certify indefinite escape.
+        if (!bestDelay || H > (bestDelay.intercept?.earliestT ?? -Infinity)) bestDelay = entry;
+      }
     }
   }
 
-  if (!best) return null;
-  if (!asymptoticAdvantage) return null;
-  if (best.intercept.wins) return null;
+  if (bestDraw) {
+    return {
+      kind: "draw",
+      horizon: bestDraw.H,
+      trajectoryA: bestDraw.trajA,
+      trajectoryB: bestDraw.intercept.trajectory,
+      intercept: bestDraw.intercept,
+      note: `${mode === "boarding" ? "A keeps B outside the rendezvous set" : "A stays outside B's hit-reachable disk"} over the displayed horizon, and Λ_A > Λ_B gives the long-run escape edge.`,
+    };
+  }
+
+  if (!bestDelay) return null;
   return {
-    kind: "draw",
-    horizon: best.H,
-    trajectoryA: best.trajA,
-    trajectoryB: best.intercept.trajectory,
-    intercept: best.intercept,
-    note: `${mode === "boarding" ? "A keeps B outside the rendezvous set" : "A stays outside B's hit-reachable disk"} over the displayed horizon, and Λ_A > Λ_B gives the long-run escape edge.`,
+    kind: "delay",
+    horizon: bestDelay.intercept.wins ? bestDelay.intercept.earliestT : bestDelay.H,
+    displayHorizon: bestDelay.H,
+    trajectoryA: bestDelay.trajA,
+    trajectoryB: bestDelay.intercept.trajectory,
+    intercept: bestDelay.intercept,
+    note: bestDelay.intercept.wins
+      ? `${mode === "boarding" ? "A maximizes the earliest feasible rendezvous time" : "A maximizes the earliest feasible hit time"} within the applet's analytic family of break-away trajectories.`
+      : `${mode === "boarding" ? "No rendezvous is found inside the displayed horizon" : "No hit is found inside the displayed horizon"}; this trajectory is the best delay candidate found by the analytic search family.`,
   };
 }
 
@@ -317,8 +357,9 @@ function solveMode(A, B, Z, mode) {
     TA,
   };
   if (!isFinite(TA)) {
-    const draw = searchDrawStrategy(A, B, Z, mode, Infinity);
-    if (draw) return { ...result, outcome: "draw", strategy: "evade", ...draw };
+    const fallback = searchEvadeOrDelayStrategy(A, B, Z, mode, Infinity);
+    if (fallback?.kind === "draw") return { ...result, outcome: "draw", strategy: "evade", ...fallback };
+    if (fallback?.kind === "delay") return { ...result, outcome: "b_win", strategy: "delay", ...fallback };
     return { ...result, outcome: "b_win", strategy: "no-base", reason: "A cannot reach base Z with zero terminal velocity." };
   }
 
@@ -337,9 +378,12 @@ function solveMode(A, B, Z, mode) {
     };
   }
 
-  const draw = searchDrawStrategy(A, B, Z, mode, TA);
-  if (draw) {
-    return { ...result, outcome: "draw", strategy: "evade", ...draw };
+  const fallback = searchEvadeOrDelayStrategy(A, B, Z, mode, TA);
+  if (fallback?.kind === "draw") {
+    return { ...result, outcome: "draw", strategy: "evade", ...fallback };
+  }
+  if (fallback?.kind === "delay") {
+    return { ...result, outcome: "b_win", strategy: "delay", ...fallback };
   }
 
   return {
@@ -351,8 +395,8 @@ function solveMode(A, B, Z, mode) {
     trajectoryB: interceptBase.trajectory,
     intercept: interceptBase,
     note: mode === "boarding"
-      ? "B has a feasible rendezvous with A's fastest route to base, and A does not have a surviving break-away strategy under the applet's analytic draw test."
-      : "B has a feasible hit on A's fastest route to base, and A does not have a surviving break-away strategy under the applet's analytic draw test.",
+      ? "B has a feasible rendezvous with A's fastest route to base, and no better break-away delay trajectory was found by the applet's analytic search family."
+      : "B has a feasible hit on A's fastest route to base, and no better break-away delay trajectory was found by the applet's analytic search family.",
   };
 }
 
@@ -430,7 +474,7 @@ function ShipPanel({ title, color, params, onChange, withDynamics = true }) {
 }
 
 function OutcomeCard({ title, color, solution }) {
-  const label = solution.outcome === "a_win" ? "A reaches base" : solution.outcome === "draw" ? "Forced draw / evasion" : "B intercepts";
+  const label = solution.outcome === "a_win" ? "A reaches base" : solution.outcome === "draw" ? "Forced draw / evasion" : solution.strategy === "delay" ? "B intercepts after A delays" : "B intercepts";
   return (
     <div style={{ background: "rgba(8,18,32,0.95)", border: `1px solid ${color}40`, borderLeft: `3px solid ${color}`, borderRadius: 8, padding: 10, marginBottom: 10 }}>
       <div style={{ color, fontSize: 13, fontWeight: 700, marginBottom: 6 }}>{title}</div>
@@ -440,13 +484,15 @@ function OutcomeCard({ title, color, solution }) {
         {isFinite(solution.TA) ? <>A minimum base time: t = {fmt(solution.TA, 2)}<br /></> : <>A cannot complete the Z transfer.<br /></>}
         {solution.intercept && <>B best intercept cost ratio: {fmt(solution.intercept.minCost / Math.max(solution.lambdaB, EPS), 3)}<br /></>}
         {solution.intercept?.earliestT != null && <>Earliest feasible intercept: t = {fmt(solution.intercept.earliestT, 2)}<br /></>}
+        {solution.strategy === "delay" && solution.displayHorizon && solution.displayHorizon > (solution.intercept?.earliestT || 0) && <>Displayed search horizon: t = {fmt(solution.displayHorizon, 2)}<br /></>}
         <span style={{ color: "#7f94ac" }}>{solution.note || solution.reason}</span>
       </div>
     </div>
   );
 }
 
-function MapView({ A, B, Z, solutions, selectedMode }) {
+function MapView({ A, B, Z, solution, selectedMode }) {
+  const solutions = solution ? [solution] : [];
   const extent = extentFromSolutions(solutions, A, B, Z);
   const width = 980;
   const height = 420;
@@ -525,7 +571,9 @@ function MapView({ A, B, Z, solutions, selectedMode }) {
         })()}
       </svg>
       <div style={{ padding: "10px 14px", borderTop: "1px solid #14304d", color: "#9ab0c7", fontSize: 12 }}>
-        Solid lines = boarding game. Dashed lines = shooting game. The highlighted mode is shown with thicker curves.
+        {selectedMode === "boarding"
+          ? "Showing only the boarding solution."
+          : "Showing only the shooting solution."}
       </div>
     </div>
   );
@@ -627,15 +675,15 @@ function SpaceChaseSimulator() {
           <OutcomeCard title="V2 — SHOOTING" color="#19c2ff" solution={shooting} />
 
           <div style={{ fontSize: 11, color: "#758ca4", lineHeight: 1.6, padding: "2px 4px" }}>
-            The applet no longer integrates a chase step-by-step. It builds A and B trajectories from the closed-form transfer equations, then solves only scalar time searches for minimum-time base runs and interception feasibility.
+            The applet no longer integrates a chase step-by-step. It builds A and B trajectories from the closed-form transfer equations, then solves scalar time searches for base runs, interception feasibility, and in the losing branch a delay-maximizing search over analytic break-away trajectories.
           </div>
         </div>
 
         <div style={{ padding: 12, overflow: "auto" }}>
           <div style={{ marginBottom: 10, fontSize: 13, color: current.outcome === "a_win" ? "#20e3a2" : current.outcome === "draw" ? "#d1e6ff" : "#ffb8c5", fontWeight: 700 }}>
-            {mode === "boarding" ? "V1 • Boarding" : "V2 • Shooting"} — {current.outcome === "a_win" ? "A commits to Z successfully" : current.outcome === "draw" ? "A breaks away and forces a draw" : "B can intercept"}
+            {mode === "boarding" ? "V1 • Boarding" : "V2 • Shooting"} — {current.outcome === "a_win" ? "A commits to Z successfully" : current.outcome === "draw" ? "A breaks away and forces a draw" : current.strategy === "delay" ? "A cannot escape, but delays capture" : "B can intercept"}
           </div>
-          {(view === "map" || view === "both") && <MapView A={A} B={B} Z={Z} solutions={[boarding, shooting]} selectedMode={mode} />}
+          {(view === "map" || view === "both") && <MapView A={A} B={B} Z={Z} solution={current} selectedMode={mode} />}
           {(view === "fuel" || view === "both") && <div style={{ marginTop: 12 }}><FuelPlot boarding={boarding} shooting={shooting} selectedMode={mode} /></div>}
           <div style={{ marginTop: 12, fontSize: 12, color: "#7f95ab", lineHeight: 1.7 }}>
             Λ_A = {fmt(current.lambdaA, 4)} · Λ_B = {fmt(current.lambdaB, 4)} · A minimum base time {isFinite(current.TA) ? `t = ${fmt(current.TA, 3)}` : "is infeasible"}. {current.note || current.reason}

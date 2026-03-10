@@ -92,41 +92,37 @@
     <div class="subtitle">PURSUIT-EVASION IN FREE SPACE WITH VARIABLE-Isp PROPULSION</div>
 
     <p>
-      This interactive applet explores a pursuit-evasion problem between two spacecraft in
-      gravity-free 2D space. Ship&nbsp;A (the evader) is trying to reach base&nbsp;Z and come to
-      a stop there. Ship&nbsp;B (the pursuer) is trying to intercept A before it arrives.
+      This interactive applet shows a simple but subtle space pursuit game in gravity-free 2D space.
+      Ship A is trying to reach the base Z and stop there safely. Ship B is trying to prevent that by
+      intercepting A before the mission is complete.
     </p>
     <p>
-      Both ships use constant-power, variable specific impulse (Isp) engines &mdash; the same
-      propulsion model studied in the
-      <a href="https://github.com/irigi/VariableISPRocketTrajectories">accompanying manuscript</a>.
-      Under this model, optimal acceleration profiles are linear in time for each axis
-      (a result from Pontryagin's Maximum Principle), and the fuel cost of a manoeuvre
-      is determined by the integral of acceleration squared.
+      The interesting part is that neither ship is flying with a fixed exhaust setting. Both use
+      constant-power engines with variable specific impulse, following the same propulsion model studied in
+      <a href="https://github.com/irigi/VariableISPRocketTrajectories">VariableISPRocketTrajectories</a>.
+      This means that every manoeuvre is a trade-off between how quickly a ship moves and how much of its
+      limited propulsive budget it spends to do so.
     </p>
     <p>
-      The applet solves for A's minimum-time brachistochrone to the base and then scans all
-      possible interception times to find whether B can afford to intercept. Two victory
-      conditions for the pursuer are considered:
+      The applet first computes A's best route toward the base. It then asks what B can do against it.
+      Depending on the initial conditions, three broad outcomes are possible: A may be able to reach the
+      base before B can stop it, A may be able to avoid capture indefinitely, or A may be doomed in the
+      long run and can only try to delay interception as much as possible.
     </p>
 
     <div class="model-note">
-      <strong>V1 &mdash; Boarding:</strong> B must match both position <em>and</em> velocity with A
-      (rendezvous). This requires solving a fixed-boundary optimal transfer.<br/>
-      <strong>V2 &mdash; Shooting:</strong> B only needs to reach A's position; velocity mismatch
-      is allowed (fly-by intercept). This is a free-final-velocity problem and always
-      costs less fuel than boarding.<br/><br/>
-      <strong>Key parameters:</strong>
-      power <code>P</code>, wet mass <code>m_wet</code>, dry mass <code>m_dry</code>,
-      initial position and velocity.
-      The fuel budget of each ship is <code>&Delta; = 1/m_dry &minus; 1/m_wet</code>.
+      <strong>Boarding mode:</strong> B must arrive at the same place <em>and</em> with the same velocity as A,
+      so the interception is a full rendezvous.<br/>
+      <strong>Shooting mode:</strong> B only needs to pass through A's position, so matching velocity is not required.<br/><br/>
+      <strong>Key parameters:</strong> power <code>P</code>, wet mass <code>m_wet</code>, dry mass <code>m_dry</code>,
+      initial position, and initial velocity. The available manoeuvre budget of each ship is
+      <code>&Delta; = 1/m_dry &minus; 1/m_wet</code>.
     </div>
 
     <p>
-      Use the sliders to change ship parameters, positions, and velocities.
-      The trajectory map shows optimal paths, and the fuel plot shows B's required
-      fuel cost as a function of interception time &mdash; where the curve dips below
-      the dashed &Delta;<sub>B</sub> line, B can successfully intercept.
+      Use the controls to change the ships, the base position, and the starting state. The trajectory plot
+      shows the paths chosen by the two ships. The fuel-cost plot shows how expensive interception would be
+      for B at different times. Where B's required cost drops below its available budget, interception is feasible.
     </p>
   </div>
 
@@ -134,13 +130,11 @@
 
   <div class="page-footer">
     <p>
-      Based on the constant-power, variable-Isp trajectory model from
+      Based on the constant-power, variable-Isp trajectory model described in
       <a href="https://github.com/irigi/VariableISPRocketTrajectories">VariableISPRocketTrajectories</a>.
-      See the manuscript (<code>docs/manuscript.tex</code>) for derivations and assumptions.
     </p>
     <p>
-      The applet runs entirely in the browser &mdash; no server required. Source code:
-      <a href="https://github.com/irigi/VariableISPRocketTrajectories/blob/main/pages/space_chase.jsx">space_chase.jsx</a>.
+      The applet runs entirely in the browser — no server required.
     </p>
   </div>
 

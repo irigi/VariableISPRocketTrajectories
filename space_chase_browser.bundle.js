@@ -1,8 +1,9 @@
 (() => {
-  const { useState, useMemo } = React;
-  const EPS = 1e-9;
-  const DEFAULT_MODE = "boarding";
-  const PRESETS = {
+  // mnt/data/space_chase.jsx
+  var { useState, useMemo } = React;
+  var EPS = 1e-9;
+  var DEFAULT_MODE = "boarding";
+  var PRESETS = {
     "Balanced duel": {
       A: { x: 0, y: 0, vx: 0, vy: 0, P: 1, mWet: 3, mDry: 1 },
       B: { x: 30, y: 20, vx: 0, vy: 0, P: 1, mWet: 3, mDry: 1 },
@@ -260,39 +261,73 @@
     const gap = norm(awayB) + rReach - Math.sqrt(lambdaBudget(B) / 3) * Math.pow(H, 1.5);
     return { endpoint, gap, dir, cA, cB, rReach };
   }
-  function searchDrawStrategy(A, B, Z, mode, TA) {
+  function candidateEndpoint(A, B, Z, H, theta) {
+    const lambdaA = lambdaBudget(A);
+    const { r: rA, v: vA } = shipState(A);
+    const cA = add(rA, mul(vA, H));
+    const rReach = Math.sqrt(lambdaA / 3) * Math.pow(H, 1.5);
+    const endpoint = add(cA, [Math.cos(theta) * rReach, Math.sin(theta) * rReach]);
+    const { r: rB, v: vB } = shipState(B);
+    const cB = add(rB, mul(vB, H));
+    const gap = norm(sub(endpoint, cB)) - Math.sqrt(lambdaBudget(B) / 3) * Math.pow(H, 1.5);
+    const awayZ = norm(sub(endpoint, [Z.x, Z.y]));
+    return { endpoint, gap, awayZ, cA, cB, rReach };
+  }
+  function searchEvadeOrDelayStrategy(A, B, Z, mode, TA) {
     const lambdaA = lambdaBudget(A);
     const lambdaB = lambdaBudget(B);
     const asymptoticAdvantage = lambdaA > lambdaB + 1e-8;
-    const Hmin = Math.max(10, isFinite(TA) ? TA * 0.6 : 10);
-    const Hmax = Math.max(120, isFinite(TA) ? TA * 4 : 180);
+    const Hmin = Math.max(6, isFinite(TA) ? TA * 0.45 : 6);
+    const Hmax = Math.max(180, isFinite(TA) ? TA * 7 : 220);
     const Hs = [];
-    for (let i = 0; i < 24; i++) {
-      const u = i / 23;
+    for (let i = 0; i < 28; i++) {
+      const u = i / 27;
       Hs.push(Hmin * Math.pow(Hmax / Hmin, u));
     }
-    let best = null;
+    const { r: rA, v: vA } = shipState(A);
+    const guide = chooseEscapeEndpoint(A, B, Z, Math.max(Hmin, Math.min(Hmax, isFinite(TA) ? TA : 24)));
+    let thetaSeed = Math.atan2(guide.dir[1], guide.dir[0]);
+    let bestDraw = null;
+    let bestDelay = null;
     for (const H of Hs) {
-      const escape = chooseEscapeEndpoint(A, B, Z, H);
-      if (escape.gap <= 0 && !asymptoticAdvantage) continue;
-      const { r: rA, v: vA } = shipState(A);
-      const trajA = freePositionTrajectory(rA, vA, escape.endpoint, H);
-      const intercept = analyzeIntercept(B, (t) => trajA.stateAt(t), H, mode);
-      const score = intercept.minCost / Math.max(lambdaB, EPS) - 1 + 0.15 * Math.max(0, escape.gap);
-      if (!best || intercept.wins === false && score > best.score || best.intercept.wins && !intercept.wins) {
-        best = { H, trajA, intercept, escape, score };
+      const dirCount = 28;
+      for (let j = 0; j < dirCount; j++) {
+        const theta = thetaSeed + 2 * Math.PI * j / dirCount;
+        const cand = candidateEndpoint(A, B, Z, H, theta);
+        const trajA = freePositionTrajectory(rA, vA, cand.endpoint, H);
+        const intercept = analyzeIntercept(B, (t) => trajA.stateAt(t), H, mode);
+        const surviveScore = H + 0.25 * Math.max(0, cand.gap) + 0.015 * cand.awayZ;
+        const delayScore = (intercept.earliestT ?? 0) + 0.08 * Math.max(0, intercept.minCost / Math.max(lambdaB, EPS) - 1) + 3e-3 * cand.awayZ;
+        const entry = { H, theta, trajA, intercept, escape: cand, surviveScore, delayScore };
+        if (!intercept.wins && asymptoticAdvantage && cand.gap > 0) {
+          if (!bestDraw || surviveScore > bestDraw.surviveScore) bestDraw = entry;
+        }
+        if (intercept.wins) {
+          if (!bestDelay || delayScore > bestDelay.delayScore) bestDelay = entry;
+        } else if (!bestDelay || H > (bestDelay.intercept?.earliestT ?? -Infinity)) {
+          if (!bestDelay || H > (bestDelay.intercept?.earliestT ?? -Infinity)) bestDelay = entry;
+        }
       }
     }
-    if (!best) return null;
-    if (!asymptoticAdvantage) return null;
-    if (best.intercept.wins) return null;
+    if (bestDraw) {
+      return {
+        kind: "draw",
+        horizon: bestDraw.H,
+        trajectoryA: bestDraw.trajA,
+        trajectoryB: bestDraw.intercept.trajectory,
+        intercept: bestDraw.intercept,
+        note: `${mode === "boarding" ? "A keeps B outside the rendezvous set" : "A stays outside B's hit-reachable disk"} over the displayed horizon, and \u039B_A > \u039B_B gives the long-run escape edge.`
+      };
+    }
+    if (!bestDelay) return null;
     return {
-      kind: "draw",
-      horizon: best.H,
-      trajectoryA: best.trajA,
-      trajectoryB: best.intercept.trajectory,
-      intercept: best.intercept,
-      note: `${mode === "boarding" ? "A keeps B outside the rendezvous set" : "A stays outside B's hit-reachable disk"} over the displayed horizon, and \u039B_A > \u039B_B gives the long-run escape edge.`
+      kind: "delay",
+      horizon: bestDelay.intercept.wins ? bestDelay.intercept.earliestT : bestDelay.H,
+      displayHorizon: bestDelay.H,
+      trajectoryA: bestDelay.trajA,
+      trajectoryB: bestDelay.intercept.trajectory,
+      intercept: bestDelay.intercept,
+      note: bestDelay.intercept.wins ? `${mode === "boarding" ? "A maximizes the earliest feasible rendezvous time" : "A maximizes the earliest feasible hit time"} within the applet's analytic family of break-away trajectories.` : `${mode === "boarding" ? "No rendezvous is found inside the displayed horizon" : "No hit is found inside the displayed horizon"}; this trajectory is the best delay candidate found by the analytic search family.`
     };
   }
   function solveMode(A, B, Z, mode) {
@@ -310,8 +345,9 @@
       TA
     };
     if (!isFinite(TA)) {
-      const draw2 = searchDrawStrategy(A, B, Z, mode, Infinity);
-      if (draw2) return { ...result, outcome: "draw", strategy: "evade", ...draw2 };
+      const fallback2 = searchEvadeOrDelayStrategy(A, B, Z, mode, Infinity);
+      if (fallback2?.kind === "draw") return { ...result, outcome: "draw", strategy: "evade", ...fallback2 };
+      if (fallback2?.kind === "delay") return { ...result, outcome: "b_win", strategy: "delay", ...fallback2 };
       return { ...result, outcome: "b_win", strategy: "no-base", reason: "A cannot reach base Z with zero terminal velocity." };
     }
     const trajBase = fixedTrajectory(rA, vA, base, [0, 0], TA);
@@ -328,9 +364,12 @@
         note: "B cannot reach A's optimal base-transfer trajectory before A reaches Z."
       };
     }
-    const draw = searchDrawStrategy(A, B, Z, mode, TA);
-    if (draw) {
-      return { ...result, outcome: "draw", strategy: "evade", ...draw };
+    const fallback = searchEvadeOrDelayStrategy(A, B, Z, mode, TA);
+    if (fallback?.kind === "draw") {
+      return { ...result, outcome: "draw", strategy: "evade", ...fallback };
+    }
+    if (fallback?.kind === "delay") {
+      return { ...result, outcome: "b_win", strategy: "delay", ...fallback };
     }
     return {
       ...result,
@@ -340,7 +379,7 @@
       trajectoryA: trajBase,
       trajectoryB: interceptBase.trajectory,
       intercept: interceptBase,
-      note: mode === "boarding" ? "B has a feasible rendezvous with A's fastest route to base, and A does not have a surviving break-away strategy under the applet's analytic draw test." : "B has a feasible hit on A's fastest route to base, and A does not have a surviving break-away strategy under the applet's analytic draw test."
+      note: mode === "boarding" ? "B has a feasible rendezvous with A's fastest route to base, and no better break-away delay trajectory was found by the applet's analytic search family." : "B has a feasible hit on A's fastest route to base, and no better break-away delay trajectory was found by the applet's analytic search family."
     };
   }
   function fuelSeries(solution, samples = 180) {
@@ -394,11 +433,11 @@
     return /* @__PURE__ */ React.createElement("div", { style: { background: "rgba(8,18,32,0.95)", border: `1px solid ${color}40`, borderLeft: `3px solid ${color}`, borderRadius: 8, padding: 10, marginBottom: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { color, fontSize: 13, fontWeight: 700, letterSpacing: 1, marginBottom: 6 } }, title), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 } }, /* @__PURE__ */ React.createElement(Slider, { label: "x\u2080", value: params.x, onChange: (v) => set("x", v), min: -100, max: 200, step: 1 }), /* @__PURE__ */ React.createElement(Slider, { label: "y\u2080", value: params.y, onChange: (v) => set("y", v), min: -100, max: 100, step: 1 }), withDynamics && /* @__PURE__ */ React.createElement(Slider, { label: "vx\u2080", value: params.vx, onChange: (v) => set("vx", v), min: -5, max: 5, step: 0.1 }), withDynamics && /* @__PURE__ */ React.createElement(Slider, { label: "vy\u2080", value: params.vy, onChange: (v) => set("vy", v), min: -5, max: 5, step: 0.1 })), withDynamics && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(Slider, { label: "Power P", value: params.P, onChange: (v) => set("P", v), min: 0.1, max: 5, step: 0.1, unit: " GW" }), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 } }, /* @__PURE__ */ React.createElement(Slider, { label: "m_wet", value: params.mWet, onChange: (v) => set("mWet", v), min: 1.1, max: 10, step: 0.1, unit: " kt" }), /* @__PURE__ */ React.createElement(Slider, { label: "m_dry", value: params.mDry, onChange: (v) => set("mDry", Math.min(v, params.mWet - 0.1)), min: 0.5, max: Math.max(0.6, params.mWet - 0.1), step: 0.1, unit: " kt" })), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: "#6f859d" } }, "\u0394 = ", fmt(deltaBudget(params), 4), " \xB7 \u039B = ", fmt(lambdaBudget(params), 4))));
   }
   function OutcomeCard({ title, color, solution }) {
-    var _a;
-    const label = solution.outcome === "a_win" ? "A reaches base" : solution.outcome === "draw" ? "Forced draw / evasion" : "B intercepts";
-    return /* @__PURE__ */ React.createElement("div", { style: { background: "rgba(8,18,32,0.95)", border: `1px solid ${color}40`, borderLeft: `3px solid ${color}`, borderRadius: 8, padding: 10, marginBottom: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { color, fontSize: 13, fontWeight: 700, marginBottom: 6 } }, title), /* @__PURE__ */ React.createElement("div", { style: { color, fontWeight: 700, marginBottom: 6 } }, label), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: "#9eb4ca", lineHeight: 1.5 } }, "A strategy: ", solution.strategy, /* @__PURE__ */ React.createElement("br", null), isFinite(solution.TA) ? /* @__PURE__ */ React.createElement(React.Fragment, null, "A minimum base time: t = ", fmt(solution.TA, 2), /* @__PURE__ */ React.createElement("br", null)) : /* @__PURE__ */ React.createElement(React.Fragment, null, "A cannot complete the Z transfer.", /* @__PURE__ */ React.createElement("br", null)), solution.intercept && /* @__PURE__ */ React.createElement(React.Fragment, null, "B best intercept cost ratio: ", fmt(solution.intercept.minCost / Math.max(solution.lambdaB, EPS), 3), /* @__PURE__ */ React.createElement("br", null)), ((_a = solution.intercept) == null ? void 0 : _a.earliestT) != null && /* @__PURE__ */ React.createElement(React.Fragment, null, "Earliest feasible intercept: t = ", fmt(solution.intercept.earliestT, 2), /* @__PURE__ */ React.createElement("br", null)), /* @__PURE__ */ React.createElement("span", { style: { color: "#7f94ac" } }, solution.note || solution.reason)));
+    const label = solution.outcome === "a_win" ? "A reaches base" : solution.outcome === "draw" ? "Forced draw / evasion" : solution.strategy === "delay" ? "B intercepts after A delays" : "B intercepts";
+    return /* @__PURE__ */ React.createElement("div", { style: { background: "rgba(8,18,32,0.95)", border: `1px solid ${color}40`, borderLeft: `3px solid ${color}`, borderRadius: 8, padding: 10, marginBottom: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { color, fontSize: 13, fontWeight: 700, marginBottom: 6 } }, title), /* @__PURE__ */ React.createElement("div", { style: { color, fontWeight: 700, marginBottom: 6 } }, label), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: "#9eb4ca", lineHeight: 1.5 } }, "A strategy: ", solution.strategy, /* @__PURE__ */ React.createElement("br", null), isFinite(solution.TA) ? /* @__PURE__ */ React.createElement(React.Fragment, null, "A minimum base time: t = ", fmt(solution.TA, 2), /* @__PURE__ */ React.createElement("br", null)) : /* @__PURE__ */ React.createElement(React.Fragment, null, "A cannot complete the Z transfer.", /* @__PURE__ */ React.createElement("br", null)), solution.intercept && /* @__PURE__ */ React.createElement(React.Fragment, null, "B best intercept cost ratio: ", fmt(solution.intercept.minCost / Math.max(solution.lambdaB, EPS), 3), /* @__PURE__ */ React.createElement("br", null)), solution.intercept?.earliestT != null && /* @__PURE__ */ React.createElement(React.Fragment, null, "Earliest feasible intercept: t = ", fmt(solution.intercept.earliestT, 2), /* @__PURE__ */ React.createElement("br", null)), solution.strategy === "delay" && solution.displayHorizon && solution.displayHorizon > (solution.intercept?.earliestT || 0) && /* @__PURE__ */ React.createElement(React.Fragment, null, "Displayed search horizon: t = ", fmt(solution.displayHorizon, 2), /* @__PURE__ */ React.createElement("br", null)), /* @__PURE__ */ React.createElement("span", { style: { color: "#7f94ac" } }, solution.note || solution.reason)));
   }
-  function MapView({ A, B, Z, solutions, selectedMode }) {
+  function MapView({ A, B, Z, solution, selectedMode }) {
+    const solutions = solution ? [solution] : [];
     const extent = extentFromSolutions(solutions, A, B, Z);
     const width = 980;
     const height = 420;
@@ -419,14 +458,13 @@
       shooting: { a: "#19c2ff", b: "#ff4d7a", dash: "7 5" }
     };
     const captureMarkers = solutions.flatMap((sol) => {
-      var _a;
-      if (!sol.trajectoryA || !((_a = sol.intercept) != null && _a.wins)) return [];
-      const tCapture = sol.intercept.earliestT ?? (sol.trajectoryB == null ? void 0 : sol.trajectoryB.T);
+      if (!sol.trajectoryA || !sol.intercept?.wins) return [];
+      const tCapture = sol.intercept.earliestT ?? sol.trajectoryB?.T;
       if (!(tCapture > 0)) return [];
       const [x, y] = toXY(sol.trajectoryA.stateAt(tCapture).pos);
       return [{ mode: sol.mode, x, y }];
     });
-    const trajectoryEls = solutions.map((sol) => {
+    return /* @__PURE__ */ React.createElement("div", { style: { background: "#031224", border: "1px solid #14304d", borderRadius: 8, overflow: "hidden" } }, /* @__PURE__ */ React.createElement("svg", { viewBox: `0 0 ${width} ${height}`, style: { width: "100%", height: 420, display: "block", background: "linear-gradient(180deg,#04121f,#02101e)" } }, grid, solutions.map((sol) => {
       const st = styles[sol.mode];
       if (!sol.trajectoryA) return null;
       const pathA = sampleTrajectory(sol.trajectoryA, 240).map((p, i) => {
@@ -439,15 +477,16 @@
       }).join(" ") : "";
       const opacity = sol.mode === selectedMode ? 1 : 0.6;
       return /* @__PURE__ */ React.createElement("g", { key: sol.mode, opacity }, /* @__PURE__ */ React.createElement("path", { d: pathA, fill: "none", stroke: st.a, strokeWidth: sol.mode === selectedMode ? 3 : 2.1, strokeDasharray: st.dash }), pathB && /* @__PURE__ */ React.createElement("path", { d: pathB, fill: "none", stroke: st.b, strokeWidth: sol.mode === selectedMode ? 2.6 : 2, strokeDasharray: st.dash }));
-    });
-    const [ax, ay] = toXY([A.x, A.y]);
-    const aEl = /* @__PURE__ */ React.createElement("g", null, /* @__PURE__ */ React.createElement("circle", { cx: ax, cy: ay, r: 7, fill: "#20e3a2" }), /* @__PURE__ */ React.createElement("text", { x: ax + 10, y: ay + 4, fill: "#20e3a2", fontSize: "14", fontWeight: "700" }, "A"));
-    const [bx, by] = toXY([B.x, B.y]);
-    const bEl = /* @__PURE__ */ React.createElement("g", null, /* @__PURE__ */ React.createElement("circle", { cx: bx, cy: by, r: 7, fill: "#ff4d7a" }), /* @__PURE__ */ React.createElement("text", { x: bx + 10, y: by + 4, fill: "#ff4d7a", fontSize: "14", fontWeight: "700" }, "B"));
-    const captureEls = captureMarkers.map(({ mode, x, y }) => /* @__PURE__ */ React.createElement("g", { key: `capture-${mode}`, opacity: mode === selectedMode ? 1 : 0.7 }, /* @__PURE__ */ React.createElement("circle", { cx: x, cy: y, r: 7, fill: "none", stroke: "#ff3b30", strokeWidth: "1.5" }), /* @__PURE__ */ React.createElement("circle", { cx: x, cy: y, r: 3, fill: "#ff3b30" }), /* @__PURE__ */ React.createElement("line", { x1: x - 10, y1: y, x2: x - 4, y2: y, stroke: "#ff3b30", strokeWidth: "1.5", strokeLinecap: "round" }), /* @__PURE__ */ React.createElement("line", { x1: x + 4, y1: y, x2: x + 10, y2: y, stroke: "#ff3b30", strokeWidth: "1.5", strokeLinecap: "round" }), /* @__PURE__ */ React.createElement("line", { x1: x, y1: y - 10, x2: x, y2: y - 4, stroke: "#ff3b30", strokeWidth: "1.5", strokeLinecap: "round" }), /* @__PURE__ */ React.createElement("line", { x1: x, y1: y + 4, x2: x, y2: y + 10, stroke: "#ff3b30", strokeWidth: "1.5", strokeLinecap: "round" })));
-    const [zx, zy] = toXY([Z.x, Z.y]);
-    const zEl = /* @__PURE__ */ React.createElement("g", null, /* @__PURE__ */ React.createElement("polygon", { points: `${zx},${zy - 13} ${zx + 11},${zy - 6.5} ${zx + 11},${zy + 6.5} ${zx},${zy + 13} ${zx - 11},${zy + 6.5} ${zx - 11},${zy - 6.5}`, fill: "none", stroke: "#4a9eff", strokeWidth: "2" }), /* @__PURE__ */ React.createElement("text", { x: zx + 14, y: zy + 4, fill: "#4a9eff", fontSize: "14", fontWeight: "700" }, "Z"));
-    return /* @__PURE__ */ React.createElement("div", { style: { background: "#031224", border: "1px solid #14304d", borderRadius: 8, overflow: "hidden" } }, /* @__PURE__ */ React.createElement("svg", { viewBox: `0 0 ${width} ${height}`, style: { width: "100%", height: 420, display: "block", background: "linear-gradient(180deg,#04121f,#02101e)" } }, grid, trajectoryEls, aEl, bEl, captureEls, zEl), /* @__PURE__ */ React.createElement("div", { style: { padding: "10px 14px", borderTop: "1px solid #14304d", color: "#9ab0c7", fontSize: 12 } }, "Solid lines = boarding game. Dashed lines = shooting game. The highlighted mode is shown with thicker curves."));
+    }), (() => {
+      const [x, y] = toXY([A.x, A.y]);
+      return /* @__PURE__ */ React.createElement("g", null, /* @__PURE__ */ React.createElement("circle", { cx: x, cy: y, r: 7, fill: "#20e3a2" }), /* @__PURE__ */ React.createElement("text", { x: x + 10, y: y + 4, fill: "#20e3a2", fontSize: "14", fontWeight: "700" }, "A"));
+    })(), (() => {
+      const [x, y] = toXY([B.x, B.y]);
+      return /* @__PURE__ */ React.createElement("g", null, /* @__PURE__ */ React.createElement("circle", { cx: x, cy: y, r: 7, fill: "#ff4d7a" }), /* @__PURE__ */ React.createElement("text", { x: x + 10, y: y + 4, fill: "#ff4d7a", fontSize: "14", fontWeight: "700" }, "B"));
+    })(), captureMarkers.map(({ mode, x, y }) => /* @__PURE__ */ React.createElement("g", { key: `capture-${mode}`, opacity: mode === selectedMode ? 1 : 0.7 }, /* @__PURE__ */ React.createElement("circle", { cx: x, cy: y, r: 7, fill: "none", stroke: "#ff3b30", strokeWidth: "1.5" }), /* @__PURE__ */ React.createElement("circle", { cx: x, cy: y, r: 3, fill: "#ff3b30" }), /* @__PURE__ */ React.createElement("line", { x1: x - 10, y1: y, x2: x - 4, y2: y, stroke: "#ff3b30", strokeWidth: "1.5", strokeLinecap: "round" }), /* @__PURE__ */ React.createElement("line", { x1: x + 4, y1: y, x2: x + 10, y2: y, stroke: "#ff3b30", strokeWidth: "1.5", strokeLinecap: "round" }), /* @__PURE__ */ React.createElement("line", { x1: x, y1: y - 10, x2: x, y2: y - 4, stroke: "#ff3b30", strokeWidth: "1.5", strokeLinecap: "round" }), /* @__PURE__ */ React.createElement("line", { x1: x, y1: y + 4, x2: x, y2: y + 10, stroke: "#ff3b30", strokeWidth: "1.5", strokeLinecap: "round" }))), (() => {
+      const [x, y] = toXY([Z.x, Z.y]);
+      return /* @__PURE__ */ React.createElement("g", null, /* @__PURE__ */ React.createElement("polygon", { points: `${x},${y - 13} ${x + 11},${y - 6.5} ${x + 11},${y + 6.5} ${x},${y + 13} ${x - 11},${y + 6.5} ${x - 11},${y - 6.5}`, fill: "none", stroke: "#4a9eff", strokeWidth: "2" }), /* @__PURE__ */ React.createElement("text", { x: x + 14, y: y + 4, fill: "#4a9eff", fontSize: "14", fontWeight: "700" }, "Z"));
+    })()), /* @__PURE__ */ React.createElement("div", { style: { padding: "10px 14px", borderTop: "1px solid #14304d", color: "#9ab0c7", fontSize: 12 } }, selectedMode === "boarding" ? "Showing only the boarding solution." : "Showing only the shooting solution."));
   }
   function FuelPlot({ boarding, shooting, selectedMode }) {
     const rows1 = fuelSeries(boarding, 180);
@@ -491,10 +530,10 @@
       fontFamily: "inherit",
       fontSize: 12
     });
-    return /* @__PURE__ */ React.createElement("div", { style: { height: "100%", minHeight: 700, background: "#020c18", color: "#c8dbee", fontFamily: "IBM Plex Mono, Fira Code, monospace", display: "grid", gridTemplateRows: "auto 1fr" } }, /* @__PURE__ */ React.createElement("div", { style: { padding: "14px 16px", borderBottom: "1px solid #17314b", display: "flex", justifyContent: "space-between", gap: 16, alignItems: "flex-start" } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 18, fontWeight: 800, letterSpacing: 1.5, color: "#eef7ff" } }, "PURSUIT\u2013EVASION"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: "#4a9eff", letterSpacing: 1.2 } }, "ANALYTIC FREE-SPACE GAME \xB7 VAR-Isp \xB7 CONST POWER")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "flex-end" } }, Object.keys(PRESETS).map((name) => /* @__PURE__ */ React.createElement("button", { key: name, style: buttonStyle(presetName === name), onClick: () => applyPreset(name) }, name)))), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "300px 1fr", minHeight: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { padding: 12, borderRight: "1px solid #17314b", overflowY: "auto" } }, /* @__PURE__ */ React.createElement(ShipPanel, { title: "\u25C6 SHIP A \u2014 EVADER", color: "#20e3a2", params: A, onChange: setA }), /* @__PURE__ */ React.createElement(ShipPanel, { title: "\u25C6 SHIP B \u2014 PURSUER", color: "#ff4d7a", params: B, onChange: setB }), /* @__PURE__ */ React.createElement(ShipPanel, { title: "\u25C7 BASE Z", color: "#4a9eff", params: Z, onChange: setZ, withDynamics: false }), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 } }, /* @__PURE__ */ React.createElement("button", { style: buttonStyle(mode === "boarding"), onClick: () => setMode("boarding") }, "V1: Boarding"), /* @__PURE__ */ React.createElement("button", { style: buttonStyle(mode === "shooting"), onClick: () => setMode("shooting") }, "V2: Shooting")), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 10 } }, /* @__PURE__ */ React.createElement("button", { style: buttonStyle(view === "map"), onClick: () => setView("map") }, "Map"), /* @__PURE__ */ React.createElement("button", { style: buttonStyle(view === "fuel"), onClick: () => setView("fuel") }, "Fuel"), /* @__PURE__ */ React.createElement("button", { style: buttonStyle(view === "both"), onClick: () => setView("both") }, "Both")), /* @__PURE__ */ React.createElement(OutcomeCard, { title: "V1 \u2014 BOARDING", color: "#ffb01f", solution: boarding }), /* @__PURE__ */ React.createElement(OutcomeCard, { title: "V2 \u2014 SHOOTING", color: "#19c2ff", solution: shooting }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: "#758ca4", lineHeight: 1.6, padding: "2px 4px" } }, "The applet no longer integrates a chase step-by-step. It builds A and B trajectories from the closed-form transfer equations, then solves only scalar time searches for minimum-time base runs and interception feasibility.")), /* @__PURE__ */ React.createElement("div", { style: { padding: 12, overflow: "auto" } }, /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 10, fontSize: 13, color: current.outcome === "a_win" ? "#20e3a2" : current.outcome === "draw" ? "#d1e6ff" : "#ffb8c5", fontWeight: 700 } }, mode === "boarding" ? "V1 \u2022 Boarding" : "V2 \u2022 Shooting", " \u2014 ", current.outcome === "a_win" ? "A commits to Z successfully" : current.outcome === "draw" ? "A breaks away and forces a draw" : "B can intercept"), (view === "map" || view === "both") && /* @__PURE__ */ React.createElement(MapView, { A, B, Z, solutions: [boarding, shooting], selectedMode: mode }), (view === "fuel" || view === "both") && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 12 } }, /* @__PURE__ */ React.createElement(FuelPlot, { boarding, shooting, selectedMode: mode })), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: "#7f95ab", lineHeight: 1.7 } }, "\u039B_A = ", fmt(current.lambdaA, 4), " \xB7 \u039B_B = ", fmt(current.lambdaB, 4), " \xB7 A minimum base time ", isFinite(current.TA) ? `t = ${fmt(current.TA, 3)}` : "is infeasible", ". ", current.note || current.reason))));
+    return /* @__PURE__ */ React.createElement("div", { style: { height: "100%", minHeight: 700, background: "#020c18", color: "#c8dbee", fontFamily: "IBM Plex Mono, Fira Code, monospace", display: "grid", gridTemplateRows: "auto 1fr" } }, /* @__PURE__ */ React.createElement("div", { style: { padding: "14px 16px", borderBottom: "1px solid #17314b", display: "flex", justifyContent: "space-between", gap: 16, alignItems: "flex-start" } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 18, fontWeight: 800, letterSpacing: 1.5, color: "#eef7ff" } }, "PURSUIT\u2013EVASION"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: "#4a9eff", letterSpacing: 1.2 } }, "ANALYTIC FREE-SPACE GAME \xB7 VAR-Isp \xB7 CONST POWER")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "flex-end" } }, Object.keys(PRESETS).map((name) => /* @__PURE__ */ React.createElement("button", { key: name, style: buttonStyle(presetName === name), onClick: () => applyPreset(name) }, name)))), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "300px 1fr", minHeight: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { padding: 12, borderRight: "1px solid #17314b", overflowY: "auto" } }, /* @__PURE__ */ React.createElement(ShipPanel, { title: "\u25C6 SHIP A \u2014 EVADER", color: "#20e3a2", params: A, onChange: setA }), /* @__PURE__ */ React.createElement(ShipPanel, { title: "\u25C6 SHIP B \u2014 PURSUER", color: "#ff4d7a", params: B, onChange: setB }), /* @__PURE__ */ React.createElement(ShipPanel, { title: "\u25C7 BASE Z", color: "#4a9eff", params: Z, onChange: setZ, withDynamics: false }), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 } }, /* @__PURE__ */ React.createElement("button", { style: buttonStyle(mode === "boarding"), onClick: () => setMode("boarding") }, "V1: Boarding"), /* @__PURE__ */ React.createElement("button", { style: buttonStyle(mode === "shooting"), onClick: () => setMode("shooting") }, "V2: Shooting")), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 10 } }, /* @__PURE__ */ React.createElement("button", { style: buttonStyle(view === "map"), onClick: () => setView("map") }, "Map"), /* @__PURE__ */ React.createElement("button", { style: buttonStyle(view === "fuel"), onClick: () => setView("fuel") }, "Fuel"), /* @__PURE__ */ React.createElement("button", { style: buttonStyle(view === "both"), onClick: () => setView("both") }, "Both")), /* @__PURE__ */ React.createElement(OutcomeCard, { title: "V1 \u2014 BOARDING", color: "#ffb01f", solution: boarding }), /* @__PURE__ */ React.createElement(OutcomeCard, { title: "V2 \u2014 SHOOTING", color: "#19c2ff", solution: shooting }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: "#758ca4", lineHeight: 1.6, padding: "2px 4px" } }, "The applet no longer integrates a chase step-by-step. It builds A and B trajectories from the closed-form transfer equations, then solves scalar time searches for base runs, interception feasibility, and in the losing branch a delay-maximizing search over analytic break-away trajectories.")), /* @__PURE__ */ React.createElement("div", { style: { padding: 12, overflow: "auto" } }, /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 10, fontSize: 13, color: current.outcome === "a_win" ? "#20e3a2" : current.outcome === "draw" ? "#d1e6ff" : "#ffb8c5", fontWeight: 700 } }, mode === "boarding" ? "V1 \u2022 Boarding" : "V2 \u2022 Shooting", " \u2014 ", current.outcome === "a_win" ? "A commits to Z successfully" : current.outcome === "draw" ? "A breaks away and forces a draw" : current.strategy === "delay" ? "A cannot escape, but delays capture" : "B can intercept"), (view === "map" || view === "both") && /* @__PURE__ */ React.createElement(MapView, { A, B, Z, solution: current, selectedMode: mode }), (view === "fuel" || view === "both") && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 12 } }, /* @__PURE__ */ React.createElement(FuelPlot, { boarding, shooting, selectedMode: mode })), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 12, fontSize: 12, color: "#7f95ab", lineHeight: 1.7 } }, "\u039B_A = ", fmt(current.lambdaA, 4), " \xB7 \u039B_B = ", fmt(current.lambdaB, 4), " \xB7 A minimum base time ", isFinite(current.TA) ? `t = ${fmt(current.TA, 3)}` : "is infeasible", ". ", current.note || current.reason))));
   }
   window.SpaceChaseSimulator = SpaceChaseSimulator;
-  const rootNode = document.getElementById("applet-root");
+  var rootNode = document.getElementById("applet-root");
   if (rootNode) {
     const root = ReactDOM.createRoot(rootNode);
     root.render(React.createElement(SpaceChaseSimulator));

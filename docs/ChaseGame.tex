@@ -1,0 +1,369 @@
+\documentclass[journal, a4paper]{IEEEtran}
+
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{stfloats}
+\usepackage{placeins}
+\usepackage{url}
+\usepackage{cuted}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{siunitx}
+\sisetup{output-exponent-marker=\ensuremath{\mathrm{e}}}
+
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+
+\begin{document}
+
+\title{Pursuit--Evasion With Constant-Power, Variable-$I_{\!sp}$ Rockets in Free Space}
+
+\author{Jan~Ol\v{s}ina\\[1ex] Independent Researcher, Prague, Czech Republic\\
+email: \texttt{jan.olsina@gmail.com}, ORCID: \texttt{0009-0003-9816-3958}.}
+
+\maketitle
+
+\begin{abstract}
+We study a two-player pursuit--evasion game for spacecraft propelled by constant-power, variable-$I_{\!sp}$ engines in two-dimensional free space. The state of each vehicle is position, velocity, and mass; propellant expenditure obeys $\dot m = -m^2\|a\|^2/(2P)$. Building on the one-dimensional free-space solution of the companion manuscript, we derive the exact two-dimensional transfer cost for reaching an arbitrary endpoint state in a prescribed time. This yields closed-form descriptions of the time-$t$ reachable sets in both position space and full state space. These formulas reduce the boarding and shooting games to one-dimensional intercept tests in time: the only residual computation is the solution of a scalar equation or the minimization of a scalar function. We then characterize the qualitative outcomes of the game: A may reach base $Z$ safely, B may capture A before base, or A may abandon the base run and force indefinite evasion. We also consider the remaining case in which indefinite evasion is impossible: then A still loses, but its optimal policy is to maximize the capture time, while B minimizes it. This delayed-loss branch is again formulated in terms of the same exact transfer-cost functions. Finally, we describe the implementation of a browser applet built around these analytic formulas. In that implementation, A's nominal run to base is determined by a cubic equation, B's boarding or shooting response is evaluated by the closed-form cost formulas, the draw mode is handled by an analytic search over a family of break-away trajectories, and when draw is impossible the same search is used to approximate A's delay-optimal losing trajectory instead of letting A continue passively to the base.
+\end{abstract}
+
+\section{Introduction}
+Consider two spacecraft A and B in a two-dimensional region of free space with no gravitational field. Ship A wishes to reach a fixed base $Z$ and arrive with zero terminal velocity. Ship B wishes either to board ship A, meaning to coincide with both its position and velocity before A reaches the base, or to shoot ship A down, meaning to coincide with its position before the base arrival. A third primary outcome is also of interest: A may be unable to reach the base safely, yet still be able to avoid capture indefinitely by abandoning the direct run to $Z$ and maneuvering so that B eventually exhausts its finite maneuvering budget. There remains a fourth, subordinate possibility: indefinite evasion is impossible, but after abandoning the direct base run A can still improve its result by delaying capture as long as possible.
+
+The companion manuscript derived the exact one-dimensional free-space brachistochrone for a rocket driven by a constant-power electric thruster with variable exhaust speed. The resulting model is particularly convenient for pursuit--evasion, because the propellant constraint becomes a quadratic control-energy budget. In free space, this allows the planar game to be reduced almost entirely to exact reachability conditions.
+
+The purpose of this note is twofold. First, it collects the analytic solution of the free-space pursuit--evasion game developed here. Second, it explains how those formulas were used to rewrite the interactive applet so that it no longer relies on endpoint-by-endpoint numerical chase integration as its primary engine. 
+
+\section{Rocket Model and Budget Parameter}
+Each spacecraft obeys
+\begin{equation}
+\dot{\mathbf r}=\mathbf v, \qquad
+\dot{\mathbf v}=\mathbf a, \qquad
+\dot m = -\frac{m^2\|\mathbf a\|^2}{2P},
+\label{eq:dynamics}
+\end{equation}
+where $\mathbf r\in\mathbb R^2$ is position, $\mathbf v\in\mathbb R^2$ velocity, $\mathbf a\in\mathbb R^2$ acceleration, $m$ the instantaneous mass, and $P$ the constant electrical power.
+
+Integrating the mass equation gives
+\begin{equation}
+\int_0^T \|\mathbf a(t)\|^2\,dt
+\le 2P\left(\frac{1}{m_{\mathrm{dry}}}-\frac{1}{m_0}\right).
+\end{equation}
+It is therefore natural to define the maneuver budget
+\begin{equation}
+\Delta \equiv \frac{1}{m_{\mathrm{dry}}}-\frac{1}{m_0},
+\qquad
+\Lambda \equiv 2P\Delta.
+\label{eq:Lambda_def}
+\end{equation}
+For each ship $i\in\{A,B\}$, the quantity $\Lambda_i$ is the total available control energy in the $L^2$ sense.
+
+\section{Exact Transfer Cost in Two Dimensions}
+The key observation from the one-dimensional free-space PMP solution survives unchanged in the planar case: along an optimal free-space transfer, the acceleration is linear in time,
+\begin{equation}
+\mathbf a(t)=\boldsymbol\alpha\,t+\boldsymbol\beta,
+\end{equation}
+with constant vectors $\boldsymbol\alpha,\boldsymbol\beta\in\mathbb R^2$. Consequently, all minimum-cost trajectories are cubic Hermite arcs in position.
+
+Consider a transfer from initial state $(\mathbf r_0,\mathbf v_0)$ to final state $(\mathbf r_f,\mathbf v_f)$ in a prescribed time $T>0$. Eliminating the coefficients of the cubic and integrating $\|\mathbf a\|^2$ yields the exact minimum required budget
+\begin{equation}
+J(T;\mathbf r_f,\mathbf v_f)
+=
+\frac{\|\mathbf v_f-\mathbf v_0\|^2}{T}
++\frac{12}{T^3}
+\left\|
+\mathbf r_f-\mathbf r_0-\frac{\mathbf v_0+\mathbf v_f}{2}T
+\right\|^2.
+\label{eq:J_general}
+\end{equation}
+Thus the transfer is feasible if and only if
+\begin{equation}
+J(T;\mathbf r_f,\mathbf v_f)\le \Lambda.
+\label{eq:transfer_feasible}
+\end{equation}
+
+\begin{proposition}[State reachability at fixed time]
+At time $T>0$, the states reachable from $(\mathbf r_0,\mathbf v_0)$
+with budget $\Lambda$ are exactly
+\begin{equation}
+\mathcal R^{\mathrm{state}}(T)=
+\left\{
+(\mathbf r,\mathbf v):
+\frac{\|\mathbf v-\mathbf v_0\|^2}{T}
++\frac{12}{T^3}\|\boldsymbol\xi(T)\|^2
+\le \Lambda
+\right\},
+\label{eq:state_reach_set}
+\end{equation}
+where
+\begin{equation}
+\boldsymbol\xi(T)\equiv
+\mathbf r-\mathbf r_0-\frac{T}{2}(\mathbf v_0+\mathbf v).
+\label{eq:xi_def}
+\end{equation}
+\end{proposition}
+
+A useful corollary is obtained by minimizing \eqref{eq:J_general} over the free terminal velocity $\mathbf v_f$. This gives the minimum budget to reach a ``fixed position'' $\mathbf r_f$ in time $T$ regardless of terminal velocity,
+\begin{equation}
+J_{\mathrm{hit}}(T;\mathbf r_f)
+=\frac{3}{T^3}\|\mathbf r_f-\mathbf r_0-\mathbf v_0 T\|^2.
+\label{eq:J_hit}
+\end{equation}
+Hence the position-reachable set at time $T$ is the disk
+\begin{equation}
+\mathcal R^{\mathrm{pos}}(T)=
+B\!\left(\mathbf r_0+\mathbf v_0T,\;\sqrt{\Lambda/3}\,T^{3/2}\right).
+\label{eq:pos_reach_set}
+\end{equation}
+The disk center is simply the ballistic coasting position, and the maneuvering freedom grows like $T^{3/2}$.
+
+\section{Ship A: Minimum-Time Run to Base}
+Let the fixed base be at position $\mathbf Z$. A direct win for A requires
+\begin{equation}
+\mathbf r_A(T_A)=\mathbf Z,
+\qquad
+\mathbf v_A(T_A)=\mathbf 0.
+\end{equation}
+By \eqref{eq:J_general}, the direct run is feasible in time $T$ if and only if
+\begin{equation}
+\frac{\|\mathbf v_{A0}\|^2}{T}
++\frac{12}{T^3}
+\left\|\mathbf Z-\mathbf r_{A0}-\frac{\mathbf v_{A0}}{2}T\right\|^2
+\le \Lambda_A.
+\label{eq:A_to_base_feasible}
+\end{equation}
+Therefore A's minimum base time $T_A$ is the smallest positive root of the equality. Expanding gives the cubic
+\begin{equation}
+\Lambda_A T^3
+-4\|\mathbf v_{A0}\|^2 T^2
++12(\mathbf Z-\mathbf r_{A0})\cdot \mathbf v_{A0}\,T
+-12\|\mathbf Z-\mathbf r_{A0}\|^2=0.
+\label{eq:A_base_cubic}
+\end{equation}
+
+Once $T_A$ is known, the direct trajectory is explicit. Writing $s=t/T_A$, the optimal path is
+\begin{equation}
+\mathbf r_A(t)=
+\mathbf r_{A0}
++T_A\mathbf v_{A0}(s-2s^2+s^3)
++(\mathbf Z-\mathbf r_{A0})(3s^2-2s^3),
+\label{eq:A_base_path}
+\end{equation}
+with corresponding velocity
+\begin{equation}
+\mathbf v_A(t)=
+\mathbf v_{A0}(1-4s+3s^2)
++\frac{6}{T_A}(\mathbf Z-\mathbf r_{A0})s(1-s).
+\label{eq:A_base_velocity}
+\end{equation}
+These are exactly the two-dimensional cubic Hermite analogues of the one-dimensional free-space solution.
+
+\section{B's Capture Criteria Against a Prescribed A-Trajectory}
+Suppose first that A commits to a known trajectory $(\mathbf r_A(t),\mathbf v_A(t))$ for $0\le t\le T_A$. Then the two B-win conditions reduce to scalar tests over the intercept time.
+
+\subsection{Variant 2: Shooting}
+For shooting, B only needs to reach A's position at some time $t<T_A$. By \eqref{eq:J_hit}, the minimum budget B needs at a given time $t$ is
+\begin{equation}
+J_{\mathrm{shot}}(t)
+=\frac{3}{t^3}
+\left\|\mathbf r_A(t)-\mathbf r_{B0}-\mathbf v_{B0}t\right\|^2.
+\label{eq:J_shot}
+\end{equation}
+Therefore B can shoot A down before the base is reached if and only if there exists $t\in(0,T_A)$ such that
+\begin{equation}
+J_{\mathrm{shot}}(t)\le \Lambda_B.
+\label{eq:shot_feasible}
+\end{equation}
+Since $\mathbf r_A(t)$ is cubic, the boundary case
+\begin{equation}
+\Lambda_B t^3 = 3\left\|\mathbf r_A(t)-\mathbf r_{B0}-\mathbf v_{B0}t\right\|^2
+\label{eq:shot_boundary}
+\end{equation}
+is a sextic equation in $t$.
+
+\subsection{Variant 1: Boarding}
+For boarding, B must match both A's position and A's velocity at some time $t<T_A$. The exact minimum budget required at a chosen meeting time $t$ is obtained directly from \eqref{eq:J_general}:
+\begin{equation}
+J_{\mathrm{board}}(t)=
+\frac{\|\mathbf v_A(t)-\mathbf v_{B0}\|^2}{t}
++\frac{12}{t^3}\|\boldsymbol\eta(t)\|^2,
+\label{eq:J_board}
+\end{equation}
+with
+\begin{equation}
+\boldsymbol\eta(t)\equiv
+\mathbf r_A(t)-\mathbf r_{B0}
+-\frac{t}{2}\bigl(\mathbf v_{B0}+\mathbf v_A(t)\bigr).
+\label{eq:eta_def}
+\end{equation}
+Thus B can board A before base if and only if there exists $t\in(0,T_A)$ such that
+\begin{equation}
+J_{\mathrm{board}}(t)\le \Lambda_B.
+\label{eq:board_feasible}
+\end{equation}
+Boarding is strictly harder than shooting, because it adds the terminal velocity matching constraint.
+
+\begin{proposition}[Exact outcome for a committed base run]
+Assume A commits to the direct minimum-time base trajectory \eqref{eq:A_base_path}--\eqref{eq:A_base_velocity} with duration $T_A$.
+\begin{enumerate}
+\item In the boarding game, B wins if and only if
+\begin{equation}
+\min_{0<t<T_A} J_{\mathrm{board}}(t) \le \Lambda_B.
+\end{equation}
+\item In the shooting game, B wins if and only if
+\begin{equation}
+\min_{0<t<T_A} J_{\mathrm{shot}}(t) \le \Lambda_B.
+\end{equation}
+\item If the relevant inequality fails for all $t\in(0,T_A)$, then A reaches base safely.
+\end{enumerate}
+\end{proposition}
+
+The game against a committed base run is therefore fully reduced to a one-dimensional search over the meeting time.
+
+\section{Forced Draws and Infinite-Horizon Evasion}
+The previous section answers only the question ``Can B intercept A if A insists on the direct run to base?'' The full game is richer: A may abandon the base run and try to force a draw by surviving indefinitely.
+
+The crucial fact is that each ship has finite budget $\Lambda_i$. Thus capture at arbitrarily large times is governed by the asymptotic growth of the reachable sets.
+
+\subsection{Shooting Game}
+In the shooting game, A survives to time $t$ if it can choose a position in $\mathcal R_A^{\mathrm{pos}}(t)$ that does not belong to B's position-reachable set. Since both are disks, B can guarantee a hit by time $t$ only if
+\begin{equation}
+\mathcal R_A^{\mathrm{pos}}(t) \subseteq \mathcal R_B^{\mathrm{pos}}(t).
+\end{equation}
+Using \eqref{eq:pos_reach_set}, the inclusion condition becomes
+\begin{equation}
+\|\Delta \mathbf r_0 + \Delta \mathbf v_0\,t\|
++\sqrt{\Lambda_A/3}\,t^{3/2}
+\le
+\sqrt{\Lambda_B/3}\,t^{3/2},
+\label{eq:disk_inclusion}
+\end{equation}
+where
+\begin{equation}
+\Delta \mathbf r_0 = \mathbf r_{A0}-\mathbf r_{B0},
+\qquad
+\Delta \mathbf v_0 = \mathbf v_{A0}-\mathbf v_{B0}.
+\end{equation}
+If \eqref{eq:disk_inclusion} fails for every $t>0$, then at every time there exists at least one position that A can occupy and B cannot yet reach; in that case A can force indefinite survival in the shooting game.
+
+A useful asymptotic consequence is immediate. As $t\to\infty$, the $t^{3/2}$ terms dominate the ballistic offset. Hence:
+$
+\Lambda_A > \Lambda_B
+\quad \Longrightarrow 
+$ A has the asymptotic maneuvering advantage in the shooting game.
+Thus, if A survives the finite-time blocking geometry and $\Lambda_A>\Lambda_B$, A can break away and force a draw.
+
+\subsection{Boarding Game}
+For boarding, the same idea applies in full state space. At time $t$, B can board A only if A's chosen state lies inside B's state-reachable set \eqref{eq:state_reach_set}. Boarding is therefore harder for B than shooting. Any shooting draw is automatically a boarding draw, and in some configurations A can force a boarding draw even when eventual shooting would still be possible.
+
+\begin{remark}
+The draw picture is exact for the ideal free-space, uncapped variable-$I_{\!sp}$ model. If a finite exhaust-speed ceiling is imposed, the boost--coast--brake structure from the companion manuscript reappears and modifies the long-horizon reachable sets. The formulas in the present note should then be interpreted as the exact solution of the uncapped benchmark and as a useful approximation for the capped problem.
+\end{remark}
+
+\subsection{Delayed Loss When Draw Is Impossible}
+The previous subsection identifies the configurations in which A can avoid capture indefinitely by abandoning the direct run to base. We now consider the complementary case: A cannot reach the base safely, and A also cannot force indefinite evasion. Then A still loses eventually, but there remains a natural secondary objective: maximize the time until capture.
+
+This leads to a zero-sum timing game. Let $\gamma_A$ denote an admissible trajectory of ship A after it abandons the nominal base run, and let $\tau_c(\gamma_A,\gamma_B)$ be the resulting capture time under the chosen variant. In the delayed-loss branch, A solves
+\begin{equation}
+T^* = \sup_{\gamma_A}\inf_{\gamma_B}\tau_c(\gamma_A,\gamma_B),
+\label{eq:delay_value}
+\end{equation}
+while B solves the dual minimization problem.
+
+Because the exact transfer-cost formulas are already known, B's best reply to any prescribed trajectory of A is immediate: B chooses the earliest time at which interception becomes feasible. In the shooting game, this means the earliest $t>0$ such that
+\begin{equation}
+J_{\mathrm{shot}}(t)\le \Lambda_B,
+\end{equation}
+and in the boarding game, the earliest $t>0$ such that
+\begin{equation}
+J_{\mathrm{board}}(t)\le \Lambda_B.
+\end{equation}
+Thus the delayed-loss problem for A may be written equivalently as
+\begin{equation}
+T^* = \sup_{\gamma_A}\inf\{\,t>0:\;J_B(t;\gamma_A)\le \Lambda_B\,\},
+\label{eq:delay_reduced}
+\end{equation}
+where $J_B$ denotes either $J_{\mathrm{shot}}$ or $J_{\mathrm{board}}$ according to the selected game variant.
+
+In geometric terms, B defines a moving capture set in position space for shooting and in full state space for boarding. If A cannot keep its trajectory outside that set for all time, then the best A can do is to keep outside it for as long as possible. At the optimal delayed-loss trajectory, the capture constraint is first met at $t=T^*$:
+\begin{equation}
+J_B(T^*;\gamma_A^*)=\Lambda_B,
+\qquad
+J_B(t;\gamma_A^*)>\Lambda_B
+\quad\text{for }0<t<T^*.
+\end{equation}
+
+Unlike the direct run to base and the intercept test against a prescribed trajectory, this outer maximization over $\gamma_A$ does not in general collapse to a single universal closed-form formula. The problem is nevertheless still analytic in the sense that the inner capture test remains exact and one-dimensional in time; only the outer search over A's admissible evasion trajectories remains to be optimized numerically.
+
+\section{Relative-Coordinate View}
+It is sometimes useful to rewrite the game in relative coordinates,
+\begin{equation}
+\mathbf q = \mathbf r_A-\mathbf r_B,
+\qquad
+\mathbf w = \mathbf v_A-\mathbf v_B.
+\end{equation}
+Then
+\begin{equation}
+\dot{\mathbf q}=\mathbf w,
+\qquad
+\dot{\mathbf w}=\mathbf a_A-\mathbf a_B.
+\end{equation}
+For boarding, B seeks $(\mathbf q,\mathbf w)=(\mathbf 0,\mathbf 0)$; for shooting, B seeks only $\mathbf q=\mathbf 0$. The formulas \eqref{eq:J_shot} and \eqref{eq:J_board} may be regarded as exact controllability costs for this relative double-integrator system under the two ships' finite control-energy budgets.
+
+\section{Applet Implementation Based on the Analytic Formulas}
+The browser applet was rewritten so that the game engine is built around the analytic free-space formulas rather than around direct pursuit simulation. This section summarizes that implementation.
+
+\subsection{Overall Structure}
+For a chosen parameter set, the applet evaluates the game in the following order.
+\begin{enumerate}
+\item Compute A's budget $\Lambda_A$ and solve the cubic \eqref{eq:A_base_cubic} for the minimum feasible base time $T_A$.
+\item Construct A's direct base trajectory using \eqref{eq:A_base_path} and \eqref{eq:A_base_velocity}.
+\item Depending on the selected mode, evaluate either $J_{\mathrm{board}}(t)$ or $J_{\mathrm{shot}}(t)$ over $0<t<T_A$.
+\item If B can intercept the direct run, test whether A has an analytic break-away option that remains outside B's capture set for all future time; if so, classify the outcome as a forced draw and display an evasion trajectory instead of the direct run to base.
+\item If a forced draw is not available, search over the same family of break-away trajectories and choose the one that maximizes B's earliest feasible intercept time. This yields the delayed-loss branch of the game.
+\item Plot the chosen trajectories and the corresponding fuel usage inferred from the required budget expenditure.
+\end{enumerate}
+
+This architecture avoids the numerical pathologies that occur when one integrates a reactive chase step by step and tries to infer capture from the crossing of piecewise-linear samples.
+
+\subsection{One-Dimensional Search Rather Than Time-Stepping Pursuit}
+The formulas derived above remove the need for a pointwise reactive guidance law as the primary solver. Instead, the applet uses one-dimensional searches in time.
+
+For the direct A-to-base transfer, solving the cubic \eqref{eq:A_base_cubic} gives the exact minimum duration. For B's response against a prescribed A-trajectory, the applet minimizes either \eqref{eq:J_board} or \eqref{eq:J_shot} over the admissible interval. Since these are scalar functions of time, the only numerical work is root finding and one-dimensional minimization. The trajectories themselves are then reconstructed from the exact cubic formulas.
+
+\subsection{Break-Away / Draw and Delayed-Loss Logic}
+The break-away logic is also organized analytically. The applet first asks whether the direct run to $Z$ is unsafe. If it is, the applet searches over a family of break-away terminal states and times that are favorable to A in the sense of enlarging A's future reachable set while keeping B outside the relevant capture set. In the shooting game, this is guided by the disk inclusion criterion \eqref{eq:disk_inclusion}; in the boarding game, the same idea is applied in the full state-space cost metric \eqref{eq:state_reach_set}.
+
+If the search finds a trajectory for which B can never satisfy the relevant capture inequality, the outcome is classified as a forced draw. If no such trajectory exists, the same search family is used in a secondary optimization: among the losing break-away trajectories available to A, the applet selects the one that maximizes B's earliest feasible intercept time. In this way, the implementation distinguishes between safe arrival, forced draw, and delayed loss.
+
+In the implementation, the break-away search is still numerical in the narrow sense that it scans and refines over a finite family of candidate times and headings. However, it is built entirely on the exact transfer formulas rather than on direct dynamic pursuit simulation. The applet therefore uses numerics only where an explicit universal closed form is not available, not to approximate the underlying equations of motion.
+
+\subsection{Fuel Plot}
+For each displayed trajectory, the fuel plot is obtained from the budget consumed along that trajectory. If a transfer segment of duration $T$ uses control cost $J$, then the corresponding inverse-mass increment is $\Delta m^{-1}=J/(2P)$. This allows ship A and ship B to be plotted consistently in both the boarding and shooting variants, including the break-away mode.
+
+\section{Discussion}
+The free-space pursuit--evasion game is not fully reducible to a single closed-form threshold for arbitrary initial geometry. The base location $\mathbf Z$, the initial positions, and the initial velocities enter through norms and dot products that leave a one-dimensional optimization over the meeting time. Nevertheless, the game is analytic in a strong and useful sense: all reachable sets are known exactly, the direct run to base is obtained from a cubic equation, and the capture tests are scalar feasibility conditions. The same observation applies to the delayed-loss branch: although A's outer optimization over evasion trajectories is not available in closed form in general, B's inner response to any prescribed trajectory remains an exact scalar intercept test.
+
+This is a substantial simplification relative to a general differential game in a gravitational field. It also explains why the browser applet can be made robust without stepwise pursuit integration. The physically meaningful objects are reachable sets and endpoint transfer costs, not a sample-by-sample chasing law.
+
+
+
+\section{Conclusion}
+For constant-power, variable-$I_{\!sp}$ rockets in two-dimensional free space, the pursuit--evasion game admits an exact reachability formulation. The central quantity is the maneuver budget $\Lambda = 2P(1/m_{\mathrm{dry}} - 1/m_0)$. With this budget, the minimum cost of reaching any endpoint state in a prescribed time is given by \eqref{eq:J_general}; the corresponding position-reachable and state-reachable sets follow immediately. These formulas reduce A's direct run to base to a cubic equation and reduce B's shooting or boarding response to a scalar time test. The draw outcome is characterized by the failure of B's capture set to cover A's evolving evasion set, with $\Lambda_A>\Lambda_B$ giving A the asymptotic advantage in the shooting game. When such indefinite evasion is impossible, the same framework yields a natural delayed-loss game in which A maximizes the capture time and B minimizes it.
+
+The same formulas also provide a clean foundation for implementation. In the rewritten applet, the game is evaluated through exact transfer costs and one-dimensional searches rather than through step-by-step chase simulation. This includes not only safe arrival and forced-draw detection, but also the delayed-loss branch, in which A numerically searches for the break-away trajectory that postpones the first feasible intercept for as long as possible. This keeps the browser implementation faithful to the analytic model and avoids the numerical ``fly-through'' artifacts that can arise when intercept events are inferred only from coarse temporal sampling.
+
+\bibliographystyle{IEEEtran}
+\begin{thebibliography}{1}
+
+\bibitem{Olsina2025}
+J.~Ol{\v{s}}ina, ``Time-Optimal Heliocentric Transfers With a Constant-Power,
+Variable-$I_{\!sp}$ Engine,'' Zenodo, 2025. doi: 10.5281/zenodo.17521033.
+
+\end{thebibliography}
+
+\end{document}
+
+
+
