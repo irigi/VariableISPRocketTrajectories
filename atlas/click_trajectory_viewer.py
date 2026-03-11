@@ -218,9 +218,12 @@ def classify_all_solved_points(state, data, rho_grid, kappa_grid, theta_grid, so
 
     # return branch_map, winding_map, mismatch_map            # skip everything
 
-    from_two_files = False
+    from_two_files = True
     if from_two_files:
-        threshold = 0.015
+        same_tol = 0.010
+        diff_tol = 0.020
+        abs_tol = 1e-12
+
         second_npz_path = r"c:\Programs\VariableISPRocketTrajectories\atlas\run004\trajectory_atlas.npz"
         other_bundle = np.load(second_npz_path)
         other_state = other_bundle["state"]
@@ -244,27 +247,31 @@ def classify_all_solved_points(state, data, rho_grid, kappa_grid, theta_grid, so
         solved_other = (other_state == STATE_SOLVED)
         solved_both = solved_here & solved_other
 
-        t_here = np.asarray(data[..., 5], dtype=float)
-        t_other = np.asarray(other_data[..., 5], dtype=float)
+        vec_here = np.asarray(data[..., :6], dtype=float)
+        vec_other = np.asarray(other_data[..., :6], dtype=float)
 
-        finite_both = np.isfinite(t_here) & np.isfinite(t_other)
-        comparable = solved_both & finite_both
+        finite_here = np.all(np.isfinite(vec_here), axis=-1)
+        finite_other = np.all(np.isfinite(vec_other), axis=-1)
+        comparable = solved_both & finite_here & finite_other
 
-        # Relative difference with respect to the smaller of the two times.
-        min_t = np.minimum(t_here, t_other)
-        rel_diff = np.full(state.shape, np.inf, dtype=float)
-        positive_time = min_t > 0.0
-        rel_diff[positive_time] = np.abs(t_here[positive_time] - t_other[positive_time]) / min_t[positive_time]
+        denom = np.maximum(np.maximum(np.abs(vec_here), np.abs(vec_other)), abs_tol)
+        rel_diff_vec = np.abs(vec_here - vec_other) / denom
+        max_rel_diff = np.max(rel_diff_vec, axis=-1)
 
-        clearly_left = comparable & (rel_diff >= threshold) & (t_here < t_other)
-        clearly_right = comparable & (rel_diff >= threshold) & (t_here > t_other)
+        the_same = comparable & (max_rel_diff <= same_tol)
+        different = comparable & (max_rel_diff >= diff_tol)
+        not_sure = solved_both & (~the_same) & (~different)
 
-        # Leave nearly-equal solutions undefined.
-        branch_map[clearly_left] = BRANCH_LEFT
-        branch_map[clearly_right] = BRANCH_RIGHT
+        # same / not_sure -> undecided
+        branch_map[the_same] = BRANCH_LEFT
+        branch_map[not_sure] = BRANCH_UNDEFINED
 
-        branch_map[solved_here & ~solved_other] = BRANCH_LEFT
-        branch_map[solved_other & ~solved_here] = BRANCH_RIGHT
+        # unique-to-this-file / unique-to-other-file
+        branch_map[solved_here & ~solved_other] = BRANCH_UNDEFINED
+        branch_map[solved_other & ~solved_here] = BRANCH_UNDEFINED
+
+        # If both solved but are clearly different, treat the current atlas as the "left" family.
+        branch_map[different] = BRANCH_RIGHT
 
         return branch_map, winding_map, mismatch_map
 
