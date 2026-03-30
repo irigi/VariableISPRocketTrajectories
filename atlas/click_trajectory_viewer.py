@@ -220,11 +220,7 @@ def classify_all_solved_points(state, data, rho_grid, kappa_grid, theta_grid, so
 
     from_two_files = True
     if from_two_files:
-        same_tol = 0.010
-        diff_tol = 0.020
-        abs_tol = 1e-12
-
-        second_npz_path = r"c:\Programs\VariableISPRocketTrajectories\atlas\run004\trajectory_atlas.npz"
+        second_npz_path = r"c:\Programs\VariableISPRocketTrajectories\atlas\run005\trajectory_atlas.npz"
         other_bundle = np.load(second_npz_path)
         other_state = other_bundle["state"]
         other_data = other_bundle["data"]
@@ -243,35 +239,81 @@ def classify_all_solved_points(state, data, rho_grid, kappa_grid, theta_grid, so
                 f"got shape {other_data.shape}"
             )
 
+        # In this two-file mode:
+        #   BRANCH_LEFT      -> this file is faster
+        #   BRANCH_RIGHT     -> other file is faster
+        #   BRANCH_UNDEFINED -> tie / undecidable among solved cases
+        #
+        # We will also rewrite `state` for plotting:
+        #   STATE_SOLVED          -> at least one file solved, branch_map decides color
+        #   STATE_DEAD_FAILED     -> failed in both
+        #   STATE_UNSEEN          -> unknown overall / no usable result
+        #   STATE_QUEUED          -> unused here
+        #   STATE_RETRYABLE_FAILED-> unused here
+        #
+        # mismatch_map is unused here.
+
         solved_here = (state == STATE_SOLVED)
         solved_other = (other_state == STATE_SOLVED)
+
+        failed_here = (state == STATE_RETRYABLE_FAILED) | (state == STATE_DEAD_FAILED)
+        failed_other = (other_state == STATE_RETRYABLE_FAILED) | (other_state == STATE_DEAD_FAILED)
+
+        unseen_here = (state == STATE_UNSEEN)
+        unseen_other = (other_state == STATE_UNSEEN)
+
+        queued_here = (state == STATE_QUEUED)
+        queued_other = (other_state == STATE_QUEUED)
+
+        # Start from a clean comparison-state for plotting.
+        state[:] = STATE_UNSEEN
+        branch_map[:] = BRANCH_UNDEFINED
+        winding_map[:] = 0
+        mismatch_map[:] = False
+
+        # 1) Solved in exactly one file -> that file wins.
+        solved_here_only = solved_here & (~solved_other)
+        solved_other_only = solved_other & (~solved_here)
+
+        state[solved_here_only] = STATE_SOLVED
+        branch_map[solved_here_only] = BRANCH_LEFT
+
+        state[solved_other_only] = STATE_SOLVED
+        branch_map[solved_other_only] = BRANCH_RIGHT
+
+        # 2) Solved in both -> compare times of flight.
         solved_both = solved_here & solved_other
 
-        vec_here = np.asarray(data[..., :6], dtype=float)
-        vec_other = np.asarray(other_data[..., :6], dtype=float)
+        t_here = np.asarray(data[..., 5], dtype=float)
+        t_other = np.asarray(other_data[..., 5], dtype=float)
 
-        finite_here = np.all(np.isfinite(vec_here), axis=-1)
-        finite_other = np.all(np.isfinite(vec_other), axis=-1)
-        comparable = solved_both & finite_here & finite_other
+        finite_t_here = np.isfinite(t_here)
+        finite_t_other = np.isfinite(t_other)
+        comparable = solved_both & finite_t_here & finite_t_other
 
-        denom = np.maximum(np.maximum(np.abs(vec_here), np.abs(vec_other)), abs_tol)
-        rel_diff_vec = np.abs(vec_here - vec_other) / denom
-        max_rel_diff = np.max(rel_diff_vec, axis=-1)
+        this_faster = comparable & (t_here < t_other)
+        other_faster = comparable & (t_other < t_here)
+        tied = comparable & (t_here == t_other)
 
-        the_same = comparable & (max_rel_diff <= same_tol)
-        different = comparable & (max_rel_diff >= diff_tol)
-        not_sure = solved_both & (~the_same) & (~different)
+        state[this_faster | other_faster | tied] = STATE_SOLVED
+        branch_map[this_faster] = BRANCH_LEFT
+        branch_map[other_faster] = BRANCH_RIGHT
+        branch_map[tied] = BRANCH_UNDEFINED
 
-        # same / not_sure -> undecided
-        branch_map[the_same] = BRANCH_LEFT
-        branch_map[not_sure] = BRANCH_UNDEFINED
+        # Solved in both but non-finite time in one/both -> unknown overall.
+        bad_time = solved_both & (~finite_t_here | ~finite_t_other)
+        state[bad_time] = STATE_UNSEEN
+        branch_map[bad_time] = BRANCH_UNDEFINED
 
-        # unique-to-this-file / unique-to-other-file
-        branch_map[solved_here & ~solved_other] = BRANCH_UNDEFINED
-        branch_map[solved_other & ~solved_here] = BRANCH_UNDEFINED
+        # 3) Failed in both -> red.
+        failed_both = failed_here & failed_other
+        state[failed_both] = STATE_DEAD_FAILED
 
-        # If both solved but are clearly different, treat the current atlas as the "left" family.
-        branch_map[different] = BRANCH_RIGHT
+        # 4) Everything else remains unknown overall.
+        # This includes:
+        #    - unseen/queued combinations with no solved result
+        #    - failed in one file and unseen/queued in the other
+        #    - any other combination not handled above
 
         return branch_map, winding_map, mismatch_map
 
