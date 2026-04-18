@@ -211,16 +211,15 @@ def _classify_one_solved_cell(task):
     return int(i), int(j), int(k), int(branch), int(winding), bool(mismatch)
 
 
-def classify_all_solved_points(state, data, rho_grid, kappa_grid, theta_grid, solver):
+def classify_all_solved_points(state, data, rho_grid, kappa_grid, theta_grid, solver, second_npz_path=None):
     branch_map = np.full(state.shape, BRANCH_UNDEFINED, dtype=np.int8)
     winding_map = np.zeros(state.shape, dtype=np.int8)
     mismatch_map = np.zeros(state.shape, dtype=bool)
 
     # return branch_map, winding_map, mismatch_map            # skip everything
 
-    from_two_files = True
+    from_two_files = second_npz_path is not None
     if from_two_files:
-        second_npz_path = r"c:\Programs\VariableISPRocketTrajectories\atlas\run005\trajectory_atlas.npz"
         other_bundle = np.load(second_npz_path)
         other_state = other_bundle["state"]
         other_data = other_bundle["data"]
@@ -450,11 +449,65 @@ def make_status_figure(display_state, state, branch_map, mismatch_map, rho_grid,
     return fig, axes, rho_edges, kappa_edges
 
 
+
+
+def plot_two_solutions_overlay(sol_a, t_days_a, label_a, sol_b, t_days_b, label_b, config, solver):
+    atlas_styles = [
+        (sol_a, t_days_a, label_a, "tab:blue"),
+        (sol_b, t_days_b, label_b, "tab:orange"),
+    ]
+    plotted = [(sol, t_days, label, color) for sol, t_days, label, color in atlas_styles if sol is not None and t_days is not None]
+    if not plotted:
+        return
+
+    fig, (ax_traj, ax_fuel, ax_acc) = plt.subplots(1, 3, figsize=(14, 4), gridspec_kw={"width_ratios": [2, 1, 1]})
+
+    final_radii = []
+    for sol, t_days, label, color in plotted:
+        t_days_axis = sol.t / 86400.0
+        r = sol.y[0]
+        theta = sol.y[1]
+        m = sol.y[4]
+        lam_vr = sol.y[6]
+        lam_vth = sol.y[7]
+
+        a_mag = np.abs(config.k_gain) * np.sqrt(lam_vr**2 + lam_vth**2)
+        x = (r * np.cos(theta)) / solver.AU
+        y = (r * np.sin(theta)) / solver.AU
+
+        ax_traj.plot(x, y, color=color, label=f"{label}: {t_days:.3f} d")
+        ax_fuel.plot(t_days_axis, (m - config.m_dry)/1e6, color=color, label=f"{label}: {t_days:.3f} d")
+        ax_acc.plot(t_days_axis, a_mag, color=color, label=f"{label}: {t_days:.3f} d")
+        final_radii.append(r[-1] / solver.AU)
+
+    ax_traj.scatter([0], [0], color='yellow', marker='*', s=200, label='Sun')
+    circle = plt.Circle((0, 0), 1.0, color='gray', fill=False, linestyle='--', label='Earth orbit')
+    ax_traj.add_patch(circle)
+    ax_traj.set_aspect('equal')
+    ax_traj.set_xlabel('x [AU]')
+    ax_traj.set_ylabel('y [AU]')
+    ax_traj.set_title(f'{config.r0/solver.AU:.1f} AU → {np.round(np.mean(final_radii), 1):.1f} AU')
+    ax_traj.legend()
+
+    ax_fuel.set_xlabel('Time [days]')
+    ax_fuel.set_ylabel('Propellant mass [kT]')
+    ax_fuel.set_title('Fuel on board')
+    ax_fuel.legend()
+
+    ax_acc.set_xlabel('Time [days]')
+    ax_acc.set_ylabel('a [m/s²]')
+    ax_acc.set_title('Acceleration magnitude')
+    ax_acc.legend()
+
+    fig.tight_layout()
+    plt.show()
+
 def main():
     parser = argparse.ArgumentParser(
         description="Interactive atlas viewer: solved cells are shaded by whether the trajectory goes Sun-left, Sun-right, or neither; boundary mismatches are highlighted."
     )
     parser.add_argument("--npz_path", help="Path to trajectory_atlas.npz / trajectory_atlas_final.npz")
+    parser.add_argument("--npz_path_other", default=None, help="Path to second trajectory atlas used for comparison/overlay plotting")
     parser.add_argument(
         "--solver",
         default="../rocketHamilton.py",
@@ -481,12 +534,19 @@ def main():
     data = bundle["data"][::skip_mod, ::skip_mod, ::skip_mod, :]
     state = bundle["state"][::skip_mod, ::skip_mod, ::skip_mod]
 
+    other_data = None
+    other_state = None
+    if args.npz_path_other is not None:
+        other_bundle = np.load(args.npz_path_other)
+        other_data = other_bundle["data"][::skip_mod, ::skip_mod, ::skip_mod, :]
+        other_state = other_bundle["state"][::skip_mod, ::skip_mod, ::skip_mod]
+
     if data.shape[:3] != state.shape:
         raise ValueError(f"data.shape[:3]={data.shape[:3]} does not match state.shape={state.shape}")
     if data.shape[-1] < 6:
         raise ValueError(f"Expected last axis of data to hold at least 6 values [params..., t_days], got shape {data.shape}")
 
-    branch_map, winding_map, mismatch_map = classify_all_solved_points(state, data, rho_grid, kappa_grid, theta_grid, solver)
+    branch_map, winding_map, mismatch_map = classify_all_solved_points(state, data, rho_grid, kappa_grid, theta_grid, solver, second_npz_path=args.npz_path_other)
     display_state = make_display_state(state, branch_map, mismatch_map)
 
     write_patched_file = False
@@ -562,36 +622,64 @@ def main():
 
         row = np.asarray(data[i, j, k], dtype=float)
         if row.size < 6 or not np.all(np.isfinite(row[:6])):
-            status_text.set_text(summary + " — stored solution is missing or non-finite.")
+            status_text.set_text(summary + " — primary atlas solution is missing or non-finite.")
             fig.canvas.draw_idle()
             return
+
+        row_other = None
+        if other_data is not None and other_state is not None and np.uint8(other_state[i, j, k]) == STATE_SOLVED:
+            candidate = np.asarray(other_data[i, j, k], dtype=float)
+            if candidate.size >= 6 and np.all(np.isfinite(candidate[:6])):
+                row_other = candidate
 
         t_days = float(row[5])
         _, config = get_canonical_mission_config(rho, kappa)
         params = row[:5]
 
+        t_days_other = None
+        params_other = None
+        if row_other is not None:
+            t_days_other = float(row_other[5])
+            params_other = row_other[:5]
+
         branch = int(branch_map[i, j, k])
         winding = int(winding_map[i, j, k])
         is_mismatch = bool(mismatch_map[i, j, k])
+
+        time_parts = [f"atlas1 t={t_days:.3f} d"]
+        if t_days_other is not None:
+            time_parts.append(f"atlas2 t={t_days_other:.3f} d")
+        else:
+            time_parts.append("atlas2 unsolved")
 
         status_text.set_text(
             summary
             + f" — {BRANCH_NAMES.get(branch, 'unknown')} (winding={winding}), "
             + ("BOUNDARY MISMATCH, " if is_mismatch else "")
-            + f"replaying t={t_days:.3f} d"
+            + ", ".join(time_parts)
         )
         fig.canvas.draw_idle()
 
         sol_opt = solver.integrate_fixed_time(params, t_days, config=config)
+        sol_opt_other = None
+        if params_other is not None and t_days_other is not None:
+            sol_opt_other = solver.integrate_fixed_time(params_other, t_days_other, config=config)
 
-        # Print endpoint residuals when replaying.
         mismatch, r_end, dr, dtheta = check_boundary_mismatch(sol_opt, rho, theta_target, solver)
         print(
-            f"  endpoint check: r_end={r_end:.6g} AU (dr={dr:+.3e}), "
+            f"  atlas1 endpoint check: r_end={r_end:.6g} AU (dr={dr:+.3e}), "
             f"dtheta={np.degrees(dtheta):+.3f} deg, mismatch={mismatch}"
         )
+        if sol_opt_other is not None:
+            mismatch_other, r_end_other, dr_other, dtheta_other = check_boundary_mismatch(sol_opt_other, rho, theta_target, solver)
+            print(
+                f"  atlas2 endpoint check: r_end={r_end_other:.6g} AU (dr={dr_other:+.3e}), "
+                f"dtheta={np.degrees(dtheta_other):+.3f} deg, mismatch={mismatch_other}"
+            )
+        else:
+            print("  atlas2 endpoint check: unsolved or non-finite for this cell")
 
-        solver.make_plots(sol_opt, params, show=True, config=config)
+        plot_two_solutions_overlay(sol_opt, t_days, "Atlas 1", sol_opt_other, t_days_other, "Atlas 2", config, solver)
 
     fig.canvas.mpl_connect("button_press_event", on_click)
     plt.show()

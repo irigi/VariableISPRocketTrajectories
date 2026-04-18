@@ -360,21 +360,25 @@ def generate(resume_path=None, comparison_path=None):
     pending_tasks = deque()
     in_flight = {}
 
-    def enqueue_task(indices, seed_params, seed_time):
+    def enqueue_task(indices, seed_params, seed_time, front=False):
         """Queue a task if the state machine allows it."""
         i, j, k = indices
         current_state = state[i, j, k]
 
         can_retry = (
-            current_state == STATE_RETRYABLE_FAILED
-            and retry_count[i, j, k] < MAX_RETRIES_PER_CELL
+                current_state == STATE_RETRYABLE_FAILED
+                and retry_count[i, j, k] < MAX_RETRIES_PER_CELL
         )
 
         if current_state == STATE_UNSEEN or can_retry:
             state[i, j, k] = STATE_QUEUED
-            pending_tasks.append(
-                make_task(indices, rho_grid, kappa_grid, theta_grid, seed_params, seed_time)
-            )
+            task = make_task(indices, rho_grid, kappa_grid, theta_grid, seed_params, seed_time)
+
+            if front:
+                pending_tasks.appendleft(task)
+            else:
+                pending_tasks.append(task)
+
             return True
 
         return False
@@ -479,7 +483,7 @@ def generate(resume_path=None, comparison_path=None):
         enqueue_task(start_node, None, None)
         print("[-] Anchor queued. Starting asynchronous frontier expansion...")
 
-    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+    with ProcessPoolExecutor(max_workers=num_workers, max_tasks_per_child=100) as executor:
         submit_ready_tasks(executor)
 
         while pending_tasks or in_flight:
@@ -543,7 +547,7 @@ def generate(resume_path=None, comparison_path=None):
                             if not in_bounds(ni, nj, nk):
                                 continue
 
-                            enqueue_task((ni, nj, nk), params, t_days)
+                            enqueue_task((ni, nj, nk), params, t_days, front=False)     # TODO True
 
                 else:
                     failed_count += 1
