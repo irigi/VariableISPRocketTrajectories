@@ -68,6 +68,10 @@ PROGRESS_INTERVAL_SEC = 30.0
 SAVE_INTERVAL_SEC = 4*120.0
 MAX_IN_FLIGHT_FACTOR = 4   # allow a few waves of queued work beyond worker count
 
+# Duplicate-solution rejection tolerances (matched to click_trajectory_viewer.py)
+COMPARE_SAME_TOL = 0.010
+COMPARE_ABS_TOL = 1e-12
+
 
 # -------------------------------------------------------
 # 2. Dimensional Analysis Utilities
@@ -226,7 +230,50 @@ def load_checkpoint(filename):
     return rho_grid, kappa_grid, theta_grid, atlas, state, retry_count
 
 
-def generate(resume_path=None):
+def load_comparison_atlas(filename):
+    """Load an existing atlas whose solutions should be rejected when re-found."""
+    bundle = np.load(filename)
+    other_state = np.asarray(bundle["state"], dtype=np.uint8)
+    other_data = np.asarray(bundle["data"], dtype=np.float64)
+
+    expected_state_shape = (N_RHO, N_KAPPA, N_THETA)
+    expected_data_shape = expected_state_shape + (6,)
+
+    if other_state.shape != expected_state_shape:
+        raise ValueError(
+            f"Comparison atlas state shape {other_state.shape} does not match expected {expected_state_shape}."
+        )
+
+    if other_data.shape != expected_data_shape:
+        raise ValueError(
+            f"Comparison atlas data shape {other_data.shape} does not match expected {expected_data_shape}."
+        )
+
+    return other_state, other_data
+
+
+def is_close_to_comparison_solution(indices, candidate_vec6, comparison_state, comparison_data, same_tol=COMPARE_SAME_TOL, abs_tol=COMPARE_ABS_TOL):
+    """Return True when the candidate matches the solved comparison atlas at the same cell."""
+    if comparison_state is None or comparison_data is None:
+        return False
+
+    i, j, k = indices
+    if comparison_state[i, j, k] != STATE_SOLVED:
+        return False
+
+    other_vec = np.asarray(comparison_data[i, j, k, :6], dtype=np.float64)
+    candidate_vec = np.asarray(candidate_vec6[:6], dtype=np.float64)
+
+    if not np.all(np.isfinite(other_vec)) or not np.all(np.isfinite(candidate_vec)):
+        return False
+
+    denom = np.maximum(np.maximum(np.abs(candidate_vec), np.abs(other_vec)), abs_tol)
+    rel_diff_vec = np.abs(candidate_vec - other_vec) / denom
+    max_rel_diff = float(np.max(rel_diff_vec))
+    return max_rel_diff <= same_tol
+
+
+def generate(resume_path=None, comparison_path=None):
     # Windows support for multiprocessing
     mp.freeze_support()
 
@@ -275,6 +322,14 @@ def generate(resume_path=None):
     else:
         print(f"[-] Initializing Parallel Atlas: {data_shape} points.")
 
+    comparison_state = None
+    comparison_data = None
+    if comparison_path is not None:
+        print(f"[-] Loading comparison atlas: {comparison_path}")
+        comparison_state, comparison_data = load_comparison_atlas(comparison_path)
+        comparison_solved = int(np.count_nonzero(comparison_state == STATE_SOLVED))
+        print(f"    comparison atlas solved cells: {comparison_solved}")
+
     num_workers = max(1, mp.cpu_count() - 1)
     print(f"[-] Spawning {num_workers} worker processes...")
 
@@ -288,6 +343,7 @@ def generate(resume_path=None):
     # If resuming, keep solved_count in sync with the checkpoint.
     solved_count = int(np.count_nonzero(state == STATE_SOLVED))
     failed_count = 0
+    duplicate_count = 0
     submitted_count = 0
     completed_count = 0
     start_time = time.time()
@@ -304,21 +360,25 @@ def generate(resume_path=None):
     pending_tasks = deque()
     in_flight = {}
 
-    def enqueue_task(indices, seed_params, seed_time):
+    def enqueue_task(indices, seed_params, seed_time, front=False):
         """Queue a task if the state machine allows it."""
         i, j, k = indices
         current_state = state[i, j, k]
 
         can_retry = (
-            current_state == STATE_RETRYABLE_FAILED
-            and retry_count[i, j, k] < MAX_RETRIES_PER_CELL
+                current_state == STATE_RETRYABLE_FAILED
+                and retry_count[i, j, k] < MAX_RETRIES_PER_CELL
         )
 
         if current_state == STATE_UNSEEN or can_retry:
             state[i, j, k] = STATE_QUEUED
-            pending_tasks.append(
-                make_task(indices, rho_grid, kappa_grid, theta_grid, seed_params, seed_time)
-            )
+            task = make_task(indices, rho_grid, kappa_grid, theta_grid, seed_params, seed_time)
+
+            if front:
+                pending_tasks.appendleft(task)
+            else:
+                pending_tasks.append(task)
+
             return True
 
         return False
@@ -345,7 +405,7 @@ def generate(resume_path=None):
         should_save = force or (now - last_save_time >= SAVE_INTERVAL_SEC)
 
         if should_report:
-            solved_rate_avg = solved_count / max(elapsed, 1e-9)
+            solved_rate_avg = completed_count / max(elapsed, 1e-9)
             solved_rate_now = (solved_count - last_solved_count) / max(now - last_progress_time, 1e-9)
             completed_rate_now = (completed_count - last_completed_count) / max(now - last_progress_time, 1e-9)
 
@@ -354,6 +414,7 @@ def generate(resume_path=None):
                 f"Solved: {solved_count} | "
                 f"Completed: {completed_count} | "
                 f"Failed calls: {failed_count} | "
+                f"Rejected duplicates: {duplicate_count} | "
                 f"Pending: {len(pending_tasks)} | "
                 f"In-flight: {len(in_flight)} | "
                 f"Submitted: {submitted_count} | "
@@ -422,7 +483,7 @@ def generate(resume_path=None):
         enqueue_task(start_node, None, None)
         print("[-] Anchor queued. Starting asynchronous frontier expansion...")
 
-    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+    with ProcessPoolExecutor(max_workers=num_workers, max_tasks_per_child=100) as executor:
         submit_ready_tasks(executor)
 
         while pending_tasks or in_flight:
@@ -460,17 +521,33 @@ def generate(resume_path=None):
                 completed_count += 1
 
                 if success:
-                    atlas[i, j, k, :] = np.append(params, t_days)
-                    state[i, j, k] = STATE_SOLVED
-                    solved_count += 1
+                    candidate_vec = np.append(params, t_days)
+                    if is_close_to_comparison_solution(
+                        indices,
+                        candidate_vec,
+                        comparison_state,
+                        comparison_data,
+                    ):
+                        failed_count += 1
+                        duplicate_count += 1
+                        retry_count[i, j, k] += 1
 
-                    # Immediately expand neighbors and feed them to the pool
-                    for di, dj, dk in NEIGHBOR_OFFSETS:
-                        ni, nj, nk = i + di, j + dj, k + dk
-                        if not in_bounds(ni, nj, nk):
-                            continue
+                        if retry_count[i, j, k] <= MAX_RETRIES_PER_CELL:
+                            state[i, j, k] = STATE_RETRYABLE_FAILED
+                        else:
+                            state[i, j, k] = STATE_DEAD_FAILED
+                    else:
+                        atlas[i, j, k, :] = candidate_vec
+                        state[i, j, k] = STATE_SOLVED
+                        solved_count += 1
 
-                        enqueue_task((ni, nj, nk), params, t_days)
+                        # Immediately expand neighbors and feed them to the pool
+                        for di, dj, dk in NEIGHBOR_OFFSETS:
+                            ni, nj, nk = i + di, j + dj, k + dk
+                            if not in_bounds(ni, nj, nk):
+                                continue
+
+                            enqueue_task((ni, nj, nk), params, t_days, front=False)     # TODO True
 
                 else:
                     failed_count += 1
@@ -490,6 +567,7 @@ def generate(resume_path=None):
     print(f"\n[+] Parallel Atlas Generation Complete in {elapsed:.1f}s")
     print(f"[+] Coverage: {solved_count}/{total_points} ({solved_count / total_points * 100:.1f}%)")
     print(f"[+] Failed solver calls: {failed_count}")
+    print(f"[+] Rejected duplicate solutions: {duplicate_count}")
 
     final_filename = "trajectory_atlas_final.npz"
     save_checkpoint(
@@ -685,5 +763,10 @@ if __name__ == "__main__":
         default=None,
         help="Path to an existing trajectory_atlas*.npz to resume from (queued cells are reset to unseen)",
     )
+    parser.add_argument(
+        "--compare",
+        default=None,
+        help="Path to an existing trajectory_atlas*.npz whose solved cells should be rejected when re-found",
+    )
     args = parser.parse_args()
-    generate(resume_path=args.resume)
+    generate(resume_path=args.resume, comparison_path=args.compare)
