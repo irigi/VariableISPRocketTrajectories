@@ -29,7 +29,7 @@ email: \texttt{jan.olsina@gmail.com},  ORCID: \texttt{0009-0003-9816-3958}.}
 
 %\begin{strip}
 \begin{abstract}
-We study time-optimal candidate heliocentric transfers for a spacecraft propelled by an electric thruster that supplies constant useful jet power \(P\) while continuously varying its exhaust speed (variable \(I_{\!sp}\)). The vehicle is assumed to depart from and arrive on circular heliocentric orbits, so that the initial and final velocities match the local circular velocities at the respective radii. First, we derive an analytic solution of the one-dimensional, gravity-free brachistochrone and discuss how a finite exhaust-speed ceiling modifies the solution, producing a boost--coast--brake structure. Next, we formulate the full planar Sun-field optimal-control problem, derive two closed-form first integrals, and show that the indirect formulation reduces the orbital/costate shooting dynamics to seven differential equations, with propellant consumption enforced by an additional quadrature or endpoint constraint. Finally, we present a practical numerical continuation strategy that obtains a coarse feasible endpoint via global optimization and then refines it by homotopy and Powell's local solver. Numerical examples for a \SI{1}{GW} useful jet-power engine with an initial/dry mass of \SI{3000}{t}\,\(\to\)\,\SI{1000}{t} produce Earth--Jupiter-class PMP-extremal transfer candidates in roughly \(200\)--\(220\) days that commonly exploit a low-perihelion Oberth-like pass, subject to the idealizations of the model.
+We study time-optimal candidate heliocentric transfers for a spacecraft propelled by an electric thruster that supplies constant useful jet power \(P\) while continuously varying its exhaust speed (variable \(I_{\!sp}\)). The vehicle is assumed to depart from and arrive on circular heliocentric orbits, so that the initial and final velocities match the local circular velocities at the respective radii. First, we derive an analytic solution of the one-dimensional, gravity-free brachistochrone and discuss how a finite exhaust-speed ceiling modifies the solution, producing a boost--coast--brake structure. Next, we formulate the full planar Sun-field optimal-control problem, derive two closed-form first integrals, and show that the indirect formulation reduces the orbital/costate shooting dynamics to seven differential equations, with propellant consumption enforced by an additional quadrature or endpoint constraint. Finally, we present a practical numerical continuation strategy that obtains a coarse feasible endpoint via global optimization and then refines it by homotopy and Powell's local solver. Numerical examples for a \SI{1}{GW} useful jet-power engine with an initial/dry mass of \SI{3000}{t}\,\(\to\)\,\SI{1000}{t} produce Earth--Jupiter-class PMP-extremal transfer candidates with flight times ranging from roughly \(170\) days for short-arc geometries up to about \(215\) days for long-arc geometries; the longer-arc candidates highlighted in the figures commonly exploit a low-perihelion Oberth-like pass. All results are subject to the idealizations of the model.
 \end{abstract}
 %\end{strip}
 
@@ -40,7 +40,7 @@ Reducing transfer times from years to months propels interest in high-power prop
 This constant-power paradigm fundamentally alters the classic rocketry framework. Instead of the fixed exhaust velocity ($v_e$) of the Tsiolkovsky equation \cite{Tsiolkovsky1903}, the exhaust speed becomes a key control variable, allowing the engine to actively trade thrust for specific impulse. The Variable Specific Impulse Magnetoplasma Rocket (VASIMR) is an exemplary technology demonstrating this "constant-power throttling" over a wide operating range \cite{Bering2011}. Such throttleability is compelling for the fast transfers that motivate our study, as recent optimization work confirms that varying the specific impulse during flight can significantly improve trip time \cite{DiPasquale2024}.
 In this paper, we develop the analytical and numerical machinery for constructing time-optimal transfer candidates in this high-power regime. We first derive an analytical solution for a 1D, gravity-free "brachistochrone" to build intuition. We then formulate the full planar Sun-field problem, derive two closed-form first integrals to simplify the dynamics, and present a robust numerical strategy to solve the resulting boundary-value problem. Our idealized examples for a gigawatt-scale engine demonstrate Earth--Jupiter-class transfer candidates in a few months, frequently exploiting a low-perihelion Oberth-like maneuver.
 
-
+\bigskip
 \section{Variable-$I_{\!sp}$ Rocket Model}
 Let $m(t)$ be the instantaneous mass ($m \ge m_\mathrm{dry}$) and $v_e(t)$ the exhaust speed. The propellant mass flow rate is the positive quantity $\dot m_f = -\dot m$. Neglecting plume inefficiencies, the useful jet power $P$ (taken to be constant) and thrust magnitude $T$ are given by \cite{Sutton2017}:
 \begin{equation}
@@ -53,10 +53,11 @@ where $a$ is the resulting thrust-induced acceleration magnitude. Eliminating $v
   \dot m = -\frac{m^{2}a^{2}}{2P}.
   \label{eq:mass_flow}
 \end{equation}
-In vector problems, \(a\) in \eqref{eq:mass_flow} should be interpreted as the thrust-acceleration magnitude, \(a=\|\mathbf a_T\|\). In the one-dimensional free-space derivation below, we use \(a(t)\) as a signed scalar acceleration; the mass-flow law then depends on \(a(t)^2\), while the physical thrust magnitude is \(m|a(t)|\).
+In vector problems, \(a\) in \eqref{eq:mass_flow} should be interpreted as the thrust-acceleration magnitude, \(a=\|\mathbf a_T\|\). In the one-dimensional free-space derivation below, we use \(a(t)\) as a signed scalar acceleration; because the mass-flow law depends on \(a(t)^2\), this sign convention is immaterial for the propellant balance, while the physical thrust magnitude is \(m|a(t)|\).
 
 This equation forms the basis of our optimal control problem.
 
+\bigskip
 \section{Exact Solution for the Free-Space Case $(\mu=0)$}
 \label{sec:free_space_solution}
 With solar gravity absent ($\mu=0$), the translational degrees of freedom decouple. The problem simplifies to finding the minimum-time trajectory for a 1D drive from an initial state $(x, v) = (0, 0)$ at $t=0$ to a final state $(x, v) = (L, 0)$ at the final time $t_f$.
@@ -74,7 +75,7 @@ For a minimum-time problem, the performance index is
 \[
     J=\int_0^{t_f} 1\,dt,
 \]
-so the running cost is \(L=1\). With this convention, the optimal control maximizes \(\mathcal H\) pointwise, and for a normal free-final-time solution the Hamiltonian is constant and satisfies \(\mathcal H\equiv0\).
+so the running cost is \(L=1\). The sign convention \(\mathcal H=\boldsymbol\lambda^\top \mathbf f-L\) used here is Pontryagin's original ``normal-branch'' convention \cite{Pontryagin1962}, in which the optimal control maximizes \(\mathcal H\) pointwise; many modern aerospace optimal-control texts instead write \(\mathcal H=\boldsymbol\lambda^\top \mathbf f+L\) and minimize, which differs from \eqref{eq:hamiltonian_general} by the sign of the costates. For an autonomous problem with free final time, transversality and conservation of \(\mathcal H\) along the optimal trajectory then imply \(\mathcal H\equiv 0\).
 
 Here:
 \begin{itemize}
@@ -244,6 +245,7 @@ Solving for $T_{\min}$ yields the final result:
 
 Equation~\eqref{eq:Tmin} treats the dry mass as prescribed. If the propulsion hardware mass is instead allowed to scale with power, the same free-space benchmark can be extended by a simple dry-mass closure; the resulting scaling law is derived in Appendix~\ref{sec:appendix_mass_closure}.
 
+\bigskip
 \section{Transfers with a Finite Exhaust-Speed Ceiling}
 \label{sec:capped_ve}
 The linear-in-time acceleration profile from Sec.~\ref{sec:free_space_solution} is feasible only if the engine can raise its exhaust speed indefinitely, because the required exhaust speed,
@@ -260,7 +262,9 @@ The trajectory consists of a burn, a coast, and a symmetric braking burn. We def
 We adapt the acceleration profile from the unlimited case, $a_\infty(t)$ from \eqref{eq:a_linear}, by scaling it with a constant throttle factor $k$. The powered phases now run from $t=0$ to $t_c$ and symmetrically at the end. The three unknowns ($k$, $t_f$, and $\xi$) are determined by the three physical constraints: total distance, total propellant, and the exhaust speed ceiling. The derivation uses the recurring polynomial $f(\xi)$  defined in \eqref{eq:fdef}, which is positive for $0<\xi<\tfrac12$.
 
 \subsection{Derivation via Constraint Matching}
-Since the Pontryagin stationarity conditions are preserved on the powered arcs, the scaled linear-in-time profile with an inserted coast is an admissible PMP candidate within the assumed symmetric boost--coast--brake family. Enforcing the distance, propellant, and exhaust-speed constraints selects the member of this family consistent with the prescribed boundary conditions.
+We restrict attention here to a specific candidate family, namely the symmetric boost--coast--brake structure obtained by scaling the unconstrained PMP profile of Sec.~\ref{sec:free_space_solution} by a constant throttle factor and inserting a coast interval at mid-time. The Pontryagin stationarity conditions are then preserved on each powered arc, so the trajectory is admissible. Enforcing the distance, propellant, and exhaust-speed constraints selects a unique member of this family for the prescribed boundary conditions.
+
+We emphasize that this scaled-linear profile is generally \emph{not} the PMP extremal of the state-constrained problem. The true constrained extremal will typically include a boundary arc along which \(v_e\equiv v_{e,\max}\), and on which the acceleration profile is no longer linear in time. The closed-form solution below is therefore the optimum within the assumed family rather than the global optimum of the capped problem, and it provides a tractable closed-form approximation useful for engineering estimates and as a starting point for refined indirect or direct solvers.
 
 \paragraph{Distance Closure}
 The total distance traveled, \(L\), is the sum of the first burn, the coast, and the final braking burn. It is useful to distinguish the position polynomial
@@ -348,15 +352,15 @@ because the symmetric first burn consumes one half of the available inverse-mass
       \frac{1}{m_\mathrm{dry}}-\frac{1}{m_i}
     \right).
 \]
-Substituting the expressions for \(a(t_c)\), \(k\), and \(t_f(\xi)\) into the ceiling condition gives a single nonlinear equation for the optimal switch fraction \(\xi_\star\):
-\begin{align}
-F(\xi)&=0, \quad \text{where} \\
-F(\xi)&\equiv
+The optimal switch fraction \(\xi_\star\) is then the unique root in \((0,\tfrac12)\) of
+\begin{equation}
+F(\xi)\;\equiv\;
 \bigl(\tfrac12-\xi\bigr)\,v_{e,\max}
--\frac{P^{1/3}L^{1/3}f(\xi)^{1/3}}
-     {3^{1/3}\Delta^{2/3}\,m_c}.
+\;-\;\frac{P^{1/3}L^{1/3}f(\xi)^{1/3}}
+        {3^{1/3}\Delta^{2/3}\,m_c}
+\;=\;0.
 \label{eq:root_equation_new}
-\end{align}
+\end{equation}
 Since
 \[
     f'(\xi)=3(2\xi-1)^2>0
@@ -385,6 +389,7 @@ For the ideal unlimited-\(I_{\!sp}\) solution, the required exhaust speed diverg
 \item \textbf{Small ceiling.} As \(v_{e,\max}\) becomes small, the root of \(F(\xi)=0\) moves toward \(\xi\to0^+\). The powered portions then occupy a vanishing fraction of the total transfer time, while the coast interval dominates. In this limiting sense the structure approaches two short powered arcs separated by a long ballistic cruise.
 \end{itemize}
 
+\bigskip
 \section{Full Planar Sun-Field Model}
 \label{sec:SunModel}
 We now reinstate solar gravity ($\mu=GM_\odot$) and adopt polar coordinates ${\bf x}=(r,\theta)$ in the ecliptic. The control is the \emph{planar thrust acceleration} ${\bf a}_{T}=(a_r,a_\theta)$ produced by the variable-$I_{\!sp}$ engine. The state vector and its dynamics are:
@@ -541,6 +546,7 @@ The terminal dry-mass condition is therefore enforced as the scalar quadrature c
 \end{equation}
 A shooting method must find the initial values of the costates, the constant \(C_\theta\), the thrust-gain constant \(k_T\), and the final time \(t_f\) so that the final circular-orbit boundary conditions and the mass-budget constraint are satisfied.
 
+\bigskip
 \section{Similarity Reduction of the Sun-Field Transfer Family}
 \label{sec:similarity_reduction}
 
@@ -779,7 +785,7 @@ A more efficient choice is to store the normalized shooting data, namely the ini
 For the uncapped model, because these quantities are stored in dimensionless form, the same atlas entry can be reused for any dimensional spacecraft that maps to the same \((\rho,\kappa,\Theta)\). If a finite exhaust-speed ceiling is included, the atlas must also be indexed by \(\nu_{\max}\) and \(\eta\).
 This is the computational advantage of the similarity reduction: one normalized solution represents an entire equivalence class of physical missions.
 
-
+\bigskip
 \section{Numerical Procedure}
 Solving the two-point boundary-value problem and constructing PMP-extremal transfer candidates requires a numerical approach. We employ a two-stage strategy that combines a global search to find an initial, feasible trajectory with a local refinement process that uses a continuation method to precisely reach the desired target \cite{Fogel2020,DiPasquale2024}.
 
@@ -787,7 +793,7 @@ Solving the two-point boundary-value problem and constructing PMP-extremal trans
 The core of the numerical method is an objective function, \(J\), which quantifies endpoint targeting accuracy and constraint satisfaction for a candidate trajectory. This function is minimized to find a set of initial costate parameters that satisfies the endpoint and constraint residuals as accurately as possible. It incorporates penalties for violating physical constraints and errors for missing the target state. The function has two distinct forms depending on the optimization stage.
 
 \subsubsection{Global Search Objective}
-In the initial search phase, the goal is to find \emph{any} valid transfer to a stable circular orbit, without a specific target location. The objective function, $J_\text{global}$, is formulated to reward reaching a circular velocity in the outer solar system while penalizing physically unrealistic outcomes:
+In the initial search phase, the goal is to find \emph{any} feasible trajectory whose terminal state lies on some circular heliocentric orbit beyond a minimum radius, without fixing the specific final radius or polar angle. The target radius and final polar angle are pinned only in Stage~2. The Stage~1 objective function $J_\text{global}$ therefore rewards reaching the local circular velocity at whatever final radius the trajectory attains in the outer solar system, while penalizing physically unrealistic outcomes:
 \begin{equation}
     J_\text{global} = w_f \mathcal{P}_f + w_r \mathcal{P}_r + w_v \mathcal{E}_v^2.
     \label{eq:obj_global}
@@ -806,7 +812,7 @@ Once an initial solution is found, the objective function is switched to a targe
     J_\text{local} = w_f \mathcal{P}_f + w_v \mathcal{E}_v^2 + w_r (r_f - r_\text{des})^2 + w_\theta (\theta_f - \theta_\text{des})^2.
     \label{eq:obj_local}
 \end{equation}
-Here, the radial penalty $\mathcal{P}_r$ is removed, and two new terms are added to penalize deviations from the desired final radius $r_\text{des}$ and true anomaly $\theta_\text{des}$.
+Here, the radial penalty $\mathcal{P}_r$ is removed, and two new terms are added to penalize deviations from the desired final radius $r_\text{des}$ and polar angle $\theta_\text{des}$.
 
 \subsection{Two-Stage Optimization Strategy}
 \subsubsection{Stage 1: Global Search}
@@ -830,20 +836,31 @@ However, satisfying the PMP conditions alone does not prove global optimality, a
 All simulations, optimization procedures, and figures were generated using the accompanying open-source Python implementation \cite{Olsina2025}.
 The repository includes the complete solver, plotting scripts, and resulting graphs of trajectories, fuel and acceleration magnitudes.
 
-\pagebreak
+%\pagebreak
+\bigskip
 
 \section{Results}
-The numerical procedure was applied to compute PMP-extremal transfer candidates from a 1\,AU circular orbit (representing Earth) to various target circular orbits. The targets are defined by their final radius and true anomaly relative to the starting position. The propulsion model used \(P=\SI{1}{GW}\) of useful jet power, with an initial vehicle mass of \SI{3000}{t} and a dry mass of \SI{1000}{t}.
+The numerical procedure was applied to compute PMP-extremal transfer candidates from a 1\,AU circular orbit (representing Earth) to various target circular orbits. The targets are defined by their final radius and the heliocentric polar angle $\theta_f-\theta_0$ relative to the starting position. (We retain the symbol $\theta$ for this polar angle throughout; it is not the orbital true anomaly, which is undefined on a circular orbit.) The propulsion model used \(P=\SI{1}{GW}\) of useful jet power, with an initial vehicle mass of \SI{3000}{t} and a dry mass of \SI{1000}{t}.
+As an order-of-magnitude check on these numbers, the free-space benchmark of Sec.~\ref{sec:free_space_solution} with \(L=r_f-r_0=4.2\,\mathrm{AU}\), \(P=\SI{1}{GW}\), and \(\Delta=1/m_\mathrm{dry}-1/m_i\) gives
+\begin{equation*}
+T_{\min}
+=\!\left[\frac{6L^{2}}{P\Delta}\right]^{1/3}
+\!\approx\;177\;\mathrm{days}.
+\end{equation*}
+The Sun-field transfers to \(5.2\,\mathrm{AU}\) in Tables~\ref{tab:transfer_times_final_anomaly}--\ref{tab:transfer_times_initial_anomaly} range from about \(170\) to \(215\) days and bracket this value. The flight times shorter than the free-space benchmark are possible because the spacecraft begins with a non-zero tangential velocity (\(\sim\SI{30}{km/s}\) at \(1\,\mathrm{AU}\)) and can convert solar gravitational potential energy along the transfer. The longer ones reflect the additional arc length traversed around the Sun, the energy required to climb the potential well to the outer orbit, and, in some cases, the cost of the low-perihelion Oberth pass.
 
-Figures~\ref{fig:final_theta} and~\ref{fig:starting_theta} show the relationship between flight time and the orbital geometry. The flight times exhibit a U-shaped dependence on the final true anomaly, with a clear minimum for transfers that are neither direct short-arcs nor long-arcs. Similar behavior has been reported in recent multi-objective studies of variable-$I_{\!sp}$ maneuvers \cite{DiPasquale2024}.
+Figures~\ref{fig:final_theta} and~\ref{fig:starting_theta} show the relationship between flight time and the orbital geometry. The flight times exhibit a U-shaped dependence on the final polar angle, with a clear minimum for transfers that are neither direct short-arcs nor long-arcs. Similar behavior has been reported in recent multi-objective studies of variable-$I_{\!sp}$ maneuvers \cite{DiPasquale2024}.
 
 Figures~\ref{fig:oberth_figure} and~\ref{fig:oberth_figure2} show example candidate extremals. A key feature of these trajectories is the inclusion of an Oberth-like low-perihelion maneuver. To gain orbital energy efficiently, the spacecraft first thrusts to lower its periapsis, making a low-perihelion pass around the Sun. It then applies its main acceleration burn at maximum velocity near the Sun, which is far more effective at increasing orbital energy than thrusting in a higher orbit \cite{Oberth1923}. This is visible in the plots as an initial dip towards the Sun and a corresponding peak in the acceleration magnitude. These Oberth-type solutions should be interpreted within the idealized dynamical model used here. No explicit constraints are imposed on minimum perihelion distance, solar heating, radiator performance near the Sun, pointing restrictions, or power-system survivability. Adding such constraints would generally increase the transfer times or remove some of the most aggressive solar-pass solutions.
 
 Table~\ref{tab:transfer_times_final_anomaly} and Table~\ref{tab:transfer_times_initial_anomaly} present the resulting transfer times in days for a grid of targets. As expected, transfers to more distant orbits take longer. The notation ``N/A'' indicates that the numerical continuation and shooting procedure did not find a trajectory satisfying the terminal circular-orbit constraints before violating the dry-mass bound. Such cases may correspond to a genuine feasibility boundary for the specified power and propellant budget, or to a numerical convergence limitation of the present solver. Figure~\ref{fig:oberth_figure2} shows a trajectory close to such a boundary, with an extreme solar pass that cannot be extended further within the imposed model constraints.
 
+\bigskip
 
 \section{Conclusion}
 We combined analytic insight (two closed-form first integrals and a free-space benchmark solution) with a continuation strategy for constructing time-optimal transfer candidates for a constant-power, variable-\(I_{\!sp}\) engine. The method successfully generates PMP-extremal candidate trajectories, including those featuring low-perihelion Oberth-like maneuvers, for transfers out to the giant planets with a gigawatt-class useful jet-power engine. Recent developments in variable-$I_{\!sp}$ propulsion and adaptive low-thrust guidance algorithms \cite{PinoHowell2020,DiPasquale2024} suggest that further improvements in mission performance are possible. Future work will extend this framework to three-dimensional rendezvous problems. A rigorous demonstration of local or global time optimality for the Sun-field examples remains future work; it would require either second-order sufficiency analysis of the extremals, such as conjugate-point checks, or a broader global comparison across competing transfer branches.
+
+\bigskip
 
 \section*{Acknowledgment}
 The author wishes to acknowledge the use of large language models (Google's Gemini and OpenAI's GPT) for assistance in improving the language and clarity of the manuscript, for aiding in the implementation of the numerical code and derivations of some of the analytical results. The results were tested and verified by the author.
@@ -851,13 +868,13 @@ The author wishes to acknowledge the use of large language models (Google's Gemi
 \begin{figure}[htbp]
     \centering
     \includegraphics[width=\linewidth]{article_003.jpg}
-    \caption{Flight times in days versus final true anomaly at arrival.}
+    \caption{Flight times in days versus final polar angle at arrival.}
     \label{fig:final_theta}
 \end{figure}
 \begin{figure}[htbp]
     \centering
     \includegraphics[width=\linewidth]{article_004.jpg}
-    \caption{Flight times in days versus initial true anomaly at departure.}
+    \caption{Flight times in days versus initial polar angle at departure.}
     \label{fig:starting_theta}
 \end{figure}
 
@@ -882,6 +899,8 @@ The author wishes to acknowledge the use of large language models (Google's Gemi
 
 
 \FloatBarrier
+
+
 
 
 \appendices
@@ -982,11 +1001,11 @@ so that
    \frac{m_\mathrm{pay}}{P^2}
   <0.
 \end{equation}
-Under the idealized assumption of unlimited exhaust speed, the transfer time therefore decreases monotonically with power and has no finite mathematical optimum:
+Under the idealized assumptions of this closure---unlimited exhaust speed, fixed waste-heat fraction \(\phi\), fixed engine specific power \(\alpha_\mathrm{eng}\), and fixed radiator specific heat rejection \(\rho_\mathrm{rad}\), all independent of operating point---the transfer time decreases monotonically with power and has no finite mathematical optimum:
 \begin{equation}
   P^\star \to \infty.
 \end{equation}
-Second, the family approaches the asymptotic lower bound
+This formal limit should not be interpreted as a physically achievable design target, since at very large \(P\) the assumed linear mass closure breaks down: in practice \(\rho_\mathrm{rad}\) depends on the radiator operating temperature, \(\alpha_\mathrm{eng}\) is bounded by materials and shielding, and the exhaust speed itself is bounded above. The relevant practical implication is rather the second observation: the family approaches the asymptotic lower bound
 \begin{equation}
   T_\infty
   =
@@ -1063,12 +1082,12 @@ An attempt was made to mitigate this by using a continuation strategy on the num
 
 %\begin{table*}[!htbp]
 %\centering
-%\caption{Transfer time, in days, of the converged PMP-extremal candidate to a circular orbit of a given %radius and final true anomaly.}
+%\caption{Transfer time, in days, of the converged PMP-extremal candidate to a circular orbit of a given %radius and final polar angle.}
 %\label{tab:transfer_times}
 %\sisetup{table-format=3.2}
 %\begin{tabular}{r S S S S S S S S}
 %\toprule
-%\textbf{True Anomaly} & \multicolumn{8}{c}{\textbf{Target Radius (AU)}} %\\
+%\textbf{Polar Angle} & \multicolumn{8}{c}{\textbf{Target Radius (AU)}} %\\
 %\cmidrule(lr){2-9}
 %\textbf{(\si{\degree})} & {0.3} & {0.75} & {1.643} & {3} & {5} & {10} & %{15} & {20} \\
 %\midrule
@@ -1157,12 +1176,12 @@ An attempt was made to mitigate this by using a continuation strategy on the num
 \centering
 \footnotesize
 \renewcommand{\arraystretch}{0.95}
-\caption{Transfer time, in days, of the converged PMP-extremal candidate from a circular orbit of 1 AU and final true anomaly (at rocket arrival).}
+\caption{Transfer time, in days, of the converged PMP-extremal candidate from a circular orbit of 1 AU and final polar angle (at rocket arrival).}
 \label{tab:transfer_times_final_anomaly}
 \sisetup{table-format=3.2} % Requires siunitx LaTeX package
 \begin{tabular}{{r S S S S S S S }}
 \toprule
-\textbf{True Anomaly} & \multicolumn{7}{c}{\textbf{Target Radius (AU)}} \\
+\textbf{Polar angle} & \multicolumn{7}{c}{\textbf{Target Radius (AU)}} \\
 \cmidrule(lr){2-8}
 \textbf{(\si{\degree})} & {0.390} & {0.720} & {1.520} & {5.200} & {9.580} & {19.220} & {30.050} \\
 \midrule
@@ -1248,12 +1267,12 @@ An attempt was made to mitigate this by using a continuation strategy on the num
 \centering
 \footnotesize
 \renewcommand{\arraystretch}{0.95}
-\caption{Transfer time, in days, of the converged PMP-extremal candidate from a circular orbit of 1 AU and initial true anomaly (at rocket departure).}
+\caption{Transfer time, in days, of the converged PMP-extremal candidate from a circular orbit of 1 AU and initial polar angle (at rocket departure).}
 \label{tab:transfer_times_initial_anomaly}
 \sisetup{table-format=3.2} % Requires siunitx LaTeX package
 \begin{tabular}{{r S S S S S S S }}
 \toprule
-\textbf{True Anomaly} & \multicolumn{7}{c}{\textbf{Target Radius (AU)}} \\
+\textbf{Polar Angle} & \multicolumn{7}{c}{\textbf{Target Radius (AU)}} \\
 \cmidrule(lr){2-8}
 \textbf{(\si{\degree})} & {0.390} & {0.720} & {1.520} & {5.200} & {9.580} & {19.220} & {30.050} \\
 \midrule
@@ -1338,12 +1357,12 @@ An attempt was made to mitigate this by using a continuation strategy on the num
 
 \begin{table*}[!htbp]
 \centering
-\caption{Transfer time, in days, of the converged PMP-extremal candidate to a circular orbit of 1 AU and final true anomaly (at rocket arrival).}
+\caption{Transfer time, in days, of the converged PMP-extremal candidate to a circular orbit of 1 AU and final polar angle (at rocket arrival).}
 \label{tab:transfer_times_final_anomaly_return}
 \sisetup{table-format=3.2} % Requires siunitx LaTeX package
 \begin{tabular}{{r S S S S S S S }}
 \toprule
-\textbf{True Anomaly} & \multicolumn{7}{c}{\textbf{Origin Radius (AU)}} \\
+\textbf{Polar Angle} & \multicolumn{7}{c}{\textbf{Origin Radius (AU)}} \\
 \cmidrule(lr){2-8}
 \textbf{(\si{\degree})} & {0.390} & {0.720} & {1.520} & {5.200} & {9.580} & {19.220} & {30.050} \\
 \midrule
@@ -1427,12 +1446,12 @@ An attempt was made to mitigate this by using a continuation strategy on the num
 
 \begin{table*}[!htbp]
 \centering
-\caption{Transfer time, in days, of the converged PMP-extremal candidate to a circular orbit of 1 AU and initial true anomaly (at rocket departure).}
+\caption{Transfer time, in days, of the converged PMP-extremal candidate to a circular orbit of 1 AU and initial polar angle (at rocket departure).}
 \label{tab:transfer_times_initial_anomaly_return}
 \sisetup{table-format=3.2} % Requires siunitx LaTeX package
 \begin{tabular}{{r S S S S S S S }}
 \toprule
-\textbf{True Anomaly} & \multicolumn{7}{c}{\textbf{Origin Radius (AU)}} \\
+\textbf{Polar Angle} & \multicolumn{7}{c}{\textbf{Origin Radius (AU)}} \\
 \cmidrule(lr){2-8}
 \textbf{(\si{\degree})} & {0.390} & {0.720} & {1.520} & {5.200} & {9.580} & {19.220} & {30.050} \\
 \midrule
