@@ -19,7 +19,7 @@
 
 \begin{document}
 
-\title{Time-Optimal Heliocentric Transfers With a Constant-Power, Variable-$I_{\!sp}$ Engine}
+\title{Fast Heliocentric Transfers With a Constant-Power, Variable-$I_{\!sp}$ Engine}
 
 \author{Jan~Ol\v{s}ina\\[1ex] Independent Researcher, Prague, Czech Republic\\
 email: \texttt{jan.olsina@gmail.com},  ORCID: \texttt{0009-0003-9816-3958}.}
@@ -29,20 +29,20 @@ email: \texttt{jan.olsina@gmail.com},  ORCID: \texttt{0009-0003-9816-3958}.}
 
 %\begin{strip}
 \begin{abstract}
-We study minimum-time heliocentric transfers for a spacecraft propelled by an electric thruster that draws constant electrical power $P$ while continuously varying its exhaust speed (variable $I_{\!sp}$). The vehicle is assumed to depart from and arrive on circular heliocentric orbits (i.e., initial and final velocities match the local circular velocity at the respective radii). First, we derive an analytic solution of the one-dimensional, gravity-free brachistochrone and discuss how a finite exhaust-speed ceiling modifies the solution, producing a boost–coast–brake structure. Next, we formulate the full planar Sun-field optimal-control problem, derive two closed-form first integrals, and show that the indirect formulation reduces to a seven-dimensional boundary-value problem. Finally, we present a practical numerical continuation strategy that obtains a coarse feasible endpoint via global optimization and then refines it by homotopy and Powell’s local solver. Numerical examples for a \SI{1}{GW} engine with an initial/dry mass of \SI{3000}{t}\,\(\to\)\,\SI{1000}{t} demonstrate Earth–Jupiter-class transfers in roughly $200$–$220$ days that commonly exploit a solar Oberth pass. 
+We study fast heliocentric transfers for a spacecraft propelled by an electric thruster that supplies constant useful jet power \(P\) while continuously varying its exhaust speed (variable \(I_{\!sp}\)). The vehicle is assumed to depart from and arrive on circular heliocentric orbits, so that the initial and final velocities match the local circular velocities at the respective radii. First, we derive an analytic solution of the one-dimensional, gravity-free brachistochrone and discuss how a finite exhaust-speed ceiling modifies the solution, producing a boost--coast--brake structure. Next, we formulate the full planar Sun-field optimal-control problem, derive two closed-form first integrals, and show that the indirect formulation reduces the orbital/costate shooting dynamics to seven differential equations, with propellant consumption enforced by an additional quadrature or endpoint constraint. Finally, we present a practical numerical continuation strategy that obtains a coarse feasible endpoint via global optimization and then refines it by homotopy and Powell's local solver. Numerical examples for a \SI{1}{GW} useful jet-power engine with an initial/dry mass of \SI{3000}{t}\,\(\to\)\,\SI{1000}{t} demonstrate Earth--Jupiter-class transfers in roughly \(200\)--\(220\) days that commonly exploit a solar Oberth pass, subject to the idealizations of the model.
 \end{abstract}
 %\end{strip}
 
 
 \section{Introduction}
 While electric propulsion (EP) is traditionally valued for its propellant efficiency, future ambitious endeavors such as interplanetary logistics networks or rapid sample return missions will demand not just efficiency but \emph{speed} \cite{Conway2010, PinoHowell2020, Fogel2020}. For such missions, the design focus shifts from optimizing propellant mass to minimizing flight time, making the spacecraft's power system the primary limiting factor \cite{Mazouffre2016}.
-Reducing transfer times from years to months propels interest in high-power propulsion systems, with gigawatt-class architectures representing a plausible long-term goal. Several pathways to this power scale are being explored, including advanced Nuclear Electric Propulsion (NEP) \cite{Peakman2023, scott2019value}, next-generation deployable solar arrays \cite{ChangDiaz2019}, and beamed-energy concepts \cite{Sheerin2021}. A common feature of these technologies is the ability to provide nearly constant power over long thrust arcs.
+Reducing transfer times from years to months propels interest in high-power propulsion systems, with gigawatt-class architectures representing a plausible long-term goal. Several pathways to this power scale are being explored, including advanced Nuclear Electric Propulsion (NEP) \cite{Peakman2023, scott2019value}, next-generation deployable solar arrays \cite{ChangDiaz2019}, and beamed-energy concepts \cite{Sheerin2021}. A common feature of these technologies is the ability to provide nearly constant useful propulsion power over long thrust arcs.
 This constant-power paradigm fundamentally alters the classic rocketry framework. Instead of the fixed exhaust velocity ($v_e$) of the Tsiolkovsky equation \cite{Tsiolkovsky1903}, the exhaust speed becomes a key control variable, allowing the engine to actively trade thrust for specific impulse. The Variable Specific Impulse Magnetoplasma Rocket (VASIMR) is an exemplary technology demonstrating this "constant-power throttling" over a wide operating range \cite{Bering2011}. Such throttleability is compelling for the fast transfers that motivate our study, as recent optimization work confirms that varying the specific impulse during flight can significantly improve trip time \cite{DiPasquale2024}.
-In this paper, we develop the machinery to solve the time-optimal transfer problem in this high-power regime. We first derive an analytical solution for a 1D, gravity-free "brachistochrone" to build intuition. We then formulate the full planar Sun-field problem, derive two closed-form first integrals to simplify the dynamics, and present a robust numerical strategy to solve the resulting boundary-value problem. Our examples for a gigawatt-scale engine demonstrate Earth–Jupiter class transfers in a few months, frequently exploiting a solar Oberth maneuver.
+In this paper, we develop the analytical and numerical machinery for studying the time-optimal transfer problem in this high-power regime. We first derive an analytical solution for a 1D, gravity-free "brachistochrone" to build intuition. We then formulate the full planar Sun-field problem, derive two closed-form first integrals to simplify the dynamics, and present a robust numerical strategy to solve the resulting boundary-value problem. Our idealized examples for a gigawatt-scale engine demonstrate Earth--Jupiter-class transfers in a few months, frequently exploiting a solar Oberth maneuver.
 
 
 \section{Variable-$I_{\!sp}$ Rocket Model}
-Let $m(t)$ be the instantaneous mass ($m \ge m_\mathrm{dry}$) and $v_e(t)$ the exhaust speed. The propellant mass flow rate is the positive quantity $\dot m_f = -\dot m$. Neglecting plume inefficiencies, the thruster power $P$ (constant) and thrust magnitude $T$ are given by \cite{Sutton2017}:
+Let $m(t)$ be the instantaneous mass ($m \ge m_\mathrm{dry}$) and $v_e(t)$ the exhaust speed. The propellant mass flow rate is the positive quantity $\dot m_f = -\dot m$. Neglecting plume inefficiencies, the useful jet power $P$ (taken to be constant) and thrust magnitude $T$ are given by \cite{Sutton2017}:
 \begin{equation}
   P = \tfrac12 (-\dot m)\,v_e^{2},\qquad
   T   = m\,a = (-\dot m)\,v_e,
@@ -61,20 +61,26 @@ With solar gravity absent ($\mu=0$), the translational degrees of freedom decoup
 
 \subsection{The Variational Method and the Hamiltonian}
 \label{sec:pmp_theory}
-To find the optimal control history---in this case, the acceleration profile $a(t)$---we use the calculus of variations, specifically Pontryagin's Maximum Principle (PMP) \cite{Pontryagin1962}. This powerful method converts the problem of minimizing a cost functional (like total time) into a problem of maximizing a new function, the \emph{Hamiltonian}, at every point in time.
-
-The Hamiltonian, $\mathcal{H}$, is constructed to package all essential information about the problem: the cost, the system dynamics, and the controls. The general formula is:
+To find the optimal control history---in this case, the acceleration profile \(a(t)\)---we use the calculus of variations, specifically Pontryagin's Maximum Principle (PMP) \cite{Pontryagin1962}. We use the normal maximization convention, in which the Hamiltonian is written as
 \begin{equation}
-    \mathcal{H} = L + \boldsymbol{\lambda}^\top \mathbf{f}(\mathbf{x}, \mathbf{u}),
+    \mathcal{H}
+    =
+    \boldsymbol{\lambda}^\top \mathbf{f}(\mathbf{x},\mathbf{u}) - L .
     \label{eq:hamiltonian_general}
 \end{equation}
-where:
+For a minimum-time problem, the performance index is
+\[
+    J=\int_0^{t_f} 1\,dt,
+\]
+so the running cost is \(L=1\). With this convention, the optimal control maximizes \(\mathcal H\) pointwise, and for a normal free-final-time solution the Hamiltonian is constant and satisfies \(\mathcal H\equiv0\).
+
+Here:
 \begin{itemize}
-    \item $L$ is the \textbf{Lagrangian}, or the instantaneous cost. For a minimum-time problem, the total cost is $J = \int_0^{t_f} 1 \, dt$, so the instantaneous cost is simply $L=1$.
-    \item $\mathbf{x}$ is the \textbf{state vector}, containing the variables that describe the system (e.g., position, velocity, mass).
-    \item $\mathbf{u}$ is the \textbf{control vector}, containing the variables we can change to steer the system (e.g., acceleration).
-    \item $\mathbf{f}(\mathbf{x}, \mathbf{u}) = \dot{\mathbf{x}}$ is the vector of \textbf{state dynamics}, describing how the system evolves.
-    \item $\boldsymbol{\lambda}$ is the \textbf{costate vector}, a set of auxiliary variables introduced by the PMP. Intuitively, each costate $\lambda_i(t)$ represents the sensitivity of the final cost to a small change in the state $x_i$ at time $t$. It is the "price" of that state variable.
+    \item \(L\) is the \textbf{running cost}. For the minimum-time problem considered here, \(L=1\).
+    \item \(\mathbf{x}\) is the \textbf{state vector}, containing the variables that describe the system.
+    \item \(\mathbf{u}\) is the \textbf{control vector}, containing the variables we can change to steer the system.
+    \item \(\mathbf{f}(\mathbf{x}, \mathbf{u}) = \dot{\mathbf{x}}\) is the vector of \textbf{state dynamics}.
+    \item \(\boldsymbol{\lambda}\) is the \textbf{costate vector}, a set of auxiliary variables introduced by the PMP.
 \end{itemize}
 
 \subsection{Hamiltonian Construction for the Free-Space Case}
@@ -94,9 +100,14 @@ The term $\boldsymbol{\lambda}^\top \dot{\mathbf{x}}$ in the Hamiltonian expands
 \[
     \boldsymbol{\lambda}^\top \dot{\mathbf{x}} = \lambda_x \dot{x} + \lambda_v \dot{v} + \lambda_m \dot{m} = \lambda_x v + \lambda_v a - \lambda_m \frac{m^2 a^2}{2P}.
 \]
-Adding the Lagrangian $L=1$, we obtain the full Hamiltonian $\mathcal{H}$:
+Subtracting the running cost \(L=1\), according to the convention in \eqref{eq:hamiltonian_general}, gives the full Hamiltonian
 \begin{equation}
-    \mathcal{H} = 1 + \lambda_x v + \lambda_v a - \lambda_m \frac{m^2 a^2}{2P}.
+    \mathcal{H}
+    =
+    \lambda_x v + \lambda_v a
+    - \lambda_m \frac{m^2 a^2}{2P}
+    - 1 .
+    \label{eq:hamiltonian_free}
 \end{equation}
 From this Hamiltonian, we derive the costate (adjoint) equations, given by $\dot{\boldsymbol{\lambda}} = -\partial\mathcal{H}/\partial\mathbf{x}$:
 \begin{subequations} \label{eq:costate_free}
@@ -172,8 +183,7 @@ The optimal acceleration is therefore:
   a(t)=\frac{12L}{t_f^{3}}\Bigl(\frac{t_f}{2}-t\Bigr).
   \label{eq:a_linear}
 \end{equation}
-This corresponds to an initial acceleration phase, followed by a symmetric braking phase, with 
-$a(t)$ crossing zero at mid-time. $t=t_f/2$. By substituting the constants back and simplifying, we obtain the full trajectory:
+This corresponds to an initial acceleration phase, followed by a symmetric braking phase, with \(a(t)\) crossing zero at mid-time, \(t=t_f/2\). By substituting the constants back and simplifying, we obtain the full trajectory:
 \begin{align}
   v(t) &= \frac{6Lt}{t_f^2}\Bigl(1-\frac{t}{t_f}\Bigr),
          \label{eq:v_free_corrected}\\
@@ -186,7 +196,7 @@ which describes a cubic-in-time ``S-curve'' path.
 \subsection{Mass Evolution and Minimum Time}
 The mass evolution is governed by the separable differential equation \eqref{eq:state_m_free}. Integrating gives:
 \begin{align}
-    \int_{m_i}^{m(t)} \frac{dm}{m^2} &= -\int_0^t \frac{a(\tau)^2}{2P} d\tau \nonumber\\ 
+    \int_{m_i}^{m(t)} \frac{dm}{m^2} &= -\int_0^t \frac{a(\tau)^2}{2P} d\tau \nonumber\\
     \implies \frac{1}{m_i} - \frac{1}{m(t)} &= -\frac{1}{2P} \int_0^t a(\tau)^2 d\tau.
 \end{align}
 The integral of $a(t)^2$ is:
@@ -195,7 +205,7 @@ The integral of $a(t)^2$ is:
     &= \frac{144L^2}{t_f^6} \left[-\frac{1}{3}\left(\frac{t_f}{2}-\tau\right)^3\right]_0^t \nonumber\\
     &= \frac{48L^2}{t_f^6} \left(\frac{t_f^3}{8} - \left(\frac{t_f}{2}-t\right)^3 \right).
 \end{align}
-Defining 
+Defining
 \begin{equation}
 f(s)=4s^{3}- 6s^{2}+3s,\label{eq:fdef}
 \end{equation}
@@ -208,7 +218,7 @@ the mass relation becomes:
 The total propellant consumed is found by setting $t=t_f$ (or $s=1$). If the entire propellant reserve is used, we have $m(t_f)=m_\mathrm{dry}$, which defines the minimum possible flight-time for the given distance $L$ and mass fraction:
 \begin{equation}
   \Delta\equiv\frac{1}{m_\mathrm{dry}}-\frac{1}{m_i}
-\end{equation} 
+\end{equation}
 calculated as
 \begin{equation}
   \Delta = \frac{6L^{2}f(1)}{P\,T_{\min}^{3}} = \frac{6L^2}{P\,T_{\min}^3}.
@@ -226,7 +236,11 @@ Equation~\eqref{eq:Tmin} treats the dry mass as prescribed. If the propulsion ha
 
 \section{Transfers with a Finite Exhaust-Speed Ceiling}
 \label{sec:capped_ve}
-The linear-in-time acceleration profile from Sec.~\ref{sec:free_space_solution} is feasible only if the engine can raise its exhaust speed indefinitely, because $v_e(t)=2P/\!\bigl(m(t)a(t)\bigr)$ diverges when $a(t)\!\to\!0$ at mid-time. A realistic thruster, however, is limited to a maximum effective exhaust speed $v_{e,\max}$. This path constraint forces the optimal trajectory to switch the engine \emph{off} once the required $v_e$ reaches the ceiling, producing the well-known \emph{boost-coast-brake} structure \cite{Fogel2020, pontani2021optimal}. 
+The linear-in-time acceleration profile from Sec.~\ref{sec:free_space_solution} is feasible only if the engine can raise its exhaust speed indefinitely, because the required exhaust speed,
+\[
+    v_e(t)=\frac{2P}{m(t)|a(t)|},
+\]
+diverges when \(a(t)\to0\) at mid-time. A realistic thruster, however, is limited to a maximum effective exhaust speed $v_{e,\max}$. This path constraint forces the optimal trajectory to switch the engine \emph{off} once the required $v_e$ reaches the ceiling, producing the well-known \emph{boost-coast-brake} structure \cite{Fogel2020, pontani2021optimal}.
 
 This section derives the explicit solution for this case by adapting the unlimited solution. We introduce a coast phase and scale the acceleration profile to satisfy all physical constraints. The problem reduces to solving a single nonlinear equation for the optimal duration of the coast phase.
 
@@ -259,7 +273,36 @@ t_f(\xi)=
 \end{equation}
 
 \paragraph{Exhaust Speed Ceiling}
-The final constraint is that the exhaust speed must not exceed its ceiling, $v_e(t) \le v_{e,\max}$. The critical point is at the switch-off time $t=t_c$, where acceleration is lowest and mass has decreased. We impose the limit exactly at this point: $v_e(t_c) = 2P/(m_c a(t_c)) = v_{e,\max}$. The mass at this point, $m_c$, is the harmonic mean of the initial and dry masses, $m_c=2m_i m_\mathrm{dry}/(m_i+m_\mathrm{dry})$, since half the propellant is consumed. Substituting the expressions for $a(t_c)$, $k$, and $t_f(\xi)$ into this ceiling condition gives a single nonlinear equation for the optimal switch fraction~$\xi_\star$:
+The final constraint is that the exhaust speed must not exceed its ceiling,
+\(v_e(t)\le v_{e,\max}\). On each powered arc,
+\[
+    v_e(t)=\frac{2P}{m(t)|a(t)|}.
+\]
+The critical point occurs at the switch-off time \(t=t_c\), where the acceleration magnitude is smallest on the powered arc. We impose the ceiling exactly at this point:
+\begin{equation}
+    v_e(t_c)
+    =
+    \frac{2P}{m_c |a(t_c)|}
+    =
+    v_{e,\max}.
+\end{equation}
+The mass at this point is
+\begin{equation}
+    m_c
+    =
+    \frac{2m_i m_\mathrm{dry}}{m_i+m_\mathrm{dry}},
+    \label{eq:mc_harmonic}
+\end{equation}
+because the symmetric first burn consumes one half of the available inverse-mass budget,
+\[
+    \frac{1}{m_c}-\frac{1}{m_i}
+    =
+    \frac12
+    \left(
+      \frac{1}{m_\mathrm{dry}}-\frac{1}{m_i}
+    \right).
+\]
+Substituting the expressions for \(a(t_c)\), \(k\), and \(t_f(\xi)\) into the ceiling condition gives a single nonlinear equation for the optimal switch fraction \(\xi_\star\):
 \begin{align}
 F(\xi)&=0, \quad \text{where} \\
 F(\xi)&\equiv
@@ -268,18 +311,32 @@ F(\xi)&\equiv
      {3^{1/3}\Delta^{2/3}\,m_c}.
 \label{eq:root_equation_new}
 \end{align}
-The function $F(\xi)$ is strictly decreasing on $0<\xi<\tfrac12$, so if a root exists, it is unique.
+Since
+\[
+    f'(\xi)=3(2\xi-1)^2>0
+    \qquad
+    \text{for }0<\xi<\tfrac12,
+\]
+the function \(F(\xi)\) is strictly decreasing on \(0<\xi<\tfrac12\).
+Moreover,
+\[
+    F(0^+)=\frac12 v_{e,\max}>0,
+    \qquad
+    F(\tfrac12)<0.
+\]
+Therefore, for any finite positive exhaust-speed ceiling, a unique root
+\(\xi_\star\in(0,\tfrac12)\) exists.
 
 \subsection{Final Solution and Limiting Cases}
 The optimal transfer is found by solving the scalar equation $F(\xi)=0$ for the root $\xi_\star \in (0, 1/2)$ using any robust 1-D method. This value is then used in \eqref{eq:T_of_xi_new} to find the minimum transfer time.
 
-\paragraph*{Detecting whether the ceiling is active}
-If $F(\tfrac12)\ge0$, the ceiling is never touched. The optimal strategy is to never coast, and the minimum time is given by the unlimited-engine benchmark~\eqref{eq:Tmin}. Otherwise, a unique root $\xi_\star$ exists, and the ceiling constraint is active.
+\paragraph*{Activity of the ceiling}
+For the ideal unlimited-\(I_{\!sp}\) solution, the required exhaust speed diverges at mid-time. Consequently, any finite positive value of \(v_{e,\max}\) makes the ceiling active and inserts a coast interval. The unlimited-engine benchmark \eqref{eq:Tmin} is recovered only in the limiting case \(v_{e,\max}\to\infty\), for which \(\xi_\star\to\tfrac12\) and the coast duration tends to zero.
 
 \paragraph*{Limiting Cases}
 \begin{itemize}
 \item \textbf{Unlimited engine.} As $v_{e,\max}\!\to\!\infty$, the root of $F(\xi)=0$ migrates to $\xi\!\to\!\tfrac12$. In this limit, $f(\xi)\to 1/2$ and the flight time~\eqref{eq:T_of_xi_new} collapses to the cubic root benchmark~\eqref{eq:Tmin}, recovering the solution from Sec.~\ref{sec:free_space_solution}.
-\item \textbf{Vanishing ceiling.} When $v_{e,\max}$ approaches the minimum useful value, $F(\xi)$ forces $\xi\!\to\!0^{+}$. The two powered legs degenerate into instantaneous \emph{impulses} separated by a long ballistic cruise, as intuition demands.
+\item \textbf{Small ceiling.} As \(v_{e,\max}\) becomes small, the root of \(F(\xi)=0\) moves toward \(\xi\to0^+\). The powered portions then occupy a vanishing fraction of the total transfer time, while the coast interval dominates. In this limiting sense the structure approaches two short powered arcs separated by a long ballistic cruise.
 \end{itemize}
 
 \section{Full Planar Sun-Field Model}
@@ -303,12 +360,18 @@ We again apply the variational framework from Section~\ref{sec:pmp_theory}. For 
     \item \textbf{Costate vector:} $\boldsymbol{\lambda} = (\lambda_r, \lambda_\theta, \lambda_{v_r}, \lambda_{v_\theta}, \lambda_m)^\top$.
 \end{itemize}
 \medskip
-The Hamiltonian, $\mathcal{H} = 1 + \boldsymbol{\lambda}^\top \dot{\mathbf{x}}$, must be maximized by the optimal control at all times. The dot product term $\boldsymbol{\lambda}^\top \dot{\mathbf{x}}$ is constructed by multiplying each costate by its corresponding state derivative from \eqref{eq:StateDyn}:
+Using the maximization convention from \eqref{eq:hamiltonian_general}, the Hamiltonian is
+\[
+    \mathcal{H}
+    =
+    \boldsymbol{\lambda}^\top \dot{\mathbf{x}} - 1,
+\]
+and it must be maximized by the optimal control at all times. The dot product term $\boldsymbol{\lambda}^\top \dot{\mathbf{x}}$ is constructed by multiplying each costate by its corresponding state derivative from \eqref{eq:StateDyn}:
 \begin{align}
 \boldsymbol{\lambda}^\top \dot{\mathbf{x}} = {} & \lambda_r v_r + \lambda_\theta\frac{v_\theta}{r} + \lambda_{v_r}\left(\frac{v_\theta^2}{r} - \frac{\mu}{r^2} + a_r\right) \nonumber\\
 & + \lambda_{v_\theta}\left(-\frac{v_r v_\theta}{r} + a_\theta\right) - \lambda_m\frac{m^2}{2P}(a_r^2+a_\theta^2).
 \end{align}
-Adding the Lagrangian $L=1$ gives the complete Hamiltonian for the sun-field model. For a minimum-time problem, the PMP asserts that along an optimal trajectory:
+Subtracting the running cost \(L=1\) gives the complete Hamiltonian for the Sun-field model. For a minimum-time problem, the PMP asserts that along an optimal trajectory:
 \begin{enumerate}
     \item The state and costates evolve according to Hamilton's
           canonical equations: $\dot{\mathbf{x}} = \partial\mathcal{H}/\partial\boldsymbol{\lambda}$
@@ -371,8 +434,8 @@ Equation \eqref{eq:lam_theta_deriv} arises because the Hamiltonian is independen
   \boxed{\lambda_\theta(t) = C_\theta = \text{const}}.
 \end{equation}
 
-\paragraph{Mass–Costate Relationship}
-We find a direct relationship between mass $m$ and its costate $\lambda_m$ by examining their rates of change. Using the chain rule, we have $\frac{{\rm d}\lambda_m}{{\rm d}m} = \frac{\dot\lambda_m}{\dot m}$. Substituting from \eqref{eq:lam_m} and \eqref{eq:StateDyn}e:
+\paragraph{Mass--Costate Relationship}
+We find a direct relationship between mass $m$ and its costate $\lambda_m$ by examining their rates of change. Using the chain rule, we have $\frac{{\rm d}\lambda_m}{{\rm d}m} = \frac{\dot\lambda_m}{\dot m}$. Substituting from \eqref{eq:lam_m} and \eqref{eq:StateDyn}:
 \begin{equation}
     \frac{{\rm d}\lambda_m}{{\rm d}m} = \frac{\lambda_m \frac{m}{P}\bigl(a_r^{2}+a_\theta^{2}\bigr)}{-\frac{m^{2}}{2P}\bigl(a_r^{2}+a_\theta^{2}\bigr)} = \frac{\lambda_m m}{-m^2/2} = -2\frac{\lambda_m}{m}. \nonumber
 \end{equation}
@@ -400,17 +463,51 @@ The optimal control law \eqref{eq:ThrustLaw_prelim} therefore simplifies to:
 The thrust magnitude is proportional to the norm of the velocity costates, $\|\boldsymbol{\lambda}_v\|$, and the proportionality factor $k_T$ is a constant determined by the boundary conditions. The discovery of this constant gain is a key analytical result, as it significantly simplifies the nature of the optimal control.
 
 \medskip
-This completes the analytical formulation. The problem is reduced to a boundary-value problem governed by the seven differential equations for the state $(r, \theta, v_r, v_\theta)$ and non-constant costates $(\lambda_r, \lambda_{v_r}, \lambda_{v_\theta})$, with the control given by \eqref{eq:ThrustLaw_Final}. A shooting method must find the initial values of the four costates $(\lambda_r(0), C_\theta, \lambda_{v_r}(0), \lambda_{v_\theta}(0))$ and the thrust constant $k_T$ that satisfy the specified final conditions at the optimal final time $t_f$.
+This completes the analytical formulation. After using the two first integrals, the orbital and costate shooting dynamics are governed by seven differential equations: the four kinematic/dynamic variables
+\((r,\theta,v_r,v_\theta)\) and the three non-constant costates
+\((\lambda_r,\lambda_{v_r},\lambda_{v_\theta})\). The mass need not be integrated as an independent shooting state, because it can be recovered from the accumulated inverse-mass expenditure,
+\begin{equation}
+    \frac{1}{m(t)}-\frac{1}{m_i}
+    =
+    \int_0^t
+    \frac{a_r(\tau)^2+a_\theta(\tau)^2}{2P}
+    \,d\tau .
+    \label{eq:mass_quadrature_sun}
+\end{equation}
+The terminal dry-mass condition is therefore enforced as the scalar quadrature constraint
+\begin{equation}
+    \int_0^{t_f}
+    \frac{a_r(t)^2+a_\theta(t)^2}{2P}
+    \,dt
+    =
+    \Delta,
+    \qquad
+    \Delta
+    =
+    \frac{1}{m_\mathrm{dry}}-\frac{1}{m_i}.
+    \label{eq:dry_mass_quadrature_constraint}
+\end{equation}
+A shooting method must find the initial values of the costates, the constant \(C_\theta\), the thrust-gain constant \(k_T\), and the final time \(t_f\) so that the final circular-orbit boundary conditions and the mass-budget constraint are satisfied.
 
 \section{Similarity Reduction of the Sun-Field Transfer Family}
 \label{sec:similarity_reduction}
 
-The Sun-field boundary-value problem from Sec.~\ref{sec:SunModel} is written in dimensional variables, but its family of circular-to-circular transfers possesses a useful scaling symmetry. 
+The Sun-field boundary-value problem from Sec.~\ref{sec:SunModel} is written in dimensional variables, but its family of circular-to-circular transfers possesses a useful scaling symmetry.
 This symmetry allows the six nominal inputs
 \[
 (r_0,\; r_f,\; \Theta,\; P,\; m_i,\; m_\mathrm{dry})
 \]
-to be reduced to three dimensionless parameters. 
+to be reduced to three dimensionless parameters.
+This reduction applies to the ideal variable-\(I_{\!sp}\) model without an imposed finite exhaust-speed ceiling. If a finite ceiling \(v_{e,\max}\) is imposed in the Sun-field problem, the similarity space gains one additional dimensionless parameter,
+\begin{equation}
+    \nu_{\max}
+    \equiv
+    \frac{v_{e,\max}}{\sqrt{\mu/r_0}},
+    \label{eq:nu_max_similarity}
+\end{equation}
+and the reduced family is parameterized by
+\((\rho,\kappa,\Theta,\nu_{\max})\) rather than only by
+\((\rho,\kappa,\Theta)\).
 The reduction is useful both conceptually and numerically: conceptually, because it shows which combinations of the physical inputs actually determine the transfer shape; numerically, because it makes it possible to tabulate a reduced atlas of normalized solutions and then map them back to dimensional trajectories for any specific spacecraft.
 
 \subsection{Canonical units and normalized variables}
@@ -447,7 +544,7 @@ and similarly normalize the thrust acceleration components as
 \end{equation}
 The polar angle \(\theta\) is already dimensionless and is left unchanged.
 
-The mass is handled more conveniently through the inverse-mass increment that already appears in the free-space solution. 
+The mass is handled more conveniently through the inverse-mass increment that already appears in the free-space solution.
 Define
 \begin{equation}
   \Delta \equiv \frac{1}{m_\mathrm{dry}}-\frac{1}{m_i},
@@ -463,7 +560,7 @@ By construction,
   \qquad
   q(\tau_f)=1,
 \end{equation}
-so \(q\) measures the fraction of the available inverse-mass budget that has been consumed. 
+so \(q\) measures the fraction of the available inverse-mass budget that has been consumed.
 The dimensional mass is recovered from \(q\) as
 \begin{equation}
   m(\tau)=\frac{1}{m_i^{-1}+\Delta q(\tau)}.
@@ -488,10 +585,10 @@ where prime denotes differentiation with respect to \(\tau\), and where the sing
   \label{eq:kappa_def}
 \end{equation}
 
-This is the key reduction. 
-In dimensional form, the mass-flow law \eqref{eq:mass_flow} depends separately on \(P\), \(m_i\), \(m_\mathrm{dry}\), and \(r_0\). 
-After scaling, those four quantities appear only through the single combination \(\kappa\). 
-The normalized equations therefore no longer distinguish between spacecraft that have different powers and masses but the same value of \(\kappa\). 
+This is the key reduction.
+In dimensional form, the mass-flow law \eqref{eq:mass_flow} depends separately on \(P\), \(m_i\), \(m_\mathrm{dry}\), and \(r_0\).
+After scaling, those four quantities appear only through the single combination \(\kappa\).
+The normalized equations therefore no longer distinguish between spacecraft that have different powers and masses but the same value of \(\kappa\).
 Such spacecraft follow the same dimensionless trajectory and differ only by the dimensional scales used to reconstruct time, radius, velocity, and acceleration.
 
 \subsection{Dimensionless boundary conditions}
@@ -504,7 +601,7 @@ For a transfer from a circular orbit of radius \(r_0\) to a circular orbit of ra
   \theta(\tau_f) &= \Theta,\\
   \bar v_r(0) &= 0, &  \bar v_r(\tau_f) &= 0, \\
   \bar v_\theta(0) &= 1, &\bar v_\theta(\tau_f) &= \rho^{-1/2}, \\
-  q(0) &= 0, &q(\tau_f) &= 1,  
+  q(0) &= 0, &q(\tau_f) &= 1,
 \end{align}
 \end{subequations}
 with
@@ -517,27 +614,27 @@ The quantity \(\rho\) is the radius ratio, while
   \Theta \equiv \theta_f-\theta_0+2\pi N
   \label{eq:Theta_def_similarity}
 \end{equation}
-is the unwrapped transfer angle, with \(N\in\mathbb Z_{\ge 0}\) selecting the number of completed revolutions. 
-Only the angular difference matters, not the absolute departure angle, because the Sun-field model is rotationally invariant. 
+is the unwrapped transfer angle, with \(N\in\mathbb Z_{\ge 0}\) selecting the number of completed revolutions.
+Only the angular difference matters, not the absolute departure angle, because the Sun-field model is rotationally invariant.
 This is the same symmetry that produced the first integral \(\lambda_\theta=C_\theta\) in Sec.~\ref{sec:SunModel}.
 
-Equations~\eqref{eq:StateDyn_scaled}--\eqref{eq:BC_scaled} show that the normalized transfer problem depends only on
+Equations~\eqref{eq:StateDyn_scaled}--\eqref{eq:BC_scaled} show that, for the uncapped variable-\(I_{\!sp}\) model, the normalized transfer problem depends only on
 \[
 (\rho,\;\kappa,\;\Theta).
 \]
-This is the reduced parameter space.
+This is the reduced parameter space for the ideal uncapped model.
 
 \subsection{Why the parameter space shrinks}
 It is useful to state explicitly what has been removed.
 
-First, the absolute orbital scale \(r_0\) disappears from the normalized equations because lengths are measured in units of \(r_0\), times in units of \(\sqrt{r_0^3/\mu}\), and velocities in units of \(\sqrt{\mu/r_0}\). 
+First, the absolute orbital scale \(r_0\) disappears from the normalized equations because lengths are measured in units of \(r_0\), times in units of \(\sqrt{r_0^3/\mu}\), and velocities in units of \(\sqrt{\mu/r_0}\).
 Only the ratio \(r_f/r_0\) remains.
 
-Second, the three propulsion quantities \(P\), \(m_i\), and \(m_\mathrm{dry}\) do not independently affect the normalized dynamics. 
-They enter only through the inverse-mass budget \(\Delta\) and then only through the combination \(\kappa\) in \eqref{eq:kappa_def}. 
+Second, the three propulsion quantities \(P\), \(m_i\), and \(m_\mathrm{dry}\) do not independently affect the normalized dynamics.
+They enter only through the inverse-mass budget \(\Delta\) and then only through the combination \(\kappa\) in \eqref{eq:kappa_def}.
 Thus three nominal propulsion parameters collapse to one similarity parameter.
 
-Third, the absolute phase angle \(\theta_0\) is irrelevant because the equations are invariant under a rigid rotation of the entire trajectory. 
+Third, the absolute phase angle \(\theta_0\) is irrelevant because the equations are invariant under a rigid rotation of the entire trajectory.
 Only the total angular change \(\Theta\) matters.
 
 As a result, the circular-to-circular Sun-field transfer problem is parameterized, at the similarity level, by the three variables \((\rho,\kappa,\Theta)\) rather than the six nominal quantities \((r_0,r_f,\Theta,P,m_i,m_\mathrm{dry})\).
@@ -551,12 +648,12 @@ For a given dimensional transfer request, the reduced coordinates are obtained d
   \Delta &= \frac{1}{m_\mathrm{dry}}-\frac{1}{m_i}, \\
   \kappa &= 2P\Delta\,\frac{r_0^{5/2}}{\mu^{3/2}}.
 \end{align}
-Here \(N\) selects the desired multi-revolution branch. 
+Here \(N\) selects the desired multi-revolution branch.
 Thus the similarity reduction is applied by first computing \((\rho,\kappa,\Theta)\) from the physical problem and then solving the corresponding normalized boundary-value problem.
 
 
 \subsection{Inverse map from a normalized atlas solution to dimensional variables}
-Suppose now that a normalized solution has been computed or interpolated in the reduced space \((\rho,\kappa,\Theta)\). 
+Suppose now that a normalized solution has been computed or interpolated in the reduced space \((\rho,\kappa,\Theta)\).
 That solution consists of the dimensionless functions
 \[
 \bar r(\tau),\quad
@@ -594,17 +691,17 @@ This gives the practical recipe for using a precomputed solution atlas:
 \end{enumerate}
 
 \subsection{What should be stored in the atlas}
-For numerical continuation, it is not necessary to store the full dimensional trajectory. 
-A more efficient choice is to store the normalized shooting data, namely the initial costates, the constant \(C_\theta\) associated with rotational symmetry, the thrust-gain constant \(k_T\), and the normalized flight time. 
-Because these quantities are stored in dimensionless form, the same atlas entry can be reused for any dimensional spacecraft that maps to the same \((\rho,\kappa,\Theta)\). 
+For numerical continuation, it is not necessary to store the full dimensional trajectory.
+A more efficient choice is to store the normalized shooting data, namely the initial costates, the constant \(C_\theta\) associated with rotational symmetry, the thrust-gain constant \(k_T\), and the normalized flight time.
+Because these quantities are stored in dimensionless form, the same atlas entry can be reused for any dimensional spacecraft that maps to the same \((\rho,\kappa,\Theta)\).
 This is the computational advantage of the similarity reduction: one normalized solution represents an entire equivalence class of physical missions.
 
 
 \section{Numerical Procedure}
-Solving the two-point boundary-value problem requires a numerical approach. We employ a two-stage strategy that combines a global search to find an initial, feasible trajectory with a local refinement process that uses a continuation method to precisely reach the desired target \cite{Fogel2020,DiPasquale2024}.
+Solving the two-point boundary-value problem and finding high-performance feasible transfers requires a numerical approach. We employ a two-stage strategy that combines a global search to find an initial, feasible trajectory with a local refinement process that uses a continuation method to precisely reach the desired target \cite{Fogel2020,DiPasquale2024}.
 
 \subsection{Objective Function}
-The core of the numerical method is an objective function, $J$, which quantifies the quality of a given trajectory. This function is minimized to find the optimal set of initial costate parameters. It incorporates penalties for violating physical constraints and errors for missing the target state. The function has two distinct forms depending on the optimization stage.
+The core of the numerical method is an objective function, \(J\), which quantifies endpoint targeting accuracy and constraint satisfaction for a candidate trajectory. This function is minimized to find the optimal set of initial costate parameters. It incorporates penalties for violating physical constraints and errors for missing the target state. The function has two distinct forms depending on the optimization stage.
 
 \subsubsection{Global Search Objective}
 In the initial search phase, the goal is to find \emph{any} valid transfer to a stable circular orbit, without a specific target location. The objective function, $J_\text{global}$, is formulated to reward reaching a circular velocity in the outer solar system while penalizing physically unrealistic outcomes:
@@ -640,7 +737,7 @@ Starting from the solution found in Stage~1, which ends at a point $(r^\star, \t
     \item If the optimizer converges to a high-precision solution, the new solution is accepted. The intermediate target is then advanced closer to the final destination, and the process repeats.
     \item If the optimizer fails to converge, it indicates the step to the new target was too large. The intermediate target is then moved back, typically halving the distance between the last successful endpoint and the current target, and the optimization is re-attempted.
 \end{enumerate}
-This adaptive stepping ensures that the local optimizer is always given a problem that is a small perturbation from a known good solution, guaranteeing robust convergence across the entire solution space until the final target is reached.
+This adaptive stepping keeps the local optimizer close to a previously converged solution and substantially improves robustness, although convergence is not guaranteed for every target or every continuation step.
 
 All simulations, optimization procedures, and figures were generated using the accompanying open-source Python implementation \cite{Olsina2025}.
 The repository includes the complete solver, plotting scripts, and resulting graphs of trajectories, fuel and acceleration magnitudes.
@@ -648,17 +745,17 @@ The repository includes the complete solver, plotting scripts, and resulting gra
 \pagebreak
 
 \section{Results}
-The numerical procedure was applied to compute minimum-time transfers from a 1\,AU circular orbit (representing Earth) to various target circular orbits. The targets are defined by their final radius and true anomaly relative to the starting position. A 1\,GW engine was assumed with an initial vehicle mass of 3000\,tons and a dry mass of 1000\,tons.
+The numerical procedure was applied to compute fast feasible transfers from a 1\,AU circular orbit (representing Earth) to various target circular orbits. The targets are defined by their final radius and true anomaly relative to the starting position. A 1\,GW engine was assumed with an initial vehicle mass of 3000\,tons and a dry mass of 1000\,tons.
 
 Figures~\ref{fig:final_theta} and~\ref{fig:starting_theta} show the relationship between flight time and the orbital geometry. The flight times exhibit a U-shaped dependence on the final true anomaly, with a clear minimum for transfers that are neither direct short-arcs nor long-arcs. Similar behavior has been reported in recent multi-objective studies of variable-$I_{\!sp}$ maneuvers \cite{DiPasquale2024}.
 
-Figures~\ref{fig:oberth_figure} and~\ref{fig:oberth_figure2} show example trajectories. A key feature of these optimal paths is the inclusion of an Oberth maneuver. To gain orbital energy efficiently, the spacecraft first thrusts to lower its periapsis, making a close pass of the Sun. It then applies its main acceleration burn at maximum velocity near the Sun, which is far more effective at increasing orbital energy than thrusting in a higher orbit \cite{Oberth1923}. This is visible in the plots as an initial dip towards the Sun and a corresponding peak in the acceleration magnitude.
+Figures~\ref{fig:oberth_figure} and~\ref{fig:oberth_figure2} show example trajectories. A key feature of these high-performance paths is the inclusion of an Oberth maneuver. To gain orbital energy efficiently, the spacecraft first thrusts to lower its periapsis, making a close pass of the Sun. It then applies its main acceleration burn at maximum velocity near the Sun, which is far more effective at increasing orbital energy than thrusting in a higher orbit \cite{Oberth1923}. This is visible in the plots as an initial dip towards the Sun and a corresponding peak in the acceleration magnitude. These Oberth-type solutions should be interpreted within the idealized dynamical model used here. No explicit constraints are imposed on minimum perihelion distance, solar heating, radiator performance near the Sun, pointing restrictions, or power-system survivability. Adding such constraints would generally increase the transfer times or remove some of the most aggressive solar-pass solutions.
 
-Table~\ref{tab:transfer_times_final_anomaly} and Table~\ref{tab:transfer_times_initial_anomaly} present the resulting transfer times in days for a grid of targets. As expected, transfers to more distant orbits take longer. The notation 'N/A' indicates that the transfer was not achievable with the given propellant load. This typically happens because there is a fixed constraint that cannot be overcome by continuous change of the initial conditions. Figure \ref{fig:oberth_figure2} shows trajectory  very close to such a barrier, with very extreme Oberth maneuver around the Sun that cannot be extended further. 
+Table~\ref{tab:transfer_times_final_anomaly} and Table~\ref{tab:transfer_times_initial_anomaly} present the resulting transfer times in days for a grid of targets. As expected, transfers to more distant orbits take longer. The notation ``N/A'' indicates that the numerical continuation and shooting procedure did not find a trajectory satisfying the terminal circular-orbit constraints before violating the dry-mass bound. Such cases may correspond to a genuine feasibility boundary for the specified power and propellant budget, or to a numerical convergence limitation of the present solver. Figure~\ref{fig:oberth_figure2} shows a trajectory close to such a boundary, with an extreme solar pass that cannot be extended further within the imposed model constraints.
 
 
 \section{Conclusion}
-We combined analytic insight (two closed-form first integrals and a free-space benchmark solution) with a robust continuation strategy to solve the time-optimal transfer problem for a constant-power, variable-$I_{\!sp}$ engine. The method successfully generates high-performance trajectories, including those featuring Oberth maneuvers, for transfers out to the giant planets with a gigawatt-class engine. Recent developments in variable-$I_{\!sp}$ propulsion and adaptive low-thrust guidance algorithms \cite{PinoHowell2020,DiPasquale2024} suggest that further improvements in mission performance are possible. Future work will extend this framework to three-dimensional rendezvous problems.
+We combined analytic insight (two closed-form first integrals and a free-space benchmark solution) with a continuation strategy for finding high-performance transfers for a constant-power, variable-\(I_{\!sp}\) engine. The method successfully generates high-performance trajectories, including those featuring Oberth maneuvers, for transfers out to the giant planets with a gigawatt-class engine. Recent developments in variable-$I_{\!sp}$ propulsion and adaptive low-thrust guidance algorithms \cite{PinoHowell2020,DiPasquale2024} suggest that further improvements in mission performance are possible. Future work will extend this framework to three-dimensional rendezvous problems.
 
 \section*{Acknowledgment}
 The author wishes to acknowledge the use of large language models (Google's Gemini and OpenAI's GPT) for assistance in improving the language and clarity of the manuscript, for aiding in the implementation of the numerical code and derivations of some of the analytical results. The results were tested and verified by the author.
@@ -703,11 +800,11 @@ The author wishes to acknowledge the use of large language models (Google's Gemi
 \section{Power-System Mass Closure for the Free-Space Benchmark}
 \label{sec:appendix_mass_closure}
 
-The benchmark result \eqref{eq:Tmin} was derived for prescribed initial and dry masses. 
-For high-power spacecraft, however, the dry mass may itself depend on the propulsion system, because both the power-conversion hardware and the radiators must be carried together with the payload. 
+The benchmark result \eqref{eq:Tmin} was derived for prescribed initial and dry masses.
+For high-power spacecraft, however, the dry mass may itself depend on the propulsion system, because both the power-conversion hardware and the radiators must be carried together with the payload.
 This appendix shows how the free-space minimum-time law is modified under a simple power-system mass closure.
 
-Let \(P\) denote the useful jet power appearing in the rocket model, and let \(P_\mathrm{tot}\) be the total onboard engine power. 
+Let \(P\) denote the useful jet power appearing in the rocket model, and let \(P_\mathrm{tot}\) be the total onboard engine power.
 Define
 \begin{equation}
   \alpha_\mathrm{eng} \equiv \frac{P_\mathrm{tot}}{m_\mathrm{eng}},
@@ -716,7 +813,7 @@ Define
   \qquad
   \rho_\mathrm{rad} \equiv \frac{P_\mathrm{heat}}{m_\mathrm{rad}},
 \end{equation}
-where \(\alpha_\mathrm{eng}\) is the engine specific power, \(\phi\) is the waste-heat fraction, and \(\rho_\mathrm{rad}\) is the radiator specific heat-rejection capability. 
+where \(\alpha_\mathrm{eng}\) is the engine specific power, \(\phi\) is the waste-heat fraction, and \(\rho_\mathrm{rad}\) is the radiator specific heat-rejection capability.
 Since only the fraction \(1-\phi\) of the total power is converted into useful jet power,
 \begin{equation}
   P = (1-\phi)P_\mathrm{tot},
@@ -731,7 +828,7 @@ Therefore,
   m_\mathrm{rad}=\frac{\phi}{1-\phi}\frac{P}{\rho_\mathrm{rad}}.
 \end{equation}
 
-Let \(m_\mathrm{pay}\) be the payload mass. 
+Let \(m_\mathrm{pay}\) be the payload mass.
 The dry mass can then be written in the affine form
 \begin{equation}
   m_\mathrm{dry}=m_\mathrm{pay}+m_\mathrm{eng}+m_\mathrm{rad}
@@ -779,7 +876,7 @@ Substituting \eqref{eq:mdry_beta_app} and \eqref{eq:Delta_payload_app} into the 
 \end{equation}
 Equation~\eqref{eq:T_payload_beta_app} is the free-space minimum-time law when the dry mass is allowed to scale linearly with propulsion power.
 
-Several immediate consequences follow. 
+Several immediate consequences follow.
 First,
 \begin{equation}
   T^3(P)
@@ -838,7 +935,7 @@ Hence
   \label{eq:Tknee_app}
 \end{equation}
 
-Equations~\eqref{eq:T_payload_beta_app}--\eqref{eq:Tknee_app} provide an engineering interpretation of the free-space benchmark. 
+Equations~\eqref{eq:T_payload_beta_app}--\eqref{eq:Tknee_app} provide an engineering interpretation of the free-space benchmark.
 They are not used in the subsequent Sun-field optimal-control formulation, but they show how the cubic-root time law is modified when propulsion-system mass scales with power.
 
 \section{Direct Method Using Spline Parameterization}
