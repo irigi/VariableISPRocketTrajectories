@@ -216,7 +216,7 @@ def classify_all_solved_points(state, data, rho_grid, kappa_grid, theta_grid, so
     winding_map = np.zeros(state.shape, dtype=np.int8)
     mismatch_map = np.zeros(state.shape, dtype=bool)
 
-    # return branch_map, winding_map, mismatch_map            # skip everything
+    return branch_map, winding_map, mismatch_map            # skip everything
 
     from_two_files = second_npz_path is not None
     if from_two_files:
@@ -506,8 +506,10 @@ def main():
     parser = argparse.ArgumentParser(
         description="Interactive atlas viewer: solved cells are shaded by whether the trajectory goes Sun-left, Sun-right, or neither; boundary mismatches are highlighted."
     )
-    parser.add_argument("--npz_path", help="Path to trajectory_atlas.npz / trajectory_atlas_final.npz")
-    parser.add_argument("--npz_path_other", default=None, help="Path to second trajectory atlas used for comparison/overlay plotting")
+    parser.add_argument("--npz_path", help="Path to trajectory_atlas.npz / trajectory_atlas_final.npz",
+                        required=True)
+    parser.add_argument("--npz_path_other", default=None,
+                        help="Path to second trajectory atlas used for comparison/overlay plotting")
     parser.add_argument(
         "--solver",
         default="../rocketHamilton.py",
@@ -527,6 +529,8 @@ def main():
 
     bundle = np.load(args.npz_path)
     skip_mod = int(args.skip_mod)
+
+    print(bundle["data"].shape)
 
     rho_grid = bundle["rho"][::skip_mod]
     kappa_grid = bundle["kappa"][::skip_mod]
