@@ -1,36 +1,61 @@
 {
-  "n_samples": 131072,
+  "n_samples": 262144,
   "seed": 12345,
   "workers": 8,
 
-  "u0_bounds": [-0.001, 0.001],
-  "w0_bounds": [0.999, 1.001],
+  "u0_bounds": [-1.5, 1.5],
+  "w0_bounds": [-0.5, 2.0],
 
   "ar0_bounds": [-32.0, 32.0],
   "at0_bounds": [-32.0, 32.0],
   "jr0_bounds": [-128.0, 128.0],
   "ell_bounds": [-128.0, 128.0],
-
   "tau_bounds": [0.02, 250.0],
 
   "rho_bounds": [0.01, 100.0],
   "kappa_bounds": [0.1, 200000.0],
-  "theta_bounds": [
-    -6.911503837897546,
-    6.911503837897546
-  ],
-
+  "theta_bounds": [-6.911503837897546, 6.911503837897546],
   "final_speed_max": 20.0,
 
   "r_collision": 0.005,
   "r_escape": 200.0,
   "max_acceleration": 5000.0,
-
   "rtol": 2e-9,
   "atol": 2e-11,
   "max_step": 0.04,
   "diagnostic_points": 160,
 
   "subarcs_per_trajectory": 6,
-  "subarc_min_fraction": 0.05
+  "subarc_min_fraction": 0.05,
+
+  "feature_scale": [0.08, 0.08, 0.12, 0.18, 0.12, 0.12, 0.18],
+
+  "coverage": {
+    "enabled": true,
+    "initial_fraction": 0.2,
+    "batch_launches": 8192,
+    "validation_rows": 768,
+    "validation_cell_size": 0.25,
+    "target_success": 0.985,
+    "patience": 2,
+    "max_rounds": 24,
+    "minimum_validation_rows": 512,
+
+    "neighbours": 32,
+    "direct_seeds": 6,
+    "regression_neighbours": 24,
+    "max_nfev": 45,
+
+    "initial_cell_size": 0.35,
+    "insertion_cell_size": 0.1,
+    "insert_failures_per_round": 1024,
+    "max_atlas_rows": 300000,
+
+    "prune_enabled": true,
+    "prune_distance": 0.06,
+    "prune_max_checks": 5000,
+    "prune_max_nfev": 25,
+
+    "validation_seed": 918273
+  }
 }

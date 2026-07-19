@@ -107,6 +107,78 @@ class RocketCapability:
             raise ValueError("mu must be positive")
 
 
+
+
+@dataclass
+class CoverageConfig:
+    """Adaptive coverage and verified pruning settings.
+
+    Coverage is measured on independent *feasible* holdout extremals generated
+    from the same launch domain.  A holdout is covered only when the normal
+    query-time shooting correction converges without using the holdout itself.
+    """
+
+    enabled: bool = True
+
+    # Fraction of launch attempts used to create the initial seed cloud.  The
+    # rest are consumed in independent validation/adaptation batches.
+    initial_fraction: float = 0.25
+    batch_launches: int = 4096
+    validation_rows: int = 512
+    validation_cell_size: float = 0.20
+    target_success: float = 0.98
+    patience: int = 2
+    max_rounds: int = 32
+    minimum_validation_rows: int = 128
+
+    # Fast correction used during coverage testing.
+    neighbours: int = 24
+    direct_seeds: int = 4
+    regression_neighbours: int = 16
+    max_nfev: int = 35
+
+    # Initial cloud thinning and adaptive insertion. Distances are measured in
+    # endpoint coordinates divided by feature_scale.
+    initial_cell_size: float = 0.30
+    insertion_cell_size: float = 0.12
+    insert_failures_per_round: int = 512
+    max_atlas_rows: int = 250_000
+
+    # Verified redundancy pruning. A candidate is removed only if its exact
+    # endpoint can be recovered from other active seeds.
+    prune_enabled: bool = True
+    prune_distance: float = 0.08
+    prune_max_checks: int = 4000
+    prune_max_nfev: int = 25
+
+    # Deterministic validation-row selection.
+    validation_seed: int = 918273
+
+    def validate(self) -> None:
+        if not (0.0 < self.initial_fraction < 1.0):
+            raise ValueError("coverage.initial_fraction must lie in (0,1)")
+        if self.batch_launches <= 0 or self.validation_rows <= 0:
+            raise ValueError("coverage batch sizes must be positive")
+        if self.validation_cell_size <= 0.0:
+            raise ValueError("coverage.validation_cell_size must be positive")
+        if not (0.0 < self.target_success <= 1.0):
+            raise ValueError("coverage.target_success must lie in (0,1]")
+        if self.patience <= 0 or self.max_rounds <= 0:
+            raise ValueError("coverage patience and max_rounds must be positive")
+        if self.minimum_validation_rows <= 0:
+            raise ValueError("coverage.minimum_validation_rows must be positive")
+        if self.neighbours <= 0 or self.direct_seeds <= 0:
+            raise ValueError("coverage neighbour counts must be positive")
+        if self.regression_neighbours <= 0 or self.max_nfev <= 0:
+            raise ValueError("coverage correction settings must be positive")
+        if self.initial_cell_size <= 0.0 or self.insertion_cell_size <= 0.0:
+            raise ValueError("coverage cell sizes must be positive")
+        if self.insert_failures_per_round <= 0 or self.max_atlas_rows <= 0:
+            raise ValueError("coverage insertion limits must be positive")
+        if self.prune_distance <= 0.0 or self.prune_max_checks < 0:
+            raise ValueError("invalid coverage pruning settings")
+
+
 @dataclass
 class AtlasConfig:
     """Bounds and numerical settings for offline atlas generation.
@@ -159,6 +231,9 @@ class AtlasConfig:
     # estimated from the generated endpoint cloud.
     feature_scale: Optional[tuple[float, ...]] = None
 
+    # Adaptive coverage validation and verified pruning.
+    coverage: CoverageConfig = field(default_factory=CoverageConfig)
+
     def validate(self) -> None:
         if self.n_samples <= 0:
             raise ValueError("n_samples must be positive")
@@ -188,6 +263,7 @@ class AtlasConfig:
             raise ValueError("subarcs_per_trajectory must be positive")
         if not (0.0 < self.subarc_min_fraction < 1.0):
             raise ValueError("subarc_min_fraction must lie in (0,1)")
+        self.coverage.validate()
 
 
 @dataclass
@@ -598,6 +674,14 @@ def _count_radial_turns(states: FloatArray) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _atlas_config_from_dict(payload: dict) -> AtlasConfig:
+    data = dict(payload)
+    coverage_payload = data.get("coverage")
+    if isinstance(coverage_payload, dict):
+        data["coverage"] = CoverageConfig(**coverage_payload)
+    return AtlasConfig(**data)
+
+
 def _sample_launches(config: AtlasConfig) -> FloatArray:
     config.validate()
     # Sobol works best at powers of two. random(n) is still supported for any n.
@@ -726,7 +810,7 @@ def _canonical_subarc_row(
 
 def _worker_generate(args):
     launch, cfg_dict = args
-    cfg = AtlasConfig(**cfg_dict)
+    cfg = _atlas_config_from_dict(cfg_dict)
     t_eval = np.linspace(0.0, float(launch[6]), cfg.diagnostic_points)
     sol, normal_constant, status = _integrate_launch(
         np.asarray(launch, dtype=float),
@@ -773,7 +857,627 @@ def _robust_feature_scale(endpoint: FloatArray) -> FloatArray:
     return scale
 
 
+
+def _generate_rows_from_launches(
+    launches: FloatArray, config: AtlasConfig
+) -> tuple[FloatArray, FloatArray, FloatArray]:
+    """Integrate launch attempts and return accepted forward/subarc rows."""
+    if len(launches) == 0:
+        return (
+            np.empty((0, 7), dtype=float),
+            np.empty((0, 7), dtype=float),
+            np.empty((0, 6), dtype=float),
+        )
+    cfg_dict = asdict(config)
+    accepted_launch: list[FloatArray] = []
+    accepted_endpoint: list[FloatArray] = []
+    accepted_diag: list[FloatArray] = []
+
+    if config.workers == 1:
+        iterator = (_worker_generate((row, cfg_dict)) for row in launches)
+        for rows in iterator:
+            for launch, endpoint, diag in rows:
+                accepted_launch.append(launch)
+                accepted_endpoint.append(endpoint)
+                accepted_diag.append(diag)
+    else:
+        batch_size = max(16, min(512, len(launches) // (config.workers * 8) or 16))
+        batches = [launches[i : i + batch_size] for i in range(0, len(launches), batch_size)]
+        with ProcessPoolExecutor(max_workers=config.workers) as pool:
+            futures = [pool.submit(_worker_generate_batch, (batch, cfg_dict)) for batch in batches]
+            for future in as_completed(futures):
+                for launch, endpoint, diag in future.result():
+                    accepted_launch.append(launch)
+                    accepted_endpoint.append(endpoint)
+                    accepted_diag.append(diag)
+
+    if not accepted_launch:
+        return (
+            np.empty((0, 7), dtype=float),
+            np.empty((0, 7), dtype=float),
+            np.empty((0, 6), dtype=float),
+        )
+    return (
+        np.vstack(accepted_launch),
+        np.vstack(accepted_endpoint),
+        np.vstack(accepted_diag),
+    )
+
+
+def _branch_labels(diagnostics: FloatArray) -> NDArray[np.int64]:
+    """Discrete labels used only to avoid merging obvious branch families."""
+    if len(diagnostics) == 0:
+        return np.empty((0, 2), dtype=np.int64)
+    return np.rint(diagnostics[:, 4:6]).astype(np.int64)
+
+
+def _thin_endpoint_rows(
+    launch: FloatArray,
+    endpoint: FloatArray,
+    diagnostics: FloatArray,
+    feature_scale: FloatArray,
+    cell_size: float,
+    max_rows: int,
+) -> tuple[FloatArray, FloatArray, FloatArray]:
+    """Cheap branch-aware grid thinning in normalized endpoint coordinates.
+
+    This is only a first-pass reduction. Final deletion is verified by an
+    actual shooting correction in :func:`_prune_redundant_rows`.
+    """
+    if len(launch) <= 1:
+        return launch, endpoint, diagnostics
+    features = endpoint / feature_scale
+    labels = _branch_labels(diagnostics)
+    # Keep shorter arcs first inside a coarse endpoint/branch cell.
+    order = np.argsort(launch[:, 6], kind="stable")
+    occupied: set[tuple[int, ...]] = set()
+    keep: list[int] = []
+    inv = 1.0 / cell_size
+    for idx in order:
+        cell = tuple(np.floor(features[idx] * inv).astype(np.int64)) + tuple(labels[idx])
+        if cell in occupied:
+            continue
+        occupied.add(cell)
+        keep.append(int(idx))
+        if len(keep) >= max_rows:
+            break
+    keep_array = np.asarray(keep, dtype=int)
+    return launch[keep_array], endpoint[keep_array], diagnostics[keep_array]
+
+
+def _local_regression_seed_arrays(
+    target: FloatArray,
+    indices: FloatArray,
+    launch: FloatArray,
+    endpoint: FloatArray,
+    feature_scale: FloatArray,
+) -> Optional[FloatArray]:
+    if len(indices) < 8:
+        return None
+    x = endpoint[indices]
+    q = np.column_stack((launch[indices, 2:6], np.log(launch[indices, 6])))
+    delta = (x - target) / feature_scale
+    dist2 = np.sum(delta * delta, axis=1)
+    positive = dist2[dist2 > 0.0]
+    bandwidth = float(np.median(positive)) if len(positive) else 1.0
+    bandwidth = max(bandwidth, 1.0e-6)
+    weights = np.exp(-0.5 * dist2 / bandwidth)
+    design = np.column_stack((np.ones(len(indices)), delta))
+    sw = np.sqrt(np.maximum(weights, 1.0e-12))
+    aw = design * sw[:, None]
+    bw = q * sw[:, None]
+    lhs = aw.T @ aw
+    lhs[1:, 1:] += 1.0e-7 * np.eye(7)
+    rhs = aw.T @ bw
+    try:
+        coefficient = np.linalg.solve(lhs, rhs)
+    except np.linalg.LinAlgError:
+        return None
+    prediction = coefficient[0]
+    return prediction if np.all(np.isfinite(prediction)) else None
+
+
+def _launch_correction_bounds(
+    launch: FloatArray, margin: float
+) -> tuple[FloatArray, FloatArray]:
+    lo = np.min(launch[:, 2:7], axis=0)
+    hi = np.max(launch[:, 2:7], axis=0)
+    span = np.maximum(hi - lo, 1.0e-6)
+    lo = lo - margin * span
+    hi = hi + margin * span
+    lo[-1] = math.log(max(lo[-1], 1.0e-5))
+    hi[-1] = math.log(max(hi[-1], math.exp(lo[-1]) * 1.001))
+    return lo, hi
+
+
+def _fast_correct_target(
+    target: FloatArray,
+    launch: FloatArray,
+    endpoint: FloatArray,
+    feature_scale: FloatArray,
+    config: QueryConfig,
+    *,
+    tree: Optional[cKDTree] = None,
+    excluded: Optional[set[int]] = None,
+    bounds: Optional[tuple[FloatArray, FloatArray]] = None,
+) -> tuple[Optional[FloatArray], float, int]:
+    """Correct one exact endpoint using only other atlas seeds.
+
+    Returns ``(corrected_launch, nearest_distance, nfev)``. The corrected launch
+    is ``None`` when no supplied seed converges.
+    """
+    if len(launch) == 0:
+        return None, math.inf, 0
+    if tree is None:
+        tree = cKDTree(endpoint / feature_scale)
+    excluded = excluded or set()
+    requested = min(len(launch), max(config.neighbours + len(excluded) + 4, 1))
+    distances, indices = tree.query(target / feature_scale, k=requested)
+    distances = np.atleast_1d(distances).astype(float)
+    indices = np.atleast_1d(indices).astype(int)
+    retained = [(d, i) for d, i in zip(distances, indices) if int(i) not in excluded]
+    if not retained:
+        return None, math.inf, 0
+    nearest_distance = float(retained[0][0])
+    nearest = np.array([i for _d, i in retained[: config.neighbours]], dtype=int)
+
+    seeds: list[FloatArray] = []
+    regression_indices = nearest[: min(config.regression_neighbours, len(nearest))]
+    regression = _local_regression_seed_arrays(
+        target, regression_indices, launch, endpoint, feature_scale
+    )
+    if regression is not None:
+        seeds.append(regression)
+    for index in nearest[: min(config.direct_seeds, len(nearest))]:
+        seeds.append(np.concatenate((launch[index, 2:6], [math.log(launch[index, 6])])))
+
+    lo, hi = bounds if bounds is not None else _launch_correction_bounds(
+        launch, config.launch_bound_margin
+    )
+    target5 = target[2:7]
+    total_nfev = 0
+    best: Optional[FloatArray] = None
+    best_norm = math.inf
+
+    for seed in seeds:
+        seed = np.clip(np.asarray(seed, dtype=float), lo + 1.0e-10, hi - 1.0e-10)
+        cache_x: Optional[FloatArray] = None
+        cache_value = None
+
+        def evaluate(x):
+            nonlocal cache_x, cache_value
+            x = np.asarray(x, dtype=float)
+            if cache_x is None or not np.array_equal(x, cache_x):
+                cache_x = x.copy()
+                cache_value = ExtremalAtlas._shooting_residual_and_jacobian(
+                    x, float(target[0]), float(target[1]), target5, config
+                )
+            return cache_value
+
+        result = least_squares(
+            lambda x: evaluate(x)[0],
+            seed,
+            bounds=(lo, hi),
+            method="trf",
+            jac=lambda x: evaluate(x)[1],
+            x_scale="jac",
+            max_nfev=config.max_nfev,
+            ftol=1.0e-11,
+            xtol=1.0e-11,
+            gtol=1.0e-11,
+        )
+        total_nfev += int(result.nfev)
+        _scaled, _jac, yf, normal_constant, status, corrected_launch = evaluate(result.x)
+        if yf is None or status != "ok" or normal_constant <= 0.0:
+            continue
+        radius, theta, ur, ut, kappa = _endpoint_from_state(yf)
+        if radius <= 0.0 or kappa <= 0.0:
+            continue
+        raw = np.array(
+            [
+                math.log(radius) - target5[0],
+                theta - target5[1],
+                ur - target5[2],
+                ut - target5[3],
+                math.log(kappa) - target5[4],
+            ],
+            dtype=float,
+        )
+        if np.any(np.abs(raw) > np.asarray(config.acceptance, dtype=float)):
+            continue
+        norm = float(np.linalg.norm(raw / np.asarray(config.residual_scale, dtype=float)))
+        if norm < best_norm:
+            best_norm = norm
+            best = corrected_launch.copy()
+    return best, nearest_distance, total_nfev
+
+
+def _coverage_query_config(config: AtlasConfig, *, pruning: bool = False) -> QueryConfig:
+    coverage = config.coverage
+    return QueryConfig(
+        neighbours=coverage.neighbours,
+        direct_seeds=coverage.direct_seeds,
+        regression_neighbours=coverage.regression_neighbours,
+        max_nfev=coverage.prune_max_nfev if pruning else coverage.max_nfev,
+        rtol=max(config.rtol, 5.0e-10),
+        atol=max(config.atol, 5.0e-12),
+        max_step=config.max_step,
+        trajectory_points=max(64, config.diagnostic_points),
+        r_collision=config.r_collision,
+        r_escape=config.r_escape,
+        max_acceleration=config.max_acceleration,
+        residual_scale=(0.03, 0.08, 0.12, 0.12, 0.08),
+        acceptance=(8.0e-6, 1.2e-5, 1.2e-5, 1.2e-5, 1.2e-5),
+        launch_bound_margin=0.25,
+    )
+
+
+def _select_validation_indices(
+    endpoint: FloatArray,
+    diagnostics: FloatArray,
+    feature_scale: FloatArray,
+    requested: int,
+    rng: np.random.Generator,
+    cell_size: float,
+) -> FloatArray:
+    """Select spatially diverse holdouts instead of density-weighted rows."""
+    count = len(endpoint)
+    if count <= requested:
+        return np.arange(count, dtype=int)
+    labels = _branch_labels(diagnostics)
+    inv = 1.0 / cell_size
+    order = rng.permutation(count)
+    representative: dict[tuple[int, ...], int] = {}
+    for idx in order:
+        cell = tuple(np.floor(endpoint[idx] / feature_scale * inv).astype(np.int64)) + tuple(labels[idx])
+        representative.setdefault(cell, int(idx))
+    diverse = np.fromiter(representative.values(), dtype=int)
+    if len(diverse) >= requested:
+        selected = rng.choice(diverse, size=requested, replace=False)
+        return np.sort(selected).astype(int)
+    selected_set = set(map(int, diverse))
+    remaining = np.array([i for i in range(count) if i not in selected_set], dtype=int)
+    need = requested - len(diverse)
+    extra = rng.choice(remaining, size=need, replace=False)
+    return np.sort(np.concatenate((diverse, extra))).astype(int)
+
+
+def _failure_insertion_indices(
+    failed_indices: FloatArray,
+    distances: FloatArray,
+    endpoint: FloatArray,
+    diagnostics: FloatArray,
+    feature_scale: FloatArray,
+    cell_size: float,
+    limit: int,
+) -> FloatArray:
+    if len(failed_indices) == 0:
+        return np.empty(0, dtype=int)
+    labels = _branch_labels(diagnostics)
+    order = failed_indices[np.argsort(distances[failed_indices])[::-1]]
+    occupied: set[tuple[int, ...]] = set()
+    keep: list[int] = []
+    inv = 1.0 / cell_size
+    for idx in order:
+        cell = tuple(np.floor(endpoint[idx] / feature_scale * inv).astype(np.int64)) + tuple(labels[idx])
+        if cell in occupied:
+            continue
+        occupied.add(cell)
+        keep.append(int(idx))
+        if len(keep) >= limit:
+            break
+    return np.asarray(keep, dtype=int)
+
+
+def _prune_redundant_rows(
+    launch: FloatArray,
+    endpoint: FloatArray,
+    diagnostics: FloatArray,
+    feature_scale: FloatArray,
+    config: AtlasConfig,
+) -> tuple[FloatArray, FloatArray, FloatArray, int]:
+    coverage = config.coverage
+    if not coverage.prune_enabled or coverage.prune_max_checks == 0 or len(launch) < 3:
+        return launch, endpoint, diagnostics, 0
+
+    features = endpoint / feature_scale
+    tree = cKDTree(features)
+    distances, neighbours = tree.query(features, k=2)
+    labels = _branch_labels(diagnostics)
+    candidates = np.argsort(distances[:, 1])
+    active = np.ones(len(launch), dtype=bool)
+    protected: set[int] = set()
+    removed = 0
+    checks = 0
+    query_config = _coverage_query_config(config, pruning=True)
+    correction_bounds = _launch_correction_bounds(
+        launch, query_config.launch_bound_margin
+    )
+
+    for index in candidates:
+        index = int(index)
+        neighbour = int(neighbours[index, 1])
+        if distances[index, 1] > coverage.prune_distance:
+            break
+        if checks >= coverage.prune_max_checks:
+            break
+        if not active[index] or not active[neighbour] or index in protected:
+            continue
+        if not np.array_equal(labels[index], labels[neighbour]):
+            continue
+        checks += 1
+        excluded = {index}
+        corrected, _distance, _nfev = _fast_correct_target(
+            endpoint[index], launch, endpoint, feature_scale, query_config,
+            tree=tree, excluded=excluded, bounds=correction_bounds,
+        )
+        if corrected is None:
+            continue
+        active[index] = False
+        protected.add(neighbour)
+        removed += 1
+
+    return launch[active], endpoint[active], diagnostics[active], removed
+
+
+def _estimate_coverage_cells(
+    atlas_endpoint: FloatArray,
+    feature_scale: FloatArray,
+    probe_endpoint: FloatArray,
+    probe_success: NDArray[np.bool_],
+) -> tuple[FloatArray, NDArray[np.int32], NDArray[np.int32]]:
+    radius = np.zeros(len(atlas_endpoint), dtype=float)
+    success_count = np.zeros(len(atlas_endpoint), dtype=np.int32)
+    failure_count = np.zeros(len(atlas_endpoint), dtype=np.int32)
+    if len(atlas_endpoint) == 0 or len(probe_endpoint) == 0:
+        return radius, success_count, failure_count
+    tree = cKDTree(atlas_endpoint / feature_scale)
+    distances, indices = tree.query(probe_endpoint / feature_scale, k=1)
+    nearest_failure = np.full(len(atlas_endpoint), np.inf, dtype=float)
+    for distance, index, success in zip(distances, indices, probe_success):
+        index = int(index)
+        distance = float(distance)
+        if success:
+            success_count[index] += 1
+            radius[index] = max(radius[index], distance)
+        else:
+            failure_count[index] += 1
+            nearest_failure[index] = min(nearest_failure[index], distance)
+    constrained = np.isfinite(nearest_failure) & (radius > 0.0)
+    radius[constrained] = np.minimum(radius[constrained], 0.9 * nearest_failure[constrained])
+    return radius, success_count, failure_count
+
+
 def generate_atlas(path: str | Path, config: AtlasConfig) -> Path:
+    """Generate an adaptive, coverage-validated forward extremal atlas.
+
+    When ``config.coverage.enabled`` is false, generation falls back to the
+    original fixed-count forward cloud.  Adaptive coverage is tested on
+    independent feasible holdout extremals from the configured launch domain.
+    """
+    config.validate()
+    if not config.coverage.enabled:
+        return _generate_atlas_fixed(path, config)
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    coverage = config.coverage
+    launches = _sample_launches(config)
+    initial_count = int(round(config.n_samples * coverage.initial_fraction))
+    initial_count = min(max(initial_count, 1), max(config.n_samples - 1, 1))
+
+    print(f"Integrating initial coverage seed launches: {initial_count:,}")
+    seed_launch, seed_endpoint, seed_diag = _generate_rows_from_launches(
+        launches[:initial_count], config
+    )
+    if len(seed_launch) == 0:
+        raise RuntimeError("No initial atlas samples survived integration")
+
+    if config.feature_scale is None:
+        feature_scale = _robust_feature_scale(seed_endpoint)
+    else:
+        feature_scale = np.asarray(config.feature_scale, dtype=float)
+        if feature_scale.shape != (7,) or np.any(feature_scale <= 0.0):
+            raise ValueError("feature_scale must contain seven positive values")
+
+    atlas_launch, atlas_endpoint, atlas_diag = _thin_endpoint_rows(
+        seed_launch,
+        seed_endpoint,
+        seed_diag,
+        feature_scale,
+        coverage.initial_cell_size,
+        coverage.max_atlas_rows,
+    )
+    print(
+        f"Initial accepted rows: {len(seed_launch):,}; "
+        f"after coarse branch-aware thinning: {len(atlas_launch):,}"
+    )
+
+    rng = np.random.default_rng(coverage.validation_seed)
+    query_config = _coverage_query_config(config)
+    cursor = initial_count
+    successful_rounds = 0
+    round_number = 0
+    coverage_history: list[dict] = []
+    last_probe_endpoint = np.empty((0, 7), dtype=float)
+    last_probe_success = np.empty(0, dtype=bool)
+
+    while (
+        cursor < config.n_samples
+        and round_number < coverage.max_rounds
+        and len(atlas_launch) < coverage.max_atlas_rows
+    ):
+        round_number += 1
+        stop = min(cursor + coverage.batch_launches, config.n_samples)
+        batch_launches = launches[cursor:stop]
+        cursor = stop
+        candidate_launch, candidate_endpoint, candidate_diag = _generate_rows_from_launches(
+            batch_launches, config
+        )
+        if len(candidate_launch) == 0:
+            coverage_history.append(
+                {"round": round_number, "launches": int(len(batch_launches)), "rows": 0}
+            )
+            continue
+
+        validation_indices = _select_validation_indices(
+            candidate_endpoint,
+            candidate_diag,
+            feature_scale,
+            coverage.validation_rows,
+            rng,
+            coverage.validation_cell_size,
+        )
+        tree = cKDTree(atlas_endpoint / feature_scale)
+        correction_bounds = _launch_correction_bounds(
+            atlas_launch, query_config.launch_bound_margin
+        )
+        success = np.zeros(len(validation_indices), dtype=bool)
+        nearest_distance = np.full(len(validation_indices), np.inf, dtype=float)
+        nfev_total = 0
+
+        for local, candidate_index in enumerate(validation_indices):
+            corrected, distance, nfev = _fast_correct_target(
+                candidate_endpoint[candidate_index],
+                atlas_launch,
+                atlas_endpoint,
+                feature_scale,
+                query_config,
+                tree=tree,
+                bounds=correction_bounds,
+            )
+            success[local] = corrected is not None
+            nearest_distance[local] = distance
+            nfev_total += nfev
+
+        tested = len(validation_indices)
+        success_rate = float(np.mean(success)) if tested else 0.0
+        failed_local = np.flatnonzero(~success)
+        failed_candidate_indices = validation_indices[failed_local]
+
+        # Distances indexed in candidate-row space for insertion ranking.
+        candidate_distances = np.full(len(candidate_launch), -np.inf, dtype=float)
+        candidate_distances[validation_indices] = nearest_distance
+        remaining_capacity = max(0, coverage.max_atlas_rows - len(atlas_launch))
+        insertion_limit = min(coverage.insert_failures_per_round, remaining_capacity)
+        insert_indices = _failure_insertion_indices(
+            failed_candidate_indices,
+            candidate_distances,
+            candidate_endpoint,
+            candidate_diag,
+            feature_scale,
+            coverage.insertion_cell_size,
+            insertion_limit,
+        )
+        if len(insert_indices):
+            atlas_launch = np.vstack((atlas_launch, candidate_launch[insert_indices]))
+            atlas_endpoint = np.vstack((atlas_endpoint, candidate_endpoint[insert_indices]))
+            atlas_diag = np.vstack((atlas_diag, candidate_diag[insert_indices]))
+
+        enough = tested >= coverage.minimum_validation_rows
+        if enough and success_rate >= coverage.target_success:
+            successful_rounds += 1
+        else:
+            successful_rounds = 0
+
+        record = {
+            "round": round_number,
+            "launch_attempts": int(len(batch_launches)),
+            "candidate_rows": int(len(candidate_launch)),
+            "validation_rows": int(tested),
+            "successes": int(np.count_nonzero(success)),
+            "success_rate": success_rate,
+            "inserted_failures": int(len(insert_indices)),
+            "atlas_rows": int(len(atlas_launch)),
+            "median_nearest_distance": float(np.median(nearest_distance)) if tested else math.nan,
+            "p95_nearest_distance": float(np.quantile(nearest_distance, 0.95)) if tested else math.nan,
+            "correction_nfev": int(nfev_total),
+        }
+        coverage_history.append(record)
+        last_probe_endpoint = candidate_endpoint[validation_indices].copy()
+        last_probe_success = success.copy()
+        print(
+            f"Coverage round {round_number}: success {success_rate:.1%} "
+            f"({np.count_nonzero(success)}/{tested}), inserted {len(insert_indices)}, "
+            f"atlas rows {len(atlas_launch):,}"
+        )
+
+        if successful_rounds >= coverage.patience:
+            print(
+                f"Coverage target {coverage.target_success:.1%} reached for "
+                f"{coverage.patience} consecutive rounds."
+            )
+            break
+
+    before_prune = len(atlas_launch)
+    atlas_launch, atlas_endpoint, atlas_diag, pruned = _prune_redundant_rows(
+        atlas_launch, atlas_endpoint, atlas_diag, feature_scale, config
+    )
+    if pruned:
+        print(f"Verified redundant seeds removed: {pruned:,}")
+
+    coverage_radius, coverage_success_count, coverage_failure_count = _estimate_coverage_cells(
+        atlas_endpoint, feature_scale, last_probe_endpoint, last_probe_success
+    )
+
+    final_success_rate = (
+        float(np.mean(last_probe_success)) if len(last_probe_success) else math.nan
+    )
+    converged = bool(
+        len(last_probe_success) >= coverage.minimum_validation_rows
+        and final_success_rate >= coverage.target_success
+        and successful_rounds >= coverage.patience
+    )
+    cfg_dict = asdict(config)
+    metadata = {
+        "format_version": 2,
+        "model": "planar-kepler-costate-free-normal-pmp",
+        "atlas_strategy": "adaptive-feasible-holdout-coverage",
+        "launch_columns": ["u0", "w0", "Ar0", "At0", "Jr0", "ell", "tau"],
+        "endpoint_columns": [
+            "u0", "w0", "log_rho", "theta_unwrapped", "ur_final", "ut_final", "log_kappa"
+        ],
+        "diagnostic_columns": [
+            "normal_constant", "minimum_radius", "maximum_radius", "maximum_acceleration",
+            "radial_turns", "rounded_winding"
+        ],
+        "config": cfg_dict,
+        "accepted_atlas_rows": int(len(atlas_launch)),
+        "initial_rows_before_thinning": int(len(seed_launch)),
+        "rows_before_verified_pruning": int(before_prune),
+        "verified_pruned_rows": int(pruned),
+        "integrated_launch_attempts": int(cursor),
+        "launch_attempt_budget": int(config.n_samples),
+        "subarcs_per_trajectory": int(config.subarcs_per_trajectory),
+        "coverage_converged": converged,
+        "coverage_final_success_rate": final_success_rate,
+        "coverage_successful_rounds": int(successful_rounds),
+        "coverage_history": coverage_history,
+        "coverage_definition": (
+            "Independent feasible holdout endpoint is covered when exact shooting correction "
+            "converges from atlas seeds without using the holdout launch."
+        ),
+    }
+    np.savez_compressed(
+        path,
+        launch=atlas_launch,
+        endpoint=atlas_endpoint,
+        diagnostics=atlas_diag,
+        feature_scale=feature_scale,
+        coverage_radius=coverage_radius,
+        coverage_success_count=coverage_success_count,
+        coverage_failure_count=coverage_failure_count,
+        metadata_json=np.array(json.dumps(metadata)),
+    )
+    if not converged:
+        print(
+            "WARNING: launch budget ended before the configured coverage criterion was met. "
+            "The atlas was saved with coverage_converged=false."
+        )
+    return path
+
+
+def _generate_atlas_fixed(path: str | Path, config: AtlasConfig) -> Path:
     """Generate and save a forward-extremal atlas.
 
     The saved NPZ contains no pickled Python objects and is safe to load with
@@ -875,6 +1579,21 @@ class ExtremalAtlas:
             self.endpoint = np.asarray(data["endpoint"], dtype=float)
             self.diagnostics = np.asarray(data["diagnostics"], dtype=float)
             self.feature_scale = np.asarray(data["feature_scale"], dtype=float)
+            self.coverage_radius = (
+                np.asarray(data["coverage_radius"], dtype=float)
+                if "coverage_radius" in data.files
+                else np.zeros(len(self.launch), dtype=float)
+            )
+            self.coverage_success_count = (
+                np.asarray(data["coverage_success_count"], dtype=np.int32)
+                if "coverage_success_count" in data.files
+                else np.zeros(len(self.launch), dtype=np.int32)
+            )
+            self.coverage_failure_count = (
+                np.asarray(data["coverage_failure_count"], dtype=np.int32)
+                if "coverage_failure_count" in data.files
+                else np.zeros(len(self.launch), dtype=np.int32)
+            )
             self.metadata = json.loads(str(data["metadata_json"].item()))
         if self.launch.ndim != 2 or self.launch.shape[1] != 7:
             raise ValueError("invalid atlas launch array")
@@ -882,10 +1601,33 @@ class ExtremalAtlas:
             raise ValueError("invalid atlas endpoint array")
         if self.feature_scale.shape != (7,) or np.any(self.feature_scale <= 0.0):
             raise ValueError("invalid atlas feature scales")
+        if self.coverage_radius.shape != (len(self.launch),):
+            raise ValueError("invalid atlas coverage_radius array")
         self._features = self.endpoint / self.feature_scale
         self._tree = cKDTree(self._features)
         self._launch_min = np.min(self.launch[:, 2:7], axis=0)
         self._launch_max = np.max(self.launch[:, 2:7], axis=0)
+
+    def coverage_certificate(
+        self,
+        initial: CartesianState,
+        final: CartesianState,
+        capability: RocketCapability,
+        revolutions: int = 0,
+    ) -> dict:
+        """Return the nearest seed and its empirically validated cell radius."""
+        boundary = _canonicalize_boundary(initial, final, capability, revolutions)
+        distance, index = self._tree.query(boundary.target / self.feature_scale, k=1)
+        index = int(index)
+        radius = float(self.coverage_radius[index])
+        return {
+            "seed_index": index,
+            "distance": float(distance),
+            "validated_radius": radius,
+            "inside_validated_cell": bool(radius > 0.0 and distance <= radius),
+            "success_count": int(self.coverage_success_count[index]),
+            "failure_count": int(self.coverage_failure_count[index]),
+        }
 
     def coverage_distance(
         self,
@@ -894,9 +1636,9 @@ class ExtremalAtlas:
         capability: RocketCapability,
         revolutions: int = 0,
     ) -> float:
-        boundary = _canonicalize_boundary(initial, final, capability, revolutions)
-        distance, _ = self._tree.query(boundary.target / self.feature_scale, k=1)
-        return float(distance)
+        return float(
+            self.coverage_certificate(initial, final, capability, revolutions)["distance"]
+        )
 
     def _nearest_indices(self, target: FloatArray, k: int) -> FloatArray:
         k = min(max(1, k), len(self.launch))
@@ -1159,11 +1901,15 @@ class ExtremalAtlas:
                 solutions.append(solution)
 
         if not solutions:
-            distance = self.coverage_distance(initial, final, capability, revolutions)
+            certificate = self.coverage_certificate(
+                initial, final, capability, revolutions
+            )
             raise RuntimeError(
                 "No branch converged from the atlas seeds. "
-                f"Nearest normalized atlas distance was {distance:.3g}. "
-                "Generate a denser/wider atlas, increase query seeds, or try a "
+                f"Nearest normalized distance={certificate['distance']:.3g}; "
+                f"validated cell radius={certificate['validated_radius']:.3g}; "
+                f"inside validated cell={certificate['inside_validated_cell']}. "
+                "Generate or adapt the atlas further, increase query seeds, or try a "
                 "different revolution count."
             )
 
@@ -1237,12 +1983,79 @@ def circular_state(radius: float, mu: float, angle: float = 0.0, prograde: bool 
     return CartesianState(tuple(radius * er), tuple(speed * et))
 
 
+
+def validate_atlas_coverage(
+    atlas_path: str | Path,
+    *,
+    launch_attempts: int = 4096,
+    validation_rows: int = 512,
+    seed: Optional[int] = None,
+    workers: Optional[int] = None,
+) -> dict:
+    """Measure atlas coverage on a fresh independent feasible holdout set."""
+    atlas = ExtremalAtlas(atlas_path)
+    payload = atlas.metadata.get("config", {})
+    config = _atlas_config_from_dict(payload) if payload else AtlasConfig()
+    config.n_samples = int(launch_attempts)
+    config.seed = int(seed if seed is not None else config.seed + 1_000_003)
+    if workers is not None:
+        config.workers = int(workers)
+    config.coverage.enabled = False
+    launches = _sample_launches(config)
+    probe_launch, probe_endpoint, probe_diag = _generate_rows_from_launches(launches, config)
+    if len(probe_launch) == 0:
+        raise RuntimeError("No independent validation extremals survived integration")
+
+    rng = np.random.default_rng(config.seed + 37)
+    indices = _select_validation_indices(
+        probe_endpoint,
+        probe_diag,
+        atlas.feature_scale,
+        validation_rows,
+        rng,
+        config.coverage.validation_cell_size,
+    )
+    query_config = _coverage_query_config(config)
+    tree = cKDTree(atlas.endpoint / atlas.feature_scale)
+    bounds = _launch_correction_bounds(atlas.launch, query_config.launch_bound_margin)
+    success = np.zeros(len(indices), dtype=bool)
+    distances = np.full(len(indices), np.inf, dtype=float)
+    total_nfev = 0
+    for local, index in enumerate(indices):
+        corrected, distance, nfev = _fast_correct_target(
+            probe_endpoint[index],
+            atlas.launch,
+            atlas.endpoint,
+            atlas.feature_scale,
+            query_config,
+            tree=tree,
+            bounds=bounds,
+        )
+        success[local] = corrected is not None
+        distances[local] = distance
+        total_nfev += nfev
+
+    return {
+        "atlas": str(Path(atlas_path).resolve()),
+        "launch_attempts": int(launch_attempts),
+        "accepted_probe_rows": int(len(probe_launch)),
+        "tested_probe_rows": int(len(indices)),
+        "successes": int(np.count_nonzero(success)),
+        "success_rate": float(np.mean(success)) if len(success) else math.nan,
+        "median_nearest_distance": float(np.median(distances)) if len(distances) else math.nan,
+        "p95_nearest_distance": float(np.quantile(distances, 0.95)) if len(distances) else math.nan,
+        "maximum_nearest_distance": float(np.max(distances)) if len(distances) else math.nan,
+        "correction_nfev": int(total_nfev),
+        "seed": int(config.seed),
+    }
+
+
 def _parse_config(path: Optional[str]) -> AtlasConfig:
     if path is None:
         return AtlasConfig()
     with open(path, "r", encoding="utf-8") as handle:
         payload = json.load(handle)
-    return AtlasConfig(**payload)
+    return _atlas_config_from_dict(payload)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -1258,6 +2071,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     inspect = sub.add_parser("inspect", help="show atlas metadata")
     inspect.add_argument("atlas")
 
+    validate = sub.add_parser("validate", help="test coverage on fresh feasible holdouts")
+    validate.add_argument("atlas")
+    validate.add_argument("--launches", type=int, default=4096)
+    validate.add_argument("--rows", type=int, default=512)
+    validate.add_argument("--seed", type=int)
+    validate.add_argument("--workers", type=int)
+
     args = parser.parse_args(argv)
     if args.command == "generate":
         cfg = _parse_config(args.config)
@@ -1271,6 +2091,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.command == "inspect":
         atlas = ExtremalAtlas(args.atlas)
         print(json.dumps(atlas.metadata, indent=2))
+        return 0
+    if args.command == "validate":
+        report = validate_atlas_coverage(
+            args.atlas,
+            launch_attempts=args.launches,
+            validation_rows=args.rows,
+            seed=args.seed,
+            workers=args.workers,
+        )
+        print(json.dumps(report, indent=2))
         return 0
     return 2
 
