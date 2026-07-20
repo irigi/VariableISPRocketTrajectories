@@ -36,6 +36,7 @@ parameter equals the clicked ``kappa``.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import math
@@ -471,50 +472,128 @@ def build_projection(
     )
 
 
-def _coverage_metric_cube(
+def _coverage_cache_key(
     atlas: ForwardAtlas,
     projection: Projection,
-) -> tuple[FloatArray, FloatArray, FloatArray]:
-    """Evaluate nearest-seed convergence geometry on every circular grid cell."""
-    nr, nt, nk = projection.shape
-    distance_cube = np.empty((nr, nt, nk), dtype=float)
-    radius_cube = np.empty((nr, nt, nk), dtype=float)
-    ratio_cube = np.full((nr, nt, nk), np.nan, dtype=float)
+    theta_indices: IntArray,
+) -> str:
+    stat = atlas.path.stat()
+    digest = hashlib.sha256()
+    digest.update(str(atlas.path.resolve()).encode())
+    digest.update(str(stat.st_size).encode())
+    digest.update(str(stat.st_mtime_ns).encode())
+    for array in (
+        atlas.feature_scale,
+        projection.rho_edges,
+        projection.theta_edges,
+        projection.kappa_edges,
+        np.asarray(theta_indices, dtype=np.int64),
+    ):
+        digest.update(np.ascontiguousarray(array).view(np.uint8))
+    return digest.hexdigest()
 
+
+def _coverage_metric_slices(
+    atlas: ForwardAtlas,
+    projection: Projection,
+    theta_indices: IntArray,
+    *,
+    workers: int = -1,
+    cache_path: Optional[Path] = None,
+    use_cache: bool = True,
+) -> tuple[FloatArray, FloatArray, FloatArray]:
+    """Evaluate only displayed circular slices in one batched KD-tree query."""
+    theta_indices = np.asarray(theta_indices, dtype=np.int64)
+    key = _coverage_cache_key(atlas, projection, theta_indices)
+    if use_cache and cache_path is not None and cache_path.exists():
+        try:
+            with np.load(cache_path, allow_pickle=False) as data:
+                if str(data["cache_key"].item()) == key:
+                    return (
+                        np.asarray(data["distance"], dtype=float),
+                        np.asarray(data["radius"], dtype=float),
+                        np.asarray(data["ratio"], dtype=float),
+                    )
+        except Exception:
+            pass
+
+    nr, _nt, nk = projection.shape
     rho_centres = np.sqrt(projection.rho_edges[:-1] * projection.rho_edges[1:])
     theta_centres = 0.5 * (projection.theta_edges[:-1] + projection.theta_edges[1:])
     kappa_centres = np.sqrt(projection.kappa_edges[:-1] * projection.kappa_edges[1:])
     rr, kk = np.meshgrid(rho_centres, kappa_centres, indexing="ij")
-    tree = cKDTree(atlas.endpoint / atlas.feature_scale)
+    plane_size = rr.size
+    targets = np.empty((len(theta_indices) * plane_size, 7), dtype=float)
+    base_rho = rr.ravel()
+    base_kappa = kk.ravel()
+    for panel, theta_index in enumerate(theta_indices):
+        sl = slice(panel * plane_size, (panel + 1) * plane_size)
+        targets[sl, 0] = 0.0
+        targets[sl, 1] = 1.0
+        targets[sl, 2] = np.log(base_rho)
+        targets[sl, 3] = theta_centres[int(theta_index)]
+        targets[sl, 4] = 0.0
+        targets[sl, 5] = base_rho ** -0.5
+        targets[sl, 6] = np.log(base_kappa)
 
-    for j, theta in enumerate(theta_centres):
-        targets = np.column_stack(
-            (
-                np.zeros(rr.size),
-                np.ones(rr.size),
-                np.log(rr.ravel()),
-                np.full(rr.size, theta),
-                np.zeros(rr.size),
-                rr.ravel() ** -0.5,
-                np.log(kk.ravel()),
+    normalized_endpoint = np.asarray(atlas.endpoint / atlas.feature_scale, dtype=np.float64)
+    tree = cKDTree(normalized_endpoint, compact_nodes=True, balanced_tree=True)
+    distances, indices = tree.query(
+        targets / atlas.feature_scale,
+        k=1,
+        workers=int(workers),
+    )
+    distances = np.asarray(distances, dtype=float).reshape(len(theta_indices), nr, nk)
+    indices = np.asarray(indices, dtype=int).reshape(len(theta_indices), nr, nk)
+    radii = atlas.coverage_radius[indices]
+    ratio = np.full_like(distances, np.nan, dtype=float)
+    valid = radii > 0.0
+    ratio[valid] = distances[valid] / radii[valid]
+    distance_cube = np.transpose(distances, (1, 0, 2))
+    radius_cube = np.transpose(radii, (1, 0, 2))
+    ratio_cube = np.transpose(ratio, (1, 0, 2))
+
+    if use_cache and cache_path is not None:
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = cache_path.with_name(cache_path.name + ".tmp.npz")
+            np.savez(
+                temporary,
+                cache_key=np.array(key),
+                distance=distance_cube.astype(np.float32),
+                radius=radius_cube.astype(np.float32),
+                ratio=ratio_cube.astype(np.float32),
             )
-        )
-        distances, indices = tree.query(targets / atlas.feature_scale, k=1)
-        distances = np.asarray(distances, dtype=float).reshape(nr, nk)
-        indices = np.asarray(indices, dtype=int).reshape(nr, nk)
-        radii = atlas.coverage_radius[indices]
-        distance_cube[:, j, :] = distances
-        radius_cube[:, j, :] = radii
-        valid = radii > 0.0
-        ratio = np.full((nr, nk), np.nan, dtype=float)
-        ratio[valid] = distances[valid] / radii[valid]
-        ratio_cube[:, j, :] = ratio
+            temporary.replace(cache_path)
+        except Exception as exc:
+            print(f"Viewer distance cache could not be saved: {exc}")
     return distance_cube, radius_cube, ratio_cube
 
 
-def projection_metric(atlas: ForwardAtlas, projection: Projection, metric: str) -> FloatArray:
+def projection_metric(
+    atlas: ForwardAtlas,
+    projection: Projection,
+    metric: str,
+    *,
+    theta_indices: Optional[IntArray] = None,
+    distance_workers: int = -1,
+    distance_cache: Optional[Path] = None,
+    use_distance_cache: bool = True,
+) -> FloatArray:
+    selected_theta = (
+        np.arange(projection.shape[1], dtype=np.int64)
+        if theta_indices is None
+        else np.asarray(theta_indices, dtype=np.int64)
+    )
     if metric in {"nearest_distance", "validated_radius", "coverage_ratio"}:
-        distance, radius, ratio = _coverage_metric_cube(atlas, projection)
+        distance, radius, ratio = _coverage_metric_slices(
+            atlas,
+            projection,
+            selected_theta,
+            workers=distance_workers,
+            cache_path=distance_cache,
+            use_cache=use_distance_cache,
+        )
         if metric == "nearest_distance":
             return distance
         if metric == "validated_radius":
@@ -523,28 +602,28 @@ def projection_metric(atlas: ForwardAtlas, projection: Projection, metric: str) 
         return ratio
 
     if metric == "count":
-        out = projection.count.astype(float)
+        out = projection.count[:, selected_theta, :].astype(float)
         out[out <= 0.0] = np.nan
         return out
 
-    selected = projection.selected_row
+    selected = projection.selected_row[:, selected_theta, :]
     out = np.full(selected.shape, np.nan, dtype=float)
     occupied = selected >= 0
     rows = selected[occupied]
     if metric == "tau":
         out[occupied] = atlas.tau[rows]
     elif metric == "circular_error":
-        out[occupied] = projection.selected_error[occupied]
-    elif metric == "normal_constant":
-        out[occupied] = atlas.diagnostics[rows, 0]
+        out[occupied] = projection.selected_error[:, selected_theta, :][occupied]
     elif metric == "minimum_radius":
         out[occupied] = atlas.diagnostics[rows, 1]
     elif metric == "maximum_acceleration":
         out[occupied] = atlas.diagnostics[rows, 3]
     elif metric == "radial_turns":
         out[occupied] = atlas.diagnostics[rows, 4]
+    elif metric == "normal_constant":
+        out[occupied] = atlas.diagnostics[rows, 0]
     else:
-        raise ViewerError(f"Unsupported metric {metric!r}")
+        raise ViewerError(f"Unknown metric {metric!r}")
     return out
 
 
@@ -1073,10 +1152,21 @@ def make_catalogue(
     replay_mode: str,
     max_replay_branches: int,
     query_options: QueryOptions,
+    distance_workers: int,
+    distance_cache: Optional[Path],
+    use_distance_cache: bool,
 ):
-    values = projection_metric(atlas, projection, metric)
     theta_indices = infer_theta_panels(projection, nrows * ncols)
-    selected_values = values[:, theta_indices, :]
+    values = projection_metric(
+        atlas,
+        projection,
+        metric,
+        theta_indices=theta_indices,
+        distance_workers=distance_workers,
+        distance_cache=distance_cache,
+        use_distance_cache=use_distance_cache,
+    )
+    selected_values = values
     norm = metric_norm(selected_values, metric)
     cmap = plt.get_cmap("viridis").copy()
     cmap.set_bad("0.88")
@@ -1089,7 +1179,7 @@ def make_catalogue(
             ax.set_visible(False)
             continue
         j = int(theta_indices[panel])
-        panel_values = np.ma.masked_invalid(values[:, j, :].T)
+        panel_values = np.ma.masked_invalid(values[:, panel, :].T)
         mesh = ax.pcolormesh(
             projection.rho_edges,
             projection.kappa_edges,
@@ -1313,6 +1403,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-continuation", action="store_true")
     parser.add_argument("--figsize", type=parse_figsize, default=(16.0, 10.0))
     parser.add_argument("--save-catalogue", type=Path, default=None)
+    parser.add_argument(
+        "--distance-workers", type=int, default=-1,
+        help="cKDTree query workers for displayed coverage slices (-1 uses all cores)",
+    )
+    parser.add_argument(
+        "--distance-cache", type=Path, default=None,
+        help="Optional sidecar NPZ for displayed nearest-distance slices",
+    )
+    parser.add_argument("--no-distance-cache", action="store_true")
     parser.add_argument("--no-show", action="store_true", help="Build/save without opening GUI")
     return parser
 
@@ -1434,6 +1533,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         f"continuation={query_options.allow_continuation}"
     )
 
+    distance_cache = args.distance_cache
+    if distance_cache is None:
+        distance_cache = atlas.path.with_name(atlas.path.stem + ".viewer_distance_cache.npz")
+
     fig = make_catalogue(
         atlas,
         solver,
@@ -1447,6 +1550,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         replay_mode=args.replay_mode,
         max_replay_branches=args.max_replay_branches,
         query_options=query_options,
+        distance_workers=args.distance_workers,
+        distance_cache=distance_cache,
+        use_distance_cache=not args.no_distance_cache,
     )
     if args.save_catalogue is not None:
         output = args.save_catalogue.expanduser().resolve()

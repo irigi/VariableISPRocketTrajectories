@@ -37,16 +37,20 @@ where L is the conserved rotational quantity and the missing initial jerk is
 
     Jt0 = u0*At0 - w0*Ar0 - L.
 
-The inverse map is multivalued.  A query therefore tries several nearby atlas
-seeds, performs exact least-squares shooting for each, deduplicates converged
-branches, and returns the shortest branch found.
+The inverse map is multivalued. A production query ranks nearby charts with
+local inverse-Jacobian information and applies a bounded damped-Newton shooting
+correction. Robust least-squares remains optional. Offline generation can use
+several mixed bulk 7D launch-distribution shards and a compiled fixed-step RK4
+backend; final query correction still uses the adaptive variational integrator.
 
-Dependencies: numpy, scipy.
+Dependencies: numpy, scipy; numba is optional unless generation_backend is
+``numba_rk4``.
 """
 
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import math
 import os
@@ -54,6 +58,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Iterable, Optional, Sequence
 
 import numpy as np
@@ -64,6 +69,14 @@ from scipy.spatial import cKDTree
 from scipy.stats import qmc
 
 FloatArray = NDArray[np.float64]
+
+try:
+    from numba import njit
+    _NUMBA_AVAILABLE = True
+except Exception:  # pragma: no cover - optional acceleration
+    njit = None  # type: ignore[assignment]
+    _NUMBA_AVAILABLE = False
+
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +123,61 @@ class RocketCapability:
 
 
 
+@dataclass(frozen=True)
+class BulkShardConfig:
+    """One bulk seven-dimensional launch-distribution shard.
+
+    Shards are merged into one atlas; they are not mission-family or circular
+    subatlases.  Their purpose is to allocate Sobol samples efficiently across
+    short/long and low/high-control dynamical regimes while retaining all seven
+    endpoint coordinates.
+    """
+
+    name: str = "bulk"
+    weight: float = 1.0
+    u0_bounds: Optional[tuple[float, float]] = None
+    w0_bounds: Optional[tuple[float, float]] = None
+    tau_bounds: Optional[tuple[float, float]] = None
+    acceleration_sampling: str = "log_polar"
+    acceleration_magnitude_bounds: Optional[tuple[float, float]] = None
+    jr_sampling: str = "signed_log"
+    jr_magnitude_bounds: Optional[tuple[float, float]] = None
+    ell_sampling: str = "signed_log"
+    ell_magnitude_bounds: Optional[tuple[float, float]] = None
+
+    def validate(self, parent: "AtlasConfig") -> None:
+        if not self.name:
+            raise ValueError("bulk shard name cannot be empty")
+        if self.weight <= 0.0:
+            raise ValueError(f"bulk shard {self.name!r} weight must be positive")
+        if self.acceleration_sampling not in {"log_polar", "cartesian_uniform"}:
+            raise ValueError("bulk shard acceleration_sampling must be log_polar or cartesian_uniform")
+        if self.jr_sampling not in {"signed_log", "linear"}:
+            raise ValueError("bulk shard jr_sampling must be signed_log or linear")
+        if self.ell_sampling not in {"signed_log", "linear"}:
+            raise ValueError("bulk shard ell_sampling must be signed_log or linear")
+        for name, value, fallback in (
+            ("u0_bounds", self.u0_bounds, parent.u0_bounds),
+            ("w0_bounds", self.w0_bounds, parent.w0_bounds),
+            ("tau_bounds", self.tau_bounds, parent.tau_bounds),
+        ):
+            bounds = fallback if value is None else value
+            if len(bounds) != 2 or not np.isfinite(bounds).all() or bounds[0] >= bounds[1]:
+                raise ValueError(f"invalid bulk shard {self.name!r} {name}: {bounds}")
+        tau = parent.tau_bounds if self.tau_bounds is None else self.tau_bounds
+        if tau[0] <= 0.0:
+            raise ValueError(f"bulk shard {self.name!r} tau lower bound must be positive")
+        for name, value in (
+            ("acceleration_magnitude_bounds", self.acceleration_magnitude_bounds),
+            ("jr_magnitude_bounds", self.jr_magnitude_bounds),
+            ("ell_magnitude_bounds", self.ell_magnitude_bounds),
+        ):
+            if value is not None and (
+                len(value) != 2 or not np.isfinite(value).all() or value[0] <= 0.0 or value[0] >= value[1]
+            ):
+                raise ValueError(f"invalid bulk shard {self.name!r} {name}: {value}")
+
+
 @dataclass
 class CoverageConfig:
     """Adaptive endpoint-space coverage, targeted slices, and pruning.
@@ -123,8 +191,8 @@ class CoverageConfig:
 
     Coverage is accepted only when exact shooting correction succeeds and the
     nearest-seed distances are locally small.  Failed feasible holdouts are
-    inserted as seeds; successful targeted circular corrections are also
-    inserted so lower-dimensional mission families are represented explicitly.
+    inserted as seeds; circular probes remain validation-only and are never inserted, so the
+    atlas is built exclusively from bulk seven-dimensional forward shards.
     """
 
     enabled: bool = True
@@ -164,10 +232,9 @@ class CoverageConfig:
     # (radial turns and winding) are appended automatically.
     strata_bins: tuple[int, int, int] = (4, 8, 4)
 
-    # Exact circular-to-circular validation family.  These probes are sampled
-    # directly in the requested output domain, not from the random forward
-    # distribution.  Continuation is attempted when a direct Newton correction
-    # fails.  Set enabled=False when this mission family is irrelevant.
+    # Exact circular-to-circular validation family. These are validation-only
+    # probes of a lower-dimensional section of the 7D atlas. They are never
+    # inserted and use the same bounded production query solver as fresh audits.
     circular_enabled: bool = True
     circular_validation_rows: int = 128
     circular_batch_rows: int = 16
@@ -178,7 +245,7 @@ class CoverageConfig:
     circular_homotopy_steps: int = 8
     circular_nearest_seeds: int = 4
     circular_max_nfev: int = 20
-    circular_insertions_per_round: int = 64
+    circular_insertions_per_round: int = 0
     circular_validation_seed: int = 719_231
 
     # Production query solver used identically by generation validation and the viewer.
@@ -205,8 +272,15 @@ class CoverageConfig:
     insertion_cell_size: float = 0.08
     max_atlas_rows: int = 350_000
 
+    # High-throughput bulk cell filling is evaluated before the expensive
+    # acquisition score.  Every selected row is already a known-feasible
+    # forward extremal; no shooting solve is required to insert it.
+    bulk_fill_enabled: bool = True
+    bulk_fill_cell_size: float = 0.10
+    bulk_fill_insertions_per_round: int = 16_384
+
     acquisition_enabled: bool = True
-    acquisition_insertions_per_round: int = 1_536
+    acquisition_insertions_per_round: int = 8_192
     acquisition_min_separation: float = 0.07
     acquisition_candidate_limit: int = 30_000
     acquisition_distance_weight: float = 1.0
@@ -269,6 +343,7 @@ class CoverageConfig:
     checkpoint_initial: bool = True
     checkpoint_on_interrupt: bool = True
     checkpoint_compressed: bool = True
+    checkpoint_sparse_jacobians: bool = True
 
     def validate(self) -> None:
         if not (0.0 < self.initial_fraction < 1.0):
@@ -332,6 +407,8 @@ class CoverageConfig:
             raise ValueError("coverage fast-query step/regularization settings are invalid")
         if self.initial_cell_size <= 0.0 or self.insertion_cell_size <= 0.0:
             raise ValueError("coverage cell sizes must be positive")
+        if self.bulk_fill_cell_size <= 0.0 or self.bulk_fill_insertions_per_round < 0:
+            raise ValueError("coverage bulk-fill settings are invalid")
         if self.acquisition_insertions_per_round <= 0 or self.acquisition_candidate_limit <= 0:
             raise ValueError("coverage acquisition limits must be positive")
         if self.acquisition_min_separation <= 0.0:
@@ -392,6 +469,12 @@ class AtlasConfig:
     n_samples: int = 50_000
     seed: int = 12345
     workers: int = max(1, (os.cpu_count() or 2) - 1)
+    worker_batch_size: int = 1024
+
+    # Optional mixture of bulk 7D launch-distribution shards.  When empty, the
+    # legacy single Sobol box is used exactly as before.  All shard rows are
+    # merged into the same atlas and queried together.
+    bulk_shards: tuple[BulkShardConfig, ...] = ()
 
     # Initial radial/tangential velocity in local Kepler-speed units.
     u0_bounds: tuple[float, float] = (-1.5, 1.5)
@@ -418,6 +501,9 @@ class AtlasConfig:
     r_collision: float = 0.015
     r_escape: float = 60.0
     max_acceleration: float = 100.0
+    # Offline generation may use DOP853 or a compiled fixed-step RK4 path.
+    # Query correction always uses the accurate adaptive integrator.
+    generation_backend: str = "dop853"
     rtol: float = 2.0e-9
     atol: float = 2.0e-11
     max_step: float = 0.04
@@ -440,6 +526,10 @@ class AtlasConfig:
             raise ValueError("n_samples must be positive")
         if self.workers <= 0:
             raise ValueError("workers must be positive")
+        if self.worker_batch_size <= 0:
+            raise ValueError("worker_batch_size must be positive")
+        for shard in self.bulk_shards:
+            shard.validate(self)
         for name, bounds in (
             ("u0_bounds", self.u0_bounds),
             ("w0_bounds", self.w0_bounds),
@@ -456,6 +546,10 @@ class AtlasConfig:
                 raise ValueError(f"invalid {name}: {bounds}")
         if self.tau_bounds[0] <= 0.0 or self.rho_bounds[0] <= 0.0 or self.kappa_bounds[0] <= 0.0:
             raise ValueError("tau, rho, and kappa lower bounds must be positive")
+        if self.generation_backend not in {"dop853", "numba_rk4"}:
+            raise ValueError("generation_backend must be dop853 or numba_rk4")
+        if self.generation_backend == "numba_rk4" and not _NUMBA_AVAILABLE:
+            raise ValueError("generation_backend=numba_rk4 requires numba")
         if self.r_collision <= 0.0 or self.r_escape <= self.r_collision:
             raise ValueError("invalid radial integration guards")
         if self.diagnostic_points < 8:
@@ -680,6 +774,104 @@ def _rhs(_t: float, y: FloatArray) -> FloatArray:
     )
 
 
+
+
+if _NUMBA_AVAILABLE:
+    @njit(cache=True)
+    def _rk4_rhs_numba(y):
+        out = np.empty(10, dtype=np.float64)
+        rx, ry = y[0], y[1]
+        vx, vy = y[2], y[3]
+        ax, ay = y[4], y[5]
+        jx, jy = y[6], y[7]
+        rr = rx * rx + ry * ry
+        radius = math.sqrt(rr)
+        inv_r3 = 1.0 / (rr * radius)
+        ra = rx * ax + ry * ay
+        factor = 3.0 * ra / (rr * rr * radius)
+        out[0] = vx
+        out[1] = vy
+        out[2] = -rx * inv_r3 + ax
+        out[3] = -ry * inv_r3 + ay
+        out[4] = jx
+        out[5] = jy
+        out[6] = -ax * inv_r3 + rx * factor
+        out[7] = -ay * inv_r3 + ry * factor
+        out[8] = ax * ax + ay * ay
+        out[9] = (rx * vy - ry * vx) / rr
+        return out
+
+
+    @njit(cache=True)
+    def _numba_integrate_samples(y0, t_eval, max_step, r_collision, r_escape, max_acceleration):
+        count = len(t_eval)
+        output = np.empty((10, count), dtype=np.float64)
+        y = y0.copy()
+        output[:, 0] = y
+        current = t_eval[0]
+        for out_index in range(1, count):
+            target = t_eval[out_index]
+            span = target - current
+            steps = max(1, int(math.ceil(span / max_step)))
+            h = span / steps
+            for _ in range(steps):
+                k1 = _rk4_rhs_numba(y)
+                k2 = _rk4_rhs_numba(y + 0.5 * h * k1)
+                k3 = _rk4_rhs_numba(y + 0.5 * h * k2)
+                k4 = _rk4_rhs_numba(y + h * k3)
+                y = y + (h / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+                rr = y[0] * y[0] + y[1] * y[1]
+                aa = y[4] * y[4] + y[5] * y[5]
+                if (
+                    not math.isfinite(rr)
+                    or not math.isfinite(aa)
+                    or rr <= r_collision * r_collision
+                    or rr >= r_escape * r_escape
+                    or aa >= max_acceleration * max_acceleration
+                ):
+                    return output, 0
+                for component in range(10):
+                    if not math.isfinite(y[component]):
+                        return output, 0
+            current = target
+            output[:, out_index] = y
+        return output, 1
+else:
+    def _numba_integrate_samples(*_args, **_kwargs):
+        raise RuntimeError("numba RK4 backend is unavailable")
+
+
+def _integrate_launch_generation(
+    launch: FloatArray,
+    config: AtlasConfig,
+    t_eval: FloatArray,
+) -> tuple[Optional[object], float, str]:
+    """Offline integration backend; query correction remains adaptive DOP853."""
+    if config.generation_backend == "dop853":
+        return _integrate_launch(
+            launch,
+            rtol=config.rtol,
+            atol=config.atol,
+            max_step=config.max_step,
+            r_collision=config.r_collision,
+            r_escape=config.r_escape,
+            max_acceleration=config.max_acceleration,
+            t_eval=t_eval,
+        )
+    y0, normal_constant = _initial_vector(launch)
+    if normal_constant <= 0.0 or not np.isfinite(normal_constant):
+        return None, normal_constant, "non-normal"
+    states, success = _numba_integrate_samples(
+        np.asarray(y0, dtype=np.float64),
+        np.asarray(t_eval, dtype=np.float64),
+        float(config.max_step),
+        float(config.r_collision),
+        float(config.r_escape),
+        float(config.max_acceleration),
+    )
+    if not success:
+        return None, normal_constant, "guard-event"
+    return SimpleNamespace(t=np.asarray(t_eval), y=np.asarray(states), success=True), normal_constant, "ok"
 
 def _rhs_jacobian(y: FloatArray) -> FloatArray:
     """Analytic Jacobian of the 10-state extremal RHS."""
@@ -914,30 +1106,131 @@ def _atlas_config_from_dict(payload: dict) -> AtlasConfig:
     coverage_payload = data.get("coverage")
     if isinstance(coverage_payload, dict):
         data["coverage"] = CoverageConfig(**coverage_payload)
+    shard_payload = data.get("bulk_shards")
+    if isinstance(shard_payload, list):
+        data["bulk_shards"] = tuple(BulkShardConfig(**item) for item in shard_payload)
     return AtlasConfig(**data)
 
 
-def _sample_launches(config: AtlasConfig) -> FloatArray:
-    config.validate()
-    # Sobol works best at powers of two. random(n) is still supported for any n.
-    sampler = qmc.Sobol(d=7, scramble=True, seed=config.seed)
-    unit = sampler.random(config.n_samples)
+def _signed_log_sample(unit: FloatArray, bounds: tuple[float, float]) -> FloatArray:
+    """Sample a signed log-uniform scalar from one unit variate.
 
-    linear_bounds = np.array(
-        [
-            config.u0_bounds,
-            config.w0_bounds,
-            config.ar0_bounds,
-            config.at0_bounds,
-            config.jr0_bounds,
-            config.ell_bounds,
-        ],
-        dtype=float,
-    )
+    The lower half chooses the negative sign and the upper half the positive
+    sign.  Distance from 0.5 supplies a log-uniform magnitude, so one Sobol
+    dimension covers sign and magnitude without introducing an extra random
+    coordinate.
+    """
+    lo, hi = map(float, bounds)
+    if lo <= 0.0 or hi <= lo:
+        raise ValueError(f"signed-log magnitude bounds must satisfy 0 < lo < hi, got {bounds}")
+    u = np.asarray(unit, dtype=float)
+    sign = np.where(u < 0.5, -1.0, 1.0)
+    magnitude_unit = np.abs(2.0 * u - 1.0)
+    magnitude = np.exp(math.log(lo) + magnitude_unit * (math.log(hi) - math.log(lo)))
+    return sign * magnitude
+
+
+def _default_magnitude_bounds(component_bounds: tuple[float, float], floor: float) -> tuple[float, float]:
+    maximum = max(abs(float(component_bounds[0])), abs(float(component_bounds[1])))
+    return max(floor, 1.0e-12), max(maximum, floor * 1.001)
+
+
+def _sample_launches(config: AtlasConfig) -> FloatArray:
+    """Generate deterministic Sobol launches, optionally from bulk 7D shards.
+
+    With no ``bulk_shards`` this reproduces the legacy seven-dimensional box
+    sampler.  With shards, an eighth Sobol coordinate chooses a bulk regime and
+    the remaining seven coordinates sample its full launch space.  Acceleration
+    is preferably sampled in log-polar form; jerk and angular invariant can be
+    signed-log sampled to allocate resolution across many decades.
+    """
+    config.validate()
+    if not config.bulk_shards:
+        sampler = qmc.Sobol(d=7, scramble=True, seed=config.seed)
+        unit = sampler.random(config.n_samples)
+        linear_bounds = np.array(
+            [
+                config.u0_bounds,
+                config.w0_bounds,
+                config.ar0_bounds,
+                config.at0_bounds,
+                config.jr0_bounds,
+                config.ell_bounds,
+            ],
+            dtype=float,
+        )
+        launch = np.empty((config.n_samples, 7), dtype=float)
+        launch[:, :6] = qmc.scale(unit[:, :6], linear_bounds[:, 0], linear_bounds[:, 1])
+        log_tau_lo, log_tau_hi = np.log(config.tau_bounds)
+        launch[:, 6] = np.exp(log_tau_lo + unit[:, 6] * (log_tau_hi - log_tau_lo))
+        return launch
+
+    sampler = qmc.Sobol(d=8, scramble=True, seed=config.seed)
+    unit = sampler.random(config.n_samples)
+    weights = np.asarray([shard.weight for shard in config.bulk_shards], dtype=float)
+    cumulative = np.cumsum(weights / np.sum(weights))
+    shard_index = np.searchsorted(cumulative, unit[:, 0], side="right")
+    shard_index = np.minimum(shard_index, len(config.bulk_shards) - 1)
     launch = np.empty((config.n_samples, 7), dtype=float)
-    launch[:, :6] = qmc.scale(unit[:, :6], linear_bounds[:, 0], linear_bounds[:, 1])
-    log_tau_lo, log_tau_hi = np.log(config.tau_bounds)
-    launch[:, 6] = np.exp(log_tau_lo + unit[:, 6] * (log_tau_hi - log_tau_lo))
+
+    for index, shard in enumerate(config.bulk_shards):
+        mask = shard_index == index
+        if not np.any(mask):
+            continue
+        u = unit[mask, 1:]
+        u_bounds = config.u0_bounds if shard.u0_bounds is None else shard.u0_bounds
+        w_bounds = config.w0_bounds if shard.w0_bounds is None else shard.w0_bounds
+        tau_bounds = config.tau_bounds if shard.tau_bounds is None else shard.tau_bounds
+        launch[mask, 0] = u_bounds[0] + u[:, 0] * (u_bounds[1] - u_bounds[0])
+        launch[mask, 1] = w_bounds[0] + u[:, 1] * (w_bounds[1] - w_bounds[0])
+
+        if shard.acceleration_sampling == "cartesian_uniform":
+            launch[mask, 2] = config.ar0_bounds[0] + u[:, 2] * (
+                config.ar0_bounds[1] - config.ar0_bounds[0]
+            )
+            launch[mask, 3] = config.at0_bounds[0] + u[:, 3] * (
+                config.at0_bounds[1] - config.at0_bounds[0]
+            )
+        else:
+            mag_bounds = shard.acceleration_magnitude_bounds or _default_magnitude_bounds(
+                (min(config.ar0_bounds[0], config.at0_bounds[0]),
+                 max(config.ar0_bounds[1], config.at0_bounds[1])),
+                1.0e-4,
+            )
+            magnitude = np.exp(
+                math.log(mag_bounds[0])
+                + u[:, 2] * (math.log(mag_bounds[1]) - math.log(mag_bounds[0]))
+            )
+            angle = 2.0 * math.pi * u[:, 3]
+            launch[mask, 2] = np.clip(magnitude * np.cos(angle), *config.ar0_bounds)
+            launch[mask, 3] = np.clip(magnitude * np.sin(angle), *config.at0_bounds)
+
+        if shard.jr_sampling == "linear":
+            launch[mask, 4] = config.jr0_bounds[0] + u[:, 4] * (
+                config.jr0_bounds[1] - config.jr0_bounds[0]
+            )
+        else:
+            jr_bounds = shard.jr_magnitude_bounds or _default_magnitude_bounds(
+                config.jr0_bounds, 1.0e-4
+            )
+            launch[mask, 4] = np.clip(
+                _signed_log_sample(u[:, 4], jr_bounds), *config.jr0_bounds
+            )
+
+        if shard.ell_sampling == "linear":
+            launch[mask, 5] = config.ell_bounds[0] + u[:, 5] * (
+                config.ell_bounds[1] - config.ell_bounds[0]
+            )
+        else:
+            ell_bounds = shard.ell_magnitude_bounds or _default_magnitude_bounds(
+                config.ell_bounds, 1.0e-4
+            )
+            launch[mask, 5] = np.clip(
+                _signed_log_sample(u[:, 5], ell_bounds), *config.ell_bounds
+            )
+
+        log_tau_lo, log_tau_hi = np.log(tau_bounds)
+        launch[mask, 6] = np.exp(log_tau_lo + u[:, 6] * (log_tau_hi - log_tau_lo))
     return launch
 
 
@@ -1043,19 +1336,57 @@ def _canonical_subarc_row(
     return sub_launch, endpoint, diagnostics
 
 
+_GENERATION_POOL: Optional[ProcessPoolExecutor] = None
+_GENERATION_POOL_KEY: Optional[str] = None
+_WORKER_CONFIG_DICT: Optional[dict] = None
+
+
+def _worker_pool_init(cfg_dict: dict) -> None:
+    global _WORKER_CONFIG_DICT
+    _WORKER_CONFIG_DICT = cfg_dict
+
+
+def _worker_generate_batch_shared(launch_batch: FloatArray):
+    if _WORKER_CONFIG_DICT is None:
+        raise RuntimeError("generation worker was not initialized")
+    results = []
+    for launch in launch_batch:
+        results.extend(_worker_generate((launch, _WORKER_CONFIG_DICT)))
+    return results
+
+
+def _shutdown_generation_pool() -> None:
+    global _GENERATION_POOL, _GENERATION_POOL_KEY
+    if _GENERATION_POOL is not None:
+        _GENERATION_POOL.shutdown(wait=True, cancel_futures=True)
+    _GENERATION_POOL = None
+    _GENERATION_POOL_KEY = None
+
+
+atexit.register(_shutdown_generation_pool)
+
+
+def _get_generation_pool(config: AtlasConfig) -> ProcessPoolExecutor:
+    global _GENERATION_POOL, _GENERATION_POOL_KEY
+    cfg_dict = asdict(config)
+    key = json.dumps(cfg_dict, sort_keys=True, separators=(",", ":"))
+    if _GENERATION_POOL is None or _GENERATION_POOL_KEY != key:
+        _shutdown_generation_pool()
+        _GENERATION_POOL = ProcessPoolExecutor(
+            max_workers=config.workers,
+            initializer=_worker_pool_init,
+            initargs=(cfg_dict,),
+        )
+        _GENERATION_POOL_KEY = key
+    return _GENERATION_POOL
+
+
 def _worker_generate(args):
     launch, cfg_dict = args
     cfg = _atlas_config_from_dict(cfg_dict)
     t_eval = np.linspace(0.0, float(launch[6]), cfg.diagnostic_points)
-    sol, normal_constant, status = _integrate_launch(
-        np.asarray(launch, dtype=float),
-        rtol=cfg.rtol,
-        atol=cfg.atol,
-        max_step=cfg.max_step,
-        r_collision=cfg.r_collision,
-        r_escape=cfg.r_escape,
-        max_acceleration=cfg.max_acceleration,
-        t_eval=t_eval,
+    sol, normal_constant, status = _integrate_launch_generation(
+        np.asarray(launch, dtype=float), cfg, t_eval
     )
     if sol is None:
         return []
@@ -1116,15 +1447,15 @@ def _generate_rows_from_launches(
                 accepted_endpoint.append(endpoint)
                 accepted_diag.append(diag)
     else:
-        batch_size = max(16, min(512, len(launches) // (config.workers * 8) or 16))
+        batch_size = max(16, int(config.worker_batch_size))
         batches = [launches[i : i + batch_size] for i in range(0, len(launches), batch_size)]
-        with ProcessPoolExecutor(max_workers=config.workers) as pool:
-            futures = [pool.submit(_worker_generate_batch, (batch, cfg_dict)) for batch in batches]
-            for future in as_completed(futures):
-                for launch, endpoint, diag in future.result():
-                    accepted_launch.append(launch)
-                    accepted_endpoint.append(endpoint)
-                    accepted_diag.append(diag)
+        pool = _get_generation_pool(config)
+        futures = [pool.submit(_worker_generate_batch_shared, batch) for batch in batches]
+        for future in as_completed(futures):
+            for launch, endpoint, diag in future.result():
+                accepted_launch.append(launch)
+                accepted_endpoint.append(endpoint)
+                accepted_diag.append(diag)
 
     if not accepted_launch:
         return (
@@ -2000,6 +2331,54 @@ def _branch_frequency(diagnostics: FloatArray) -> dict[tuple[int, int], int]:
     return frequency
 
 
+def _bulk_new_cell_indices(
+    candidate_endpoint: FloatArray,
+    candidate_diag: FloatArray,
+    atlas_endpoint: FloatArray,
+    atlas_diag: FloatArray,
+    feature_scale: FloatArray,
+    cell_size: float,
+    limit: int,
+) -> FloatArray:
+    """Select one known-feasible forward row from each previously empty cell.
+
+    This is deliberately cheap and purely geometric.  It front-loads broad 7D
+    coverage before acquisition scoring or Newton validation is attempted.
+    Branch labels are part of the cell key, so distinct winding/radial-turn
+    families are retained.
+    """
+    if limit <= 0 or len(candidate_endpoint) == 0:
+        return np.empty(0, dtype=int)
+    inv = 1.0 / float(cell_size)
+    atlas_labels = _branch_labels(atlas_diag)
+    candidate_labels = _branch_labels(candidate_diag)
+    occupied: set[tuple[int, ...]] = set()
+    for point, label in zip(atlas_endpoint, atlas_labels):
+        occupied.add(
+            tuple(np.floor(point / feature_scale * inv).astype(np.int64)) + tuple(label)
+        )
+    selected: list[int] = []
+    # Farthest-first ordering is approximated by distance to the current cloud;
+    # the batched query is much cheaper than a correction solve.
+    if len(atlas_endpoint):
+        tree = cKDTree(atlas_endpoint / feature_scale)
+        distance, _ = tree.query(candidate_endpoint / feature_scale, k=1, workers=-1)
+        order = np.argsort(np.asarray(distance, dtype=float))[::-1]
+    else:
+        order = np.arange(len(candidate_endpoint), dtype=int)
+    for index in order:
+        key = tuple(
+            np.floor(candidate_endpoint[index] / feature_scale * inv).astype(np.int64)
+        ) + tuple(candidate_labels[index])
+        if key in occupied:
+            continue
+        occupied.add(key)
+        selected.append(int(index))
+        if len(selected) >= limit:
+            break
+    return np.asarray(selected, dtype=int)
+
+
 def _acquisition_select_indices(
     candidate_endpoint: FloatArray,
     candidate_diag: FloatArray,
@@ -2842,6 +3221,45 @@ def _coverage_distances(
     return output
 
 
+def _jacobian_checkpoint_payload(
+    jacobian: FloatArray,
+    condition: FloatArray,
+    sigma_min: FloatArray,
+    *,
+    sparse: bool,
+) -> dict[str, FloatArray]:
+    if not sparse:
+        return {
+            "endpoint_jacobian": jacobian,
+            "jacobian_condition": condition,
+            "jacobian_sigma_min": sigma_min,
+        }
+    finite = np.all(np.isfinite(jacobian), axis=(1, 2))
+    index = np.flatnonzero(finite).astype(np.int64)
+    return {
+        "endpoint_jacobian_index": index,
+        "endpoint_jacobian_value": np.asarray(jacobian[index], dtype=np.float32),
+        "jacobian_condition_value": np.asarray(condition[index], dtype=float),
+        "jacobian_sigma_min_value": np.asarray(sigma_min[index], dtype=float),
+    }
+
+
+def _load_jacobian_arrays(data, row_count: int) -> tuple[FloatArray, FloatArray, FloatArray]:
+    if "endpoint_jacobian" in data.files:
+        return (
+            np.asarray(data["endpoint_jacobian"], dtype=np.float32),
+            np.asarray(data["jacobian_condition"], dtype=float),
+            np.asarray(data["jacobian_sigma_min"], dtype=float),
+        )
+    jacobian, condition, sigma_min = _empty_jacobian_arrays(row_count)
+    if "endpoint_jacobian_index" in data.files:
+        index = np.asarray(data["endpoint_jacobian_index"], dtype=np.int64)
+        jacobian[index] = np.asarray(data["endpoint_jacobian_value"], dtype=np.float32)
+        condition[index] = np.asarray(data["jacobian_condition_value"], dtype=float)
+        sigma_min[index] = np.asarray(data["jacobian_sigma_min_value"], dtype=float)
+    return jacobian, condition, sigma_min
+
+
 def _atomic_save_npz(
     path: str | Path,
     *,
@@ -2981,9 +3399,9 @@ def generate_atlas(
             return
         row_count = len(atlas_launch)
         checkpoint_metadata = {
-            "format_version": 5,
+            "format_version": 6,
             "model": "planar-kepler-costate-free-normal-pmp",
-            "atlas_strategy": "cumulative-reservoir-jacobian-acquisition-frontier",
+            "atlas_strategy": "bulk-7d-shards-fast-cell-fill-jacobian-acquisition",
             "launch_columns": ["u0", "w0", "Ar0", "At0", "Jr0", "ell", "tau"],
             "endpoint_columns": [
                 "u0", "w0", "log_rho", "theta_unwrapped", "ur_final", "ut_final", "log_kappa"
@@ -3029,6 +3447,10 @@ def generate_atlas(
                 "defines chart distance when available."
             ),
         }
+        jacobian_payload = _jacobian_checkpoint_payload(
+            atlas_jacobian, atlas_condition, atlas_sigma_min,
+            sparse=coverage.checkpoint_sparse_jacobians,
+        )
         _atomic_save_npz(
             path,
             compressed=coverage.checkpoint_compressed,
@@ -3036,9 +3458,6 @@ def generate_atlas(
             endpoint=atlas_endpoint,
             diagnostics=atlas_diag,
             feature_scale=feature_scale,
-            endpoint_jacobian=atlas_jacobian,
-            jacobian_condition=atlas_condition,
-            jacobian_sigma_min=atlas_sigma_min,
             coverage_radius=np.zeros(row_count, dtype=float),
             coverage_success_count=np.zeros(row_count, dtype=np.int32),
             coverage_failure_count=np.zeros(row_count, dtype=np.int32),
@@ -3062,6 +3481,7 @@ def generate_atlas(
             last_fresh_diagnostics=last_fresh_diag,
             last_fresh_success=last_fresh_success,
             last_fresh_distance=last_fresh_distance,
+            **jacobian_payload,
             metadata_json=np.array(json.dumps(checkpoint_metadata)),
         )
         print(
@@ -3085,7 +3505,6 @@ def generate_atlas(
                 return path
             required = (
                 "launch", "endpoint", "diagnostics", "feature_scale",
-                "endpoint_jacobian", "jacobian_condition", "jacobian_sigma_min",
                 "persistent_probe_launch", "persistent_probe_endpoint",
                 "persistent_probe_diagnostics", "persistent_probe_tested",
                 "persistent_probe_success", "persistent_probe_distance",
@@ -3095,16 +3514,16 @@ def generate_atlas(
             missing = [name for name in required if name not in data.files]
             if missing:
                 raise ValueError(
-                    "The existing NPZ is not a resumable format-v5 checkpoint; missing arrays: "
+                    "The existing NPZ is not a resumable format-v6 checkpoint; missing arrays: "
                     + ", ".join(missing)
                 )
             atlas_launch = np.asarray(data["launch"], dtype=float)
             atlas_endpoint = np.asarray(data["endpoint"], dtype=float)
             atlas_diag = np.asarray(data["diagnostics"], dtype=float)
             feature_scale = np.asarray(data["feature_scale"], dtype=float)
-            atlas_jacobian = np.asarray(data["endpoint_jacobian"], dtype=np.float32)
-            atlas_condition = np.asarray(data["jacobian_condition"], dtype=float)
-            atlas_sigma_min = np.asarray(data["jacobian_sigma_min"], dtype=float)
+            atlas_jacobian, atlas_condition, atlas_sigma_min = _load_jacobian_arrays(
+                data, len(atlas_launch)
+            )
             reservoir_launch = np.asarray(data["persistent_probe_launch"], dtype=float)
             reservoir_endpoint = np.asarray(data["persistent_probe_endpoint"], dtype=float)
             reservoir_diag = np.asarray(data["persistent_probe_diagnostics"], dtype=float)
@@ -3345,9 +3764,9 @@ def generate_atlas(
         else:
             radius, success_count, failure_count = coverage_cell_arrays()
         checkpoint_metadata = {
-            "format_version": 5,
+            "format_version": 6,
             "model": "planar-kepler-costate-free-normal-pmp",
-            "atlas_strategy": "cumulative-reservoir-jacobian-acquisition-frontier",
+            "atlas_strategy": "bulk-7d-shards-fast-cell-fill-jacobian-acquisition",
             "launch_columns": ["u0", "w0", "Ar0", "At0", "Jr0", "ell", "tau"],
             "endpoint_columns": [
                 "u0",
@@ -3407,6 +3826,10 @@ def generate_atlas(
                 "effort defines chart distance when available."
             ),
         }
+        jacobian_payload = _jacobian_checkpoint_payload(
+            atlas_jacobian, atlas_condition, atlas_sigma_min,
+            sparse=coverage.checkpoint_sparse_jacobians,
+        )
         _atomic_save_npz(
             path,
             compressed=coverage.checkpoint_compressed,
@@ -3414,9 +3837,6 @@ def generate_atlas(
             endpoint=atlas_endpoint,
             diagnostics=atlas_diag,
             feature_scale=feature_scale,
-            endpoint_jacobian=atlas_jacobian,
-            jacobian_condition=atlas_condition,
-            jacobian_sigma_min=atlas_sigma_min,
             coverage_radius=radius,
             coverage_success_count=success_count,
             coverage_failure_count=failure_count,
@@ -3440,6 +3860,7 @@ def generate_atlas(
             last_fresh_diagnostics=last_fresh_diag,
             last_fresh_success=last_fresh_success,
             last_fresh_distance=last_fresh_distance,
+            **jacobian_payload,
             metadata_json=np.array(json.dumps(checkpoint_metadata)),
         )
         print(
@@ -3645,7 +4066,7 @@ def generate_atlas(
                         feature_scale,
                         circular_query_config,
                         config,
-                        continuation_limit=coverage.circular_bootstrap_per_round,
+                        continuation_limit=0,
                         seed_jacobian=atlas_jacobian,
                         seed_condition=atlas_condition,
                         q_scale=q_scale,
@@ -3703,8 +4124,50 @@ def generate_atlas(
                     )
                 )
 
-            # Build one acquisition pool.  Known feasible failures and successful
-            # circular/frontier continuations receive a strong priority bonus.
+            # First insert a large batch of known-feasible rows occupying new
+            # branch-aware endpoint cells.  This cheap bulk stage is intentionally
+            # much larger than the correction-driven acquisition stage.
+            capacity = max(0, coverage.max_atlas_rows - len(atlas_launch))
+            bulk_limit = min(coverage.bulk_fill_insertions_per_round, capacity)
+            if coverage.bulk_fill_enabled:
+                bulk_indices = _bulk_new_cell_indices(
+                    candidate_endpoint,
+                    candidate_diag,
+                    atlas_endpoint,
+                    atlas_diag,
+                    feature_scale,
+                    coverage.bulk_fill_cell_size,
+                    bulk_limit,
+                )
+            else:
+                bulk_indices = np.empty(0, dtype=int)
+            bulk_inserted = int(len(bulk_indices))
+            if bulk_inserted:
+                (
+                    atlas_launch,
+                    atlas_endpoint,
+                    atlas_diag,
+                    atlas_jacobian,
+                    atlas_condition,
+                    atlas_sigma_min,
+                ) = _append_atlas_rows(
+                    atlas_launch,
+                    atlas_endpoint,
+                    atlas_diag,
+                    atlas_jacobian,
+                    atlas_condition,
+                    atlas_sigma_min,
+                    candidate_launch[bulk_indices],
+                    candidate_endpoint[bulk_indices],
+                    candidate_diag[bulk_indices],
+                )
+                current_radius = np.concatenate(
+                    (current_radius, np.zeros(bulk_inserted, dtype=float))
+                )
+
+            # Build the smaller acquisition pool from unresolved known-feasible
+            # probes, remaining bulk candidates, and successful frontier rows.
+            # Circular targets are validation probes only and are never inserted.
             pool_launch: list[FloatArray] = []
             pool_endpoint: list[FloatArray] = []
             pool_diag: list[FloatArray] = []
@@ -3717,12 +4180,15 @@ def generate_atlas(
                 pool_diag.append(reservoir_diag[failed_reservoir])
                 pool_failed.append(np.ones(np.count_nonzero(failed_reservoir), dtype=bool))
 
-            candidate_failure = np.zeros(len(candidate_launch), dtype=bool)
-            candidate_failure[audit_indices] = ~audit_success
-            pool_launch.append(candidate_launch)
-            pool_endpoint.append(candidate_endpoint)
-            pool_diag.append(candidate_diag)
-            pool_failed.append(candidate_failure)
+            candidate_mask = np.ones(len(candidate_launch), dtype=bool)
+            candidate_mask[bulk_indices] = False
+            if np.any(candidate_mask):
+                candidate_failure = np.zeros(len(candidate_launch), dtype=bool)
+                candidate_failure[audit_indices] = ~audit_success
+                pool_launch.append(candidate_launch[candidate_mask])
+                pool_endpoint.append(candidate_endpoint[candidate_mask])
+                pool_diag.append(candidate_diag[candidate_mask])
+                pool_failed.append(candidate_failure[candidate_mask])
 
             if len(frontier_launch):
                 pool_launch.append(frontier_launch)
@@ -3730,32 +4196,22 @@ def generate_atlas(
                 pool_diag.append(frontier_diag)
                 pool_failed.append(np.ones(len(frontier_launch), dtype=bool))
 
-            circular_rows_launch: list[FloatArray] = []
-            circular_rows_endpoint: list[FloatArray] = []
-            circular_rows_diag: list[FloatArray] = []
-            for index in np.flatnonzero(circular_success_state):
-                launch = circular_corrected_state[int(index)]
-                if launch is None:
-                    continue
-                diag = _diagnostics_for_exact_launch(launch, config)
-                if diag is None:
-                    continue
-                circular_rows_launch.append(launch)
-                circular_rows_endpoint.append(circular_targets[int(index)])
-                circular_rows_diag.append(diag)
-            if circular_rows_launch:
-                pool_launch.append(np.vstack(circular_rows_launch))
-                pool_endpoint.append(np.vstack(circular_rows_endpoint))
-                pool_diag.append(np.vstack(circular_rows_diag))
-                pool_failed.append(np.ones(len(circular_rows_launch), dtype=bool))
-
-            acquisition_launch = np.vstack(pool_launch)
-            acquisition_endpoint = np.vstack(pool_endpoint)
-            acquisition_diag = np.vstack(pool_diag)
-            acquisition_failed = np.concatenate(pool_failed)
+            if pool_launch:
+                acquisition_launch = np.vstack(pool_launch)
+                acquisition_endpoint = np.vstack(pool_endpoint)
+                acquisition_diag = np.vstack(pool_diag)
+                acquisition_failed = np.concatenate(pool_failed)
+            else:
+                acquisition_launch = np.empty((0, 7), dtype=float)
+                acquisition_endpoint = np.empty((0, 7), dtype=float)
+                acquisition_diag = np.empty((0, 6), dtype=float)
+                acquisition_failed = np.empty(0, dtype=bool)
             capacity = max(0, coverage.max_atlas_rows - len(atlas_launch))
             insertion_limit = min(coverage.acquisition_insertions_per_round, capacity)
-            if coverage.acquisition_enabled:
+            if len(acquisition_launch) == 0 or insertion_limit <= 0:
+                acquisition_indices = np.empty(0, dtype=int)
+                acquisition_scores = np.empty(0, dtype=float)
+            elif coverage.acquisition_enabled:
                 acquisition_indices, acquisition_scores = _acquisition_select_indices(
                     acquisition_endpoint,
                     acquisition_diag,
@@ -3885,6 +4341,7 @@ def generate_atlas(
                 "jacobians_computed": int(jacobians_computed),
                 "frontier_attempts": int(frontier_attempts),
                 "frontier_solutions": int(len(frontier_launch)),
+                "bulk_cell_inserted": int(bulk_inserted),
                 "acquisition_pool_rows": int(len(acquisition_launch)),
                 "acquisition_inserted": int(inserted),
                 "acquisition_score_median": (
@@ -3912,7 +4369,7 @@ def generate_atlas(
                 f"strata={strata['passing_fraction']:.1%}; circular "
                 f"{circular_metrics['success_rate']:.1%}, "
                 f"p95={circular_metrics['p95_distance']:.3g}; "
-                f"inserted={inserted}, frontier={len(frontier_launch)}, "
+                f"bulk={bulk_inserted}, acquired={inserted}, frontier={len(frontier_launch)}, "
                 f"pruned={periodic_pruned}, atlas={len(atlas_launch):,}"
             )
 
@@ -4054,7 +4511,7 @@ def generate_atlas(
             feature_scale,
             circular_query_config,
             config,
-            continuation_limit=len(circular_targets),
+            continuation_limit=0,
             seed_jacobian=atlas_jacobian,
             seed_condition=atlas_condition,
             q_scale=q_scale,
@@ -4112,9 +4569,9 @@ def generate_atlas(
 
     radius, success_count, failure_count = coverage_cell_arrays()
     metadata = {
-        "format_version": 5,
+        "format_version": 6,
         "model": "planar-kepler-costate-free-normal-pmp",
-        "atlas_strategy": "cumulative-reservoir-jacobian-acquisition-frontier",
+        "atlas_strategy": "bulk-7d-shards-fast-cell-fill-jacobian-acquisition",
         "launch_columns": ["u0", "w0", "Ar0", "At0", "Jr0", "ell", "tau"],
         "endpoint_columns": [
             "u0",
@@ -4220,38 +4677,16 @@ def _generate_atlas_fixed(path: str | Path, config: AtlasConfig) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
 
     launches = _sample_launches(config)
-    cfg_dict = asdict(config)
-    accepted_launch: list[FloatArray] = []
-    accepted_endpoint: list[FloatArray] = []
-    accepted_diag: list[FloatArray] = []
+    launch_array, endpoint_array, diag_array = _generate_rows_from_launches(launches, config)
 
-    if config.workers == 1:
-        iterator = (_worker_generate((row, cfg_dict)) for row in launches)
-        for rows in iterator:
-            for l, e, d in rows:
-                accepted_launch.append(l)
-                accepted_endpoint.append(e)
-                accepted_diag.append(d)
-    else:
-        batch_size = max(16, min(512, config.n_samples // (config.workers * 8) or 16))
-        batches = [launches[i : i + batch_size] for i in range(0, len(launches), batch_size)]
-        with ProcessPoolExecutor(max_workers=config.workers) as pool:
-            futures = [pool.submit(_worker_generate_batch, (batch, cfg_dict)) for batch in batches]
-            for future in as_completed(futures):
-                for l, e, d in future.result():
-                    accepted_launch.append(l)
-                    accepted_endpoint.append(e)
-                    accepted_diag.append(d)
-
-    if not accepted_launch:
+    if len(launch_array) == 0:
         raise RuntimeError(
             "No atlas samples survived. Broaden the endpoint domain or reduce "
             "the sampled launch bounds."
         )
 
-    launch_array = np.vstack(accepted_launch)
-    endpoint_array = np.vstack(accepted_endpoint)
-    diagnostics_array = np.vstack(accepted_diag)
+    diagnostics_array = diag_array
+    cfg_dict = asdict(config)
     if config.feature_scale is None:
         feature_scale = _robust_feature_scale(endpoint_array)
     else:
@@ -4260,8 +4695,9 @@ def _generate_atlas_fixed(path: str | Path, config: AtlasConfig) -> Path:
             raise ValueError("feature_scale must contain seven positive values")
 
     metadata = {
-        "format_version": 1,
+        "format_version": 6,
         "model": "planar-kepler-costate-free-normal-pmp",
+        "atlas_strategy": "bulk-7d-shards-fixed-forward",
         "launch_columns": ["u0", "w0", "Ar0", "At0", "Jr0", "ell", "tau"],
         "endpoint_columns": [
             "u0",
@@ -4326,21 +4762,11 @@ class ExtremalAtlas:
                 if "coverage_failure_count" in data.files
                 else np.zeros(len(self.launch), dtype=np.int32)
             )
-            self.endpoint_jacobian = (
-                np.asarray(data["endpoint_jacobian"], dtype=np.float32)
-                if "endpoint_jacobian" in data.files
-                else np.full((len(self.launch), 5, 5), np.nan, dtype=np.float32)
-            )
-            self.jacobian_condition = (
-                np.asarray(data["jacobian_condition"], dtype=float)
-                if "jacobian_condition" in data.files
-                else np.full(len(self.launch), np.inf, dtype=float)
-            )
-            self.jacobian_sigma_min = (
-                np.asarray(data["jacobian_sigma_min"], dtype=float)
-                if "jacobian_sigma_min" in data.files
-                else np.zeros(len(self.launch), dtype=float)
-            )
+            (
+                self.endpoint_jacobian,
+                self.jacobian_condition,
+                self.jacobian_sigma_min,
+            ) = _load_jacobian_arrays(data, len(self.launch))
             self.metadata = json.loads(str(data["metadata_json"].item()))
         if self.launch.ndim != 2 or self.launch.shape[1] != 7:
             raise ValueError("invalid atlas launch array")
@@ -4854,7 +5280,7 @@ def validate_atlas_coverage(
                 atlas.feature_scale,
                 circular_query_config,
                 config,
-                continuation_limit=config.coverage.circular_bootstrap_per_round,
+                continuation_limit=0,
                 seed_jacobian=atlas.endpoint_jacobian,
                 seed_condition=atlas.jacobian_condition,
                 q_scale=atlas._q_scale,
