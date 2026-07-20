@@ -1,0 +1,284 @@
+{
+  "backend_config": {
+    "n_samples": 1,
+    "seed": 12345,
+    "workers": 8,
+    "worker_batch_size": 4096,
+    "generation_backend": "numba_rk4",
+    "u0_bounds": [
+      -1.5,
+      1.5
+    ],
+    "w0_bounds": [
+      -0.5,
+      2.0
+    ],
+    "ar0_bounds": [
+      -32.0,
+      32.0
+    ],
+    "at0_bounds": [
+      -32.0,
+      32.0
+    ],
+    "jr0_bounds": [
+      -128.0,
+      128.0
+    ],
+    "ell_bounds": [
+      -128.0,
+      128.0
+    ],
+    "tau_bounds": [
+      0.02,
+      250.0
+    ],
+    "rho_bounds": [
+      0.01,
+      100.0
+    ],
+    "kappa_bounds": [
+      0.1,
+      200000.0
+    ],
+    "theta_bounds": [
+      -6.911503837897546,
+      6.911503837897546
+    ],
+    "final_speed_max": 20.0,
+    "r_collision": 0.005,
+    "r_escape": 200.0,
+    "max_acceleration": 5000.0,
+    "rtol": 1e-07,
+    "atol": 1e-09,
+    "max_step": 0.05,
+    "diagnostic_points": 64,
+    "subarcs_per_trajectory": 8,
+    "subarc_min_fraction": 0.05,
+    "feature_scale": [
+      0.08,
+      0.08,
+      0.12,
+      0.18,
+      0.12,
+      0.12,
+      0.18
+    ],
+    "bulk_shards": [
+      {
+        "name": "short-near-ballistic",
+        "weight": 0.2,
+        "tau_bounds": [
+          0.02,
+          2.0
+        ],
+        "acceleration_sampling": "log_polar",
+        "acceleration_magnitude_bounds": [
+          1e-05,
+          3.0
+        ],
+        "jr_sampling": "signed_log",
+        "jr_magnitude_bounds": [
+          1e-05,
+          12.0
+        ],
+        "ell_sampling": "signed_log",
+        "ell_magnitude_bounds": [
+          1e-05,
+          12.0
+        ]
+      },
+      {
+        "name": "medium-low-control",
+        "weight": 0.25,
+        "tau_bounds": [
+          0.2,
+          30.0
+        ],
+        "acceleration_sampling": "log_polar",
+        "acceleration_magnitude_bounds": [
+          0.0001,
+          10.0
+        ],
+        "jr_sampling": "signed_log",
+        "jr_magnitude_bounds": [
+          0.0001,
+          40.0
+        ],
+        "ell_sampling": "signed_log",
+        "ell_magnitude_bounds": [
+          0.0001,
+          40.0
+        ]
+      },
+      {
+        "name": "medium-high-control",
+        "weight": 0.18,
+        "tau_bounds": [
+          0.05,
+          50.0
+        ],
+        "acceleration_sampling": "log_polar",
+        "acceleration_magnitude_bounds": [
+          0.02,
+          45.0
+        ],
+        "jr_sampling": "signed_log",
+        "jr_magnitude_bounds": [
+          0.02,
+          128.0
+        ],
+        "ell_sampling": "signed_log",
+        "ell_magnitude_bounds": [
+          0.02,
+          128.0
+        ]
+      },
+      {
+        "name": "long-low-control",
+        "weight": 0.22,
+        "tau_bounds": [
+          5.0,
+          250.0
+        ],
+        "acceleration_sampling": "log_polar",
+        "acceleration_magnitude_bounds": [
+          1e-05,
+          5.0
+        ],
+        "jr_sampling": "signed_log",
+        "jr_magnitude_bounds": [
+          1e-05,
+          20.0
+        ],
+        "ell_sampling": "signed_log",
+        "ell_magnitude_bounds": [
+          1e-05,
+          20.0
+        ]
+      },
+      {
+        "name": "linear-broad-corners",
+        "weight": 0.15,
+        "tau_bounds": [
+          0.02,
+          250.0
+        ],
+        "acceleration_sampling": "cartesian_uniform",
+        "jr_sampling": "linear",
+        "ell_sampling": "linear"
+      }
+    ]
+  },
+  "query_config": {
+    "method": "fast_newton",
+    "neighbours": 16,
+    "direct_seeds": 2,
+    "regression_neighbours": 0,
+    "max_nfev": 12,
+    "max_iterations": 3,
+    "max_seed_attempts": 2,
+    "wall_time_seconds": 0.5,
+    "line_search_steps": 2,
+    "step_limit": 0.25,
+    "regularization": 1e-08,
+    "robust_fallback": false,
+    "allow_continuation": false,
+    "rtol": 8e-10,
+    "atol": 8e-12,
+    "max_step": 0.04,
+    "trajectory_points": 500,
+    "r_collision": 0.005,
+    "r_escape": 200.0,
+    "max_acceleration": 5000.0,
+    "residual_scale": [
+      0.03,
+      0.08,
+      0.12,
+      0.12,
+      0.08
+    ],
+    "acceptance": [
+      2e-06,
+      3e-06,
+      3e-06,
+      3e-06,
+      3e-06
+    ],
+    "launch_bound_margin": 0.25
+  },
+  "chart": {
+    "quadratic_rank": 5,
+    "fit_neighbours": 192,
+    "minimum_fit_neighbours": 48,
+    "fit_max_normalized_distance": 5.0,
+    "fit_ridge": 0.0002,
+    "quadratic_ridge": 0.001,
+    "fit_trim_quantile": 0.88,
+    "exact_validation_points": 2,
+    "minimum_exact_successes": 1,
+    "local_target_success": 0.75,
+    "trust_safety_factor": 0.88,
+    "minimum_trust_radius": 0.02,
+    "maximum_trust_radius": 3.0,
+    "trust_endpoint_weight": 0.04,
+    "jacobian_regularization": 1e-08,
+    "maximum_jacobian_condition": 1000000000000.0,
+    "reject_if_no_local_coverage": false,
+    "coefficient_clip": 25.0,
+    "prediction_error_limit": 0.1,
+    "prediction_target_success": 0.9
+  },
+  "generator": {
+    "max_launch_attempts": 100000000,
+    "launch_batch_size": 32768,
+    "max_rounds": 10000,
+    "max_charts": 500000,
+    "initial_charts_per_round": 1024,
+    "charts_per_round": 1024,
+    "chart_build_batch": 64,
+    "chart_workers": 8,
+    "fit_pool_max_rows": 750000,
+    "fit_pool_cell_size": 0.08,
+    "candidate_cell_size": 0.045,
+    "candidate_min_separation": 0.1,
+    "candidate_audit_rows": 512,
+    "validation_reservoir_rows": 16384,
+    "validation_add_per_round": 512,
+    "validation_test_per_round": 2048,
+    "fresh_validation_rows": 512,
+    "target_success": 0.97,
+    "fresh_target_success": 0.94,
+    "target_p95_seconds": 0.5,
+    "patience": 5,
+    "minimum_rounds_before_stop": 10,
+    "checkpoint_enabled": true,
+    "checkpoint_every_chart_batches": 4,
+    "checkpoint_compressed": false,
+    "checkpoint_on_interrupt": true,
+    "seed": 20260720,
+    "refine_charts_per_round": 128,
+    "refine_after_round": 3,
+    "maximum_refinements_per_chart": 3,
+    "refinement_min_radius_gain": 1.15
+  },
+  "feature_scale": [
+    0.08,
+    0.08,
+    0.12,
+    0.18,
+    0.12,
+    0.12,
+    0.18
+  ],
+  "q_scale": [
+    16.0,
+    16.0,
+    64.0,
+    64.0,
+    2.5
+  ],
+  "routing_neighbours": 64,
+  "routing_max_ratio": 1.0,
+  "routing_winding_window": 1
+}
