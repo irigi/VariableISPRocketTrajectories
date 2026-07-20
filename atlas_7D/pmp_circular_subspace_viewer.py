@@ -1,43 +1,35 @@
 #!/usr/bin/env python3
-"""Interactive circular-to-circular viewer for ``pmp_extremal_atlas.py`` atlases.
+"""Interactive circular-query viewer for ``pmp_extremal_atlas.py`` atlases.
 
-The forward PMP atlas is an irregular seven-dimensional point cloud with rows
+The seven-dimensional forward atlas stores irregular endpoint rows
 
     endpoint = (u0, w0, log(rho), theta, ur_f, ut_f, log(kappa)).
 
-This viewer projects the rows near the circular-to-circular subspace
-
-    u0 = 0,  w0 = 1,  ur_f = 0,  ut_f = rho**(-1/2)
-
-onto a binned ``(rho, theta, kappa)`` catalogue.  Each heatmap panel fixes an
-unwrapped-angle bin and displays a ``(rho, kappa)`` slice.  The selected row in
-each cell is the shortest approximately circular extremal in that cell.
-
-Exact circular states form a measure-zero subset of the full atlas, so the
-projection uses configurable circularity tolerances.  If too few rows pass,
-the viewer can relax all tolerances uniformly and reports the effective factor.
+The heatmaps show any raw rows lying near the circular-to-circular subspace,
+but the complete configured ``(rho, theta, kappa)`` domain is displayed and
+every cell is clickable.  A grey cell means only that no raw approximately
+circular row was binned there; in corrected mode the viewer still constructs
+the exact circular boundary and runs the atlas retrieval/Newton solver.
 
 Mouse controls
 --------------
-* Left click: replay one trajectory for the clicked cell.
-* Right click: replay several branches/candidates for the clicked cell.
+* Left click: solve and replay the shortest converged branch.
+* Right click: request several distinct converged branches.
 
 Replay modes
 ------------
 ``corrected`` (default)
-    Use the clicked row only as a neighbourhood locator, then call
-    ``ExtremalAtlas.solve`` for the exact circular boundary at that row's
-    ``(rho, theta, kappa)``.  This is slower, but the displayed endpoint is
-    circular to the solver tolerance.
+    Solve the exact clicked circular boundary.  The viewer tries nearby raw
+    rows explicitly, the atlas local-regression/nearest-neighbour solver, and a
+    gradual endpoint homotopy fallback.
 
 ``raw``
-    Reintegrate the stored forward-atlas launch directly.  This is immediate,
-    but the endpoint is only approximately circular according to the filter.
+    Reintegrate a stored approximately circular row.  Raw mode is available
+    only in occupied projection bins and is intended for diagnostics.
 
 The corrected replay uses canonical dimensionless physical values
-``mu=1, r0=1, mi=2, md=1, P=kappa``.  For these choices the rocket similarity
-parameter is exactly the requested ``kappa`` and all plotted quantities remain
-dimensionless.
+``mu=1, r0=1, mi=2, md=1, P=kappa``.  With these choices the rocket similarity
+parameter equals the clicked ``kappa``.
 """
 
 from __future__ import annotations
@@ -57,6 +49,7 @@ import numpy as np
 from matplotlib.colors import LogNorm, Normalize
 from numpy.typing import NDArray
 from scipy.optimize import least_squares
+from scipy.spatial import cKDTree
 
 
 FloatArray = NDArray[np.float64]
@@ -64,7 +57,10 @@ IntArray = NDArray[np.int64]
 
 
 METRIC_LABELS = {
-    "tau": "Dimensionless flight time $\\tau_f$",
+    "nearest_distance": "Normalized distance to nearest atlas seed",
+    "coverage_ratio": "Distance / validated convergence radius",
+    "validated_radius": "Nearest seed validated convergence radius",
+    "tau": r"Dimensionless flight time $\tau_f$",
     "circular_error": "Normalized circularity error",
     "count": "Approximately circular atlas rows per bin",
     "minimum_radius": "Minimum dimensionless radius",
@@ -85,6 +81,9 @@ class ForwardAtlas:
     endpoint: FloatArray
     diagnostics: FloatArray
     feature_scale: FloatArray
+    coverage_radius: FloatArray
+    coverage_success_count: NDArray[np.int32]
+    coverage_failure_count: NDArray[np.int32]
     metadata: dict
 
     @property
@@ -194,6 +193,21 @@ def load_forward_atlas(path: Path | str) -> ForwardAtlas:
         endpoint = np.asarray(bundle["endpoint"], dtype=np.float64)
         diagnostics = np.asarray(bundle["diagnostics"], dtype=np.float64)
         feature_scale = np.asarray(bundle["feature_scale"], dtype=np.float64)
+        coverage_radius = (
+            np.asarray(bundle["coverage_radius"], dtype=np.float64)
+            if "coverage_radius" in bundle.files
+            else np.zeros(launch.shape[0], dtype=np.float64)
+        )
+        coverage_success_count = (
+            np.asarray(bundle["coverage_success_count"], dtype=np.int32)
+            if "coverage_success_count" in bundle.files
+            else np.zeros(launch.shape[0], dtype=np.int32)
+        )
+        coverage_failure_count = (
+            np.asarray(bundle["coverage_failure_count"], dtype=np.int32)
+            if "coverage_failure_count" in bundle.files
+            else np.zeros(launch.shape[0], dtype=np.int32)
+        )
         try:
             metadata = json.loads(str(bundle["metadata_json"].item()))
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -207,6 +221,13 @@ def load_forward_atlas(path: Path | str) -> ForwardAtlas:
         raise ViewerError(f"diagnostics must have shape (N,>=6); found {diagnostics.shape}")
     if feature_scale.shape != (7,) or np.any(feature_scale <= 0.0):
         raise ViewerError("feature_scale must contain seven positive values")
+    for name, value in (
+        ("coverage_radius", coverage_radius),
+        ("coverage_success_count", coverage_success_count),
+        ("coverage_failure_count", coverage_failure_count),
+    ):
+        if value.shape != (launch.shape[0],):
+            raise ViewerError(f"{name} must have shape (N,); found {value.shape}")
     if not np.all(np.isfinite(launch)) or not np.all(np.isfinite(endpoint)):
         raise ViewerError("Atlas contains non-finite launch or endpoint values")
 
@@ -216,6 +237,9 @@ def load_forward_atlas(path: Path | str) -> ForwardAtlas:
         endpoint=endpoint,
         diagnostics=diagnostics,
         feature_scale=feature_scale,
+        coverage_radius=coverage_radius,
+        coverage_success_count=coverage_success_count,
+        coverage_failure_count=coverage_failure_count,
         metadata=metadata,
     )
 
@@ -276,9 +300,11 @@ def select_circular_rows(
 
     indices = np.flatnonzero(mask).astype(np.int64)
     if indices.size == 0:
-        raise ViewerError(
-            "No atlas rows are close enough to circular at both ends. "
-            "Increase --max-relax, use wider tolerances, or generate a denser atlas."
+        return CircularSelection(
+            row_indices=np.empty(0, dtype=np.int64),
+            error=np.empty(0, dtype=float),
+            relax_factor=float(factor),
+            tolerances=tolerances,
         )
     scaled_selected = np.vstack([component[indices] for component in components]).T / (base * factor)
     # RMS makes 1 roughly the tolerance boundary while retaining a smooth score.
@@ -336,7 +362,7 @@ def resolve_bounds(
 ) -> tuple[float, float]:
     low_arg, high_arg = explicit
     metadata = _metadata_bounds(atlas, metadata_name)
-    selected = values[selection.row_indices]
+    selected = values[selection.row_indices] if selection.row_indices.size else values
     low = float(low_arg) if low_arg is not None else (metadata[0] if metadata else float(np.min(selected)))
     high = float(high_arg) if high_arg is not None else (metadata[1] if metadata else float(np.max(selected)))
     if positive and low <= 0.0:
@@ -375,7 +401,16 @@ def build_projection(
     k[kappa == kappa_edges[-1]] = nk - 1
     inside = (i >= 0) & (i < nr) & (j >= 0) & (j < nt) & (k >= 0) & (k < nk)
     if not np.any(inside):
-        raise ViewerError("No approximately circular rows lie inside the requested catalogue bounds")
+        return Projection(
+            rho_edges=rho_edges,
+            theta_edges=theta_edges,
+            kappa_edges=kappa_edges,
+            selected_row=np.full((nr, nt, nk), -1, dtype=np.int64),
+            count=np.zeros((nr, nt, nk), dtype=np.int32),
+            selected_error=np.full((nr, nt, nk), np.nan, dtype=float),
+            cell_rows={},
+            selection=selection,
+        )
 
     rows = indices[inside]
     errors = selection.error[inside]
@@ -424,7 +459,57 @@ def build_projection(
     )
 
 
+def _coverage_metric_cube(
+    atlas: ForwardAtlas,
+    projection: Projection,
+) -> tuple[FloatArray, FloatArray, FloatArray]:
+    """Evaluate nearest-seed convergence geometry on every circular grid cell."""
+    nr, nt, nk = projection.shape
+    distance_cube = np.empty((nr, nt, nk), dtype=float)
+    radius_cube = np.empty((nr, nt, nk), dtype=float)
+    ratio_cube = np.full((nr, nt, nk), np.nan, dtype=float)
+
+    rho_centres = np.sqrt(projection.rho_edges[:-1] * projection.rho_edges[1:])
+    theta_centres = 0.5 * (projection.theta_edges[:-1] + projection.theta_edges[1:])
+    kappa_centres = np.sqrt(projection.kappa_edges[:-1] * projection.kappa_edges[1:])
+    rr, kk = np.meshgrid(rho_centres, kappa_centres, indexing="ij")
+    tree = cKDTree(atlas.endpoint / atlas.feature_scale)
+
+    for j, theta in enumerate(theta_centres):
+        targets = np.column_stack(
+            (
+                np.zeros(rr.size),
+                np.ones(rr.size),
+                np.log(rr.ravel()),
+                np.full(rr.size, theta),
+                np.zeros(rr.size),
+                rr.ravel() ** -0.5,
+                np.log(kk.ravel()),
+            )
+        )
+        distances, indices = tree.query(targets / atlas.feature_scale, k=1)
+        distances = np.asarray(distances, dtype=float).reshape(nr, nk)
+        indices = np.asarray(indices, dtype=int).reshape(nr, nk)
+        radii = atlas.coverage_radius[indices]
+        distance_cube[:, j, :] = distances
+        radius_cube[:, j, :] = radii
+        valid = radii > 0.0
+        ratio = np.full((nr, nk), np.nan, dtype=float)
+        ratio[valid] = distances[valid] / radii[valid]
+        ratio_cube[:, j, :] = ratio
+    return distance_cube, radius_cube, ratio_cube
+
+
 def projection_metric(atlas: ForwardAtlas, projection: Projection, metric: str) -> FloatArray:
+    if metric in {"nearest_distance", "validated_radius", "coverage_ratio"}:
+        distance, radius, ratio = _coverage_metric_cube(atlas, projection)
+        if metric == "nearest_distance":
+            return distance
+        if metric == "validated_radius":
+            radius[radius <= 0.0] = np.nan
+            return radius
+        return ratio
+
     if metric == "count":
         out = projection.count.astype(float)
         out[out <= 0.0] = np.nan
@@ -457,7 +542,10 @@ def metric_norm(values: FloatArray, metric: str):
         return Normalize(vmin=0.0, vmax=1.0)
     low = float(np.min(finite))
     high = float(np.max(finite))
-    if metric in {"tau", "count", "minimum_radius", "maximum_acceleration", "normal_constant"}:
+    if metric in {
+        "nearest_distance", "coverage_ratio", "validated_radius", "tau", "count",
+        "minimum_radius", "maximum_acceleration", "normal_constant"
+    }:
         positive = finite[finite > 0.0]
         if positive.size and high / float(np.min(positive)) > 100.0:
             return LogNorm(vmin=float(np.min(positive)), vmax=high)
@@ -468,14 +556,17 @@ def metric_norm(values: FloatArray, metric: str):
 
 
 def infer_theta_panels(projection: Projection, panel_count: int) -> IntArray:
-    occupancy = np.sum(projection.count, axis=(0, 2))
-    populated = np.flatnonzero(occupancy > 0)
-    if populated.size == 0:
-        raise ViewerError("No populated theta bins")
-    if populated.size <= panel_count:
-        return populated.astype(np.int64)
-    positions = np.rint(np.linspace(0, populated.size - 1, panel_count)).astype(int)
-    return np.unique(populated[positions]).astype(np.int64)
+    """Choose panels across the complete requested theta domain.
+
+    Earlier versions displayed only theta bins already containing approximately
+    circular raw rows.  That hid unsupported regions and made the catalogue a
+    projection viewer rather than a query/coverage viewer.
+    """
+    count = projection.theta_edges.size - 1
+    if count <= panel_count:
+        return np.arange(count, dtype=np.int64)
+    positions = np.rint(np.linspace(0, count - 1, panel_count)).astype(int)
+    return np.unique(positions).astype(np.int64)
 
 
 def cell_index(edges: FloatArray, value: float) -> Optional[int]:
@@ -605,23 +696,49 @@ def _explicit_corrected_replay(
     )
 
 
-def corrected_replays(
+def _nearest_seed_rows_for_target(
+    solver_atlas,
+    atlas: ForwardAtlas,
+    rho: float,
+    theta: float,
+    kappa: float,
+    count: int,
+) -> IntArray:
+    target = np.array(
+        [0.0, 1.0, math.log(rho), theta, 0.0, rho ** -0.5, math.log(kappa)],
+        dtype=float,
+    )
+    if hasattr(solver_atlas, "_nearest_indices"):
+        try:
+            return np.asarray(solver_atlas._nearest_indices(target, count), dtype=np.int64)
+        except Exception:
+            pass
+    from scipy.spatial import cKDTree
+
+    tree = cKDTree(atlas.endpoint / atlas.feature_scale)
+    _distance, index = tree.query(target / atlas.feature_scale, k=min(count, atlas.rows))
+    return np.atleast_1d(index).astype(np.int64)
+
+
+def corrected_replays_target(
     solver: ModuleType,
     solver_atlas,
     atlas: ForwardAtlas,
-    row: int,
     *,
+    rho: float,
+    theta: float,
+    kappa: float,
     seed_rows: Sequence[int],
     samples: int,
     all_branches: bool,
     max_branches: int,
 ) -> list[Replay]:
-    rho = float(atlas.rho[row])
-    theta = float(atlas.theta[row])
-    kappa = float(atlas.kappa[row])
+    """Solve an exact circular query at an arbitrary clicked target."""
+    if not (rho > 0.0 and kappa > 0.0):
+        raise ViewerError("rho and kappa must be positive")
 
-    # First use the clicked cell's rows as explicit branch seeds.  This is more
-    # reliable than a fresh global nearest-neighbour lookup for sparse atlases.
+    # Explicit nearby seeds are tried first, including rows outside the clicked
+    # projection bin.  This makes empty cells fully queryable.
     replays: list[Replay] = []
     for seed_row in seed_rows:
         replay = _explicit_corrected_replay(
@@ -652,7 +769,8 @@ def corrected_replays(
         if max_branches > 0 and len(replays) >= max_branches:
             break
 
-    # Fall back to the solver's local inverse/nearest-neighbour branch search.
+    # The public atlas query performs local regression, several direct seeds,
+    # and exact Newton/least-squares correction for the requested target.
     if not replays or (all_branches and (max_branches <= 0 or len(replays) < max_branches)):
         principal, revolutions = theta_revolution_decomposition(theta)
         initial = solver.circular_state(1.0, 1.0, angle=0.0, prograde=True)
@@ -702,11 +820,104 @@ def corrected_replays(
             if max_branches > 0 and len(replays) >= max_branches:
                 break
 
-    if not replays:
-        raise ViewerError(
-            "No exact circular correction converged from the clicked cell. "
-            "Try --replay-mode raw, increase atlas density, or relax the catalogue filter."
+    # Final fallback: continue gradually from nearby endpoint/launch pairs to
+    # the exact clicked circular target.  This is more expensive than one
+    # Newton solve but substantially enlarges the practical convergence basin.
+    if not replays and hasattr(solver, "_continuation_correct_target"):
+        target = np.array(
+            [0.0, 1.0, math.log(rho), theta, 0.0, rho ** -0.5, math.log(kappa)],
+            dtype=float,
         )
+        config = query_config_from_metadata(solver, atlas, samples)
+        try:
+            bounds = solver._launch_correction_bounds(
+                atlas.launch, config.launch_bound_margin
+            )
+            continuation_rows = _nearest_seed_rows_for_target(
+                solver_atlas, atlas, rho, theta, kappa, max(8, max_branches)
+            )
+            for seed_row in continuation_rows:
+                launch, _nfev = solver._continuation_correct_target(
+                    atlas.launch[int(seed_row)],
+                    atlas.endpoint[int(seed_row)],
+                    target,
+                    config,
+                    bounds,
+                    12,
+                )
+                if launch is None:
+                    continue
+                t_eval = np.linspace(0.0, float(launch[6]), max(32, int(samples)))
+                dense, normal_constant, status = solver._integrate_launch(
+                    launch,
+                    rtol=config.rtol,
+                    atol=config.atol,
+                    max_step=config.max_step,
+                    r_collision=config.r_collision,
+                    r_escape=config.r_escape,
+                    max_acceleration=config.max_acceleration,
+                    t_eval=t_eval,
+                )
+                if dense is None or status != "ok" or normal_constant <= 0.0:
+                    continue
+                y = np.asarray(dense.y, dtype=float)
+                radius, theta_end, ur, ut, resource = solver._endpoint_from_state(y[:, -1])
+                raw = np.array(
+                    [
+                        math.log(radius) - math.log(rho),
+                        theta_end - theta,
+                        ur,
+                        ut - rho ** -0.5,
+                        math.log(resource) - math.log(kappa),
+                    ],
+                    dtype=float,
+                )
+                if np.any(np.abs(raw) > np.asarray(config.acceptance, dtype=float)):
+                    continue
+                replays.append(
+                    Replay(
+                        label=f"continued seed row {int(seed_row)}",
+                        tau_f=float(launch[6]),
+                        time=np.asarray(dense.t, dtype=float),
+                        position=y[0:2, :].T,
+                        velocity=y[2:4, :].T,
+                        acceleration=y[4:6, :].T,
+                        resource_fraction=np.asarray(y[8, :] / kappa, dtype=float),
+                        residual_text=f"continued residual={np.linalg.norm(raw):.2e}",
+                        launch=np.asarray(launch, dtype=float),
+                    )
+                )
+                if not all_branches or (max_branches > 0 and len(replays) >= max_branches):
+                    break
+        except Exception:
+            pass
+
+    if not replays:
+        certificate_text = ""
+        try:
+            principal, revolutions = theta_revolution_decomposition(theta)
+            initial = solver.circular_state(1.0, 1.0, angle=0.0, prograde=True)
+            final = solver.circular_state(rho, 1.0, angle=principal, prograde=True)
+            capability = solver.RocketCapability(
+                useful_power=kappa,
+                initial_mass=2.0,
+                dry_mass=1.0,
+                mu=1.0,
+            )
+            certificate = solver_atlas.coverage_certificate(
+                initial, final, capability, revolutions
+            )
+            certificate_text = (
+                f" Nearest normalized distance={certificate['distance']:.3g}; "
+                f"validated radius={certificate['validated_radius']:.3g}; "
+                f"inside={certificate['inside_validated_cell']}."
+            )
+        except Exception:
+            pass
+        raise ViewerError(
+            "No exact circular branch converged for the clicked target." + certificate_text
+        )
+
     replays.sort(key=lambda replay: replay.tau_f)
     if not all_branches:
         return replays[:1]
@@ -899,14 +1110,14 @@ def make_catalogue(
     fig.suptitle(
         f"Circular-to-circular projection of {atlas.path.name} — {METRIC_LABELS[metric]}\n"
         f"selected rows={selected_rows:,}, occupied bins={occupied:,}/{total_bins:,}, "
-        f"tolerance relaxation={factor:.3g}×; left click: one, right click: several",
+        f"tolerance relaxation={factor:.3g}×; every cell queryable; left: one, right: several",
         fontsize=12,
     )
     fig.canvas.manager.set_window_title(f"PMP circular subspace: {atlas.path.name}")
     status = fig.text(
         0.01,
         0.005,
-        f"Replay mode: {replay_mode}. Click an occupied bin.",
+        f"Replay mode: {replay_mode}. Every displayed cell is queryable; grey means no raw circular sample.",
         ha="left",
         va="bottom",
         fontsize=9,
@@ -925,21 +1136,29 @@ def make_catalogue(
             status.set_text("Clicked outside catalogue bounds.")
             fig.canvas.draw_idle()
             return
-        row = int(projection.selected_row[i, j, k])
-        if row < 0:
-            status.set_text(f"Bin ({i},{j},{k}) contains no approximately circular rows.")
-            fig.canvas.draw_idle()
-            return
 
+        # Use the exact clicked rho/kappa and the panel's theta-bin centre.  The
+        # target no longer depends on a raw approximately circular atlas row.
+        rho = float(event.xdata)
+        kappa = float(event.ydata)
+        theta = float(0.5 * (projection.theta_edges[j] + projection.theta_edges[j + 1]))
+        row = int(projection.selected_row[i, j, k])
         cell = projection.flat_cell(i, j, k)
-        candidates = projection.cell_rows.get(cell, np.array([row], dtype=np.int64))
+        cell_candidates = projection.cell_rows.get(cell, np.empty(0, dtype=np.int64))
+        nearest = _nearest_seed_rows_for_target(
+            solver_atlas,
+            atlas,
+            rho,
+            theta,
+            kappa,
+            max(16, 4 * max_replay_branches),
+        )
+        seed_rows = np.unique(np.concatenate((cell_candidates, nearest))).astype(np.int64)
         all_requested = event.button == 3
-        chosen_rows = candidates[:max_replay_branches] if all_requested else np.array([row], dtype=np.int64)
-        rho = float(atlas.rho[row])
-        theta = float(atlas.theta[row])
-        kappa = float(atlas.kappa[row])
+
+        raw_note = "occupied raw bin" if row >= 0 else "empty raw bin"
         status.set_text(
-            f"Replaying bin ({i},{j},{k}), row {row}, mode={replay_mode}; "
+            f"Solving exact cell ({i},{j},{k}), {raw_note}, mode={replay_mode}; "
             f"rho={rho:.6g}, theta={math.degrees(theta):.2f}°, kappa={kappa:.6g}"
         )
         print(status.get_text())
@@ -947,23 +1166,31 @@ def make_catalogue(
 
         try:
             if replay_mode == "corrected":
-                replays = corrected_replays(
+                replays = corrected_replays_target(
                     solver,
                     solver_atlas,
                     atlas,
-                    row,
-                    seed_rows=[int(value) for value in chosen_rows],
+                    rho=rho,
+                    theta=theta,
+                    kappa=kappa,
+                    seed_rows=[int(value) for value in seed_rows],
                     samples=samples,
                     all_branches=all_requested,
                     max_branches=max_replay_branches,
                 )
             else:
+                if row < 0:
+                    raise ViewerError(
+                        "Raw replay requires a stored approximately circular row. "
+                        "Use --replay-mode corrected for empty cells."
+                    )
+                chosen = cell_candidates[:max_replay_branches] if all_requested else np.array([row])
                 replays = [
                     raw_replay(solver, atlas, int(candidate), samples=samples)
-                    for candidate in chosen_rows
+                    for candidate in chosen
                 ]
         except Exception as exc:
-            message = f"Replay failed for bin ({i},{j},{k}): {exc}"
+            message = f"Replay failed for cell ({i},{j},{k}): {exc}"
             status.set_text(message)
             print(message)
             fig.canvas.draw_idle()
@@ -1025,7 +1252,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--metric",
         choices=tuple(METRIC_LABELS),
-        default="tau",
+        default="nearest_distance",
     )
     parser.add_argument("--replay-mode", choices=("corrected", "raw"), default="corrected")
     parser.add_argument("--samples", type=int, default=1200)
@@ -1104,6 +1331,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     selected = selection.row_indices
     print(f"Loaded {atlas.path}")
     print(f"Forward atlas rows: {atlas.rows:,}")
+    if "coverage_converged" in atlas.metadata:
+        print(f"Coverage certificate converged: {atlas.metadata.get('coverage_converged')}")
+        if "coverage_final_general_success_rate" in atlas.metadata:
+            print(
+                "Final certified rates: "
+                f"general={atlas.metadata.get('coverage_final_general_success_rate', float('nan')):.3%}, "
+                f"circular={atlas.metadata.get('coverage_final_circular_success_rate', float('nan')):.3%}, "
+                f"p95={atlas.metadata.get('coverage_final_p95_nearest_distance', float('nan')):.3g}, "
+                f"p99={atlas.metadata.get('coverage_final_p99_nearest_distance', float('nan')):.3g}"
+            )
     print(f"Approximately circular rows: {selected.size:,}")
     print(f"Tolerance relaxation factor: {selection.relax_factor:.6g}x")
     print(
@@ -1113,13 +1350,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         f"|ur_f|/v_c<={args.final_radial_relative_tol * selection.relax_factor:.4g}, "
         f"|ut_f/v_c-1|<={args.final_tangential_relative_tol * selection.relax_factor:.4g}"
     )
-    print(
-        "Median selected deviations: "
-        f"u0={np.median(components[0][selected]):.3g}, "
-        f"w0={np.median(components[1][selected]):.3g}, "
-        f"ur_f/vc={np.median(components[2][selected]):.3g}, "
-        f"ut_f/vc={np.median(components[3][selected]):.3g}"
-    )
+    if selected.size:
+        print(
+            "Median selected deviations: "
+            f"u0={np.median(components[0][selected]):.3g}, "
+            f"w0={np.median(components[1][selected]):.3g}, "
+            f"ur_f/vc={np.median(components[2][selected]):.3g}, "
+            f"ut_f/vc={np.median(components[3][selected]):.3g}"
+        )
+    else:
+        print("Median selected deviations: no raw approximately circular rows")
     print(f"Occupied projection bins: {np.count_nonzero(projection.selected_row >= 0):,}")
 
     fig = make_catalogue(

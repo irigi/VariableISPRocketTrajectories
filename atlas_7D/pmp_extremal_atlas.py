@@ -111,25 +111,69 @@ class RocketCapability:
 
 @dataclass
 class CoverageConfig:
-    """Adaptive coverage and verified pruning settings.
+    """Adaptive endpoint-space coverage, targeted slices, and pruning.
 
-    Coverage is measured on independent *feasible* holdout extremals generated
-    from the same launch domain.  A holdout is covered only when the normal
-    query-time shooting correction converges without using the holdout itself.
+    The generator uses three complementary checks:
+
+    * a persistent, spatially diverse feasible holdout bank;
+    * a fresh feasible audit batch on every round;
+    * optional exact circular-to-circular probes sampled directly in
+      ``(log(rho), theta, log(kappa))``.
+
+    Coverage is accepted only when exact shooting correction succeeds and the
+    nearest-seed distances are locally small.  Failed feasible holdouts are
+    inserted as seeds; successful targeted circular corrections are also
+    inserted so lower-dimensional mission families are represented explicitly.
     """
 
     enabled: bool = True
 
-    # Fraction of launch attempts used to create the initial seed cloud.  The
-    # rest are consumed in independent validation/adaptation batches.
+    # Launch budget allocation.
     initial_fraction: float = 0.25
-    batch_launches: int = 4096
-    validation_rows: int = 512
-    validation_cell_size: float = 0.20
-    target_success: float = 0.98
-    patience: int = 2
+    persistent_validation_launches: int = 16_384
+    batch_launches: int = 8_192
+
+    # Fresh audit size and cumulative feasible validation reservoir.  The
+    # reservoir is persistent across rounds; fresh audits remain independent.
+    validation_rows: int = 1_024
+    validation_reservoir_rows: int = 8_192
+    validation_retest_rows_per_round: int = 2_048
+    validation_cell_size: float = 0.14
+    validation_reservoir_cell_size: float = 0.10
+    minimum_launch_fraction_before_stop: float = 0.50
+
+    # Global and local stopping criteria.
+    target_success: float = 0.99
+    fresh_target_success: float = 0.90
+    fresh_maximum_p95_distance: float = 3.0
+    target_stratum_success: float = 0.90
+    minimum_stratum_rows: int = 6
+    minimum_strata_fraction: float = 0.95
+    maximum_p95_distance: float = 1.5
+    maximum_p99_distance: float = 2.5
+    patience: int = 3
     max_rounds: int = 32
-    minimum_validation_rows: int = 128
+    minimum_validation_rows: int = 512
+
+    # Coarse output strata: log(rho), theta, log(kappa).  Branch labels
+    # (radial turns and winding) are appended automatically.
+    strata_bins: tuple[int, int, int] = (4, 8, 4)
+
+    # Exact circular-to-circular validation family.  These probes are sampled
+    # directly in the requested output domain, not from the random forward
+    # distribution.  Continuation is attempted when a direct Newton correction
+    # fails.  Set enabled=False when this mission family is irrelevant.
+    circular_enabled: bool = True
+    circular_validation_rows: int = 128
+    circular_batch_rows: int = 16
+    circular_bootstrap_per_round: int = 4
+    circular_target_success: float = 0.90
+    circular_maximum_p95_distance: float = 2.0
+    circular_homotopy_steps: int = 8
+    circular_nearest_seeds: int = 4
+    circular_max_nfev: int = 20
+    circular_insertions_per_round: int = 64
+    circular_validation_seed: int = 719_231
 
     # Fast correction used during coverage testing.
     neighbours: int = 24
@@ -137,46 +181,178 @@ class CoverageConfig:
     regression_neighbours: int = 16
     max_nfev: int = 35
 
-    # Initial cloud thinning and adaptive insertion. Distances are measured in
-    # endpoint coordinates divided by feature_scale.
-    initial_cell_size: float = 0.30
-    insertion_cell_size: float = 0.12
-    insert_failures_per_round: int = 512
-    max_atlas_rows: int = 250_000
+    # Initial cloud thinning and acquisition-driven insertion.  Distances are
+    # measured in endpoint coordinates divided by feature_scale unless a local
+    # endpoint Jacobian is available.
+    initial_cell_size: float = 0.24
+    insertion_cell_size: float = 0.08
+    max_atlas_rows: int = 350_000
+
+    acquisition_enabled: bool = True
+    acquisition_insertions_per_round: int = 1_536
+    acquisition_min_separation: float = 0.07
+    acquisition_candidate_limit: int = 30_000
+    acquisition_distance_weight: float = 1.0
+    acquisition_radius_weight: float = 1.5
+    acquisition_failure_weight: float = 4.0
+    acquisition_cell_deficit_weight: float = 2.0
+    acquisition_branch_weight: float = 0.75
+    acquisition_condition_weight: float = 0.35
+
+    # Backward-compatible caps retained as sub-budgets in the acquisition pool.
+    exploration_insertions_per_round: int = 512
+    insert_failures_per_round: int = 1024
+
+    # Lazy exact endpoint Jacobians.  Missing Jacobians are computed only for
+    # seeds used by validation, acquisition, frontier expansion, or querying.
+    jacobian_enabled: bool = True
+    jacobian_initial_rows: int = 2_048
+    jacobian_compute_per_round: int = 2_048
+    jacobian_shortlist: int = 64
+    jacobian_regularization: float = 1.0e-7
+    jacobian_condition_limit: float = 1.0e10
+
+    # Direct expansion from the boundary of empirical convergence cells.
+    frontier_enabled: bool = True
+    frontier_seeds_per_round: int = 64
+    frontier_directions_per_seed: int = 2
+    frontier_insertions_per_round: int = 128
+    frontier_step_factor: float = 1.25
+    frontier_min_step: float = 0.20
+    frontier_max_step: float = 1.50
+    frontier_max_nfev: int = 30
+
+    # Adaptive endpoint partition used to emphasize poorly covered leaves.
+    adaptive_partition_enabled: bool = True
+    adaptive_max_depth: int = 5
+    adaptive_min_points: int = 24
+    adaptive_split_failure_rate: float = 0.12
+    adaptive_split_p95_distance: float = 1.5
 
     # Verified redundancy pruning. A candidate is removed only if its exact
     # endpoint can be recovered from other active seeds.
     prune_enabled: bool = True
-    prune_distance: float = 0.08
-    prune_max_checks: int = 4000
-    prune_max_nfev: int = 25
+    prune_every_rounds: int = 4
+    prune_distance: float = 0.06
+    prune_max_checks: int = 5000
+    prune_max_nfev: int = 30
+    prune_probe_limit: int = 24
+    prune_protect_condition: float = 1.0e8
+    prune_min_branch_rows: int = 3
 
-    # Deterministic validation-row selection.
-    validation_seed: int = 918273
+    # Deterministic feasible validation-row selection.
+    validation_seed: int = 918_273
+
+    # Atomic progress checkpoints.  Each checkpoint is a complete, queryable
+    # atlas NPZ.  Generation state is included so a later --resume run can
+    # continue from the next unused Sobol launch rather than restarting.
+    checkpoint_enabled: bool = True
+    checkpoint_every_rounds: int = 1
+    checkpoint_bootstrap_launches: int = 2_048
+    checkpoint_initial: bool = True
+    checkpoint_on_interrupt: bool = True
+    checkpoint_compressed: bool = True
 
     def validate(self) -> None:
         if not (0.0 < self.initial_fraction < 1.0):
             raise ValueError("coverage.initial_fraction must lie in (0,1)")
-        if self.batch_launches <= 0 or self.validation_rows <= 0:
-            raise ValueError("coverage batch sizes must be positive")
-        if self.validation_cell_size <= 0.0:
-            raise ValueError("coverage.validation_cell_size must be positive")
-        if not (0.0 < self.target_success <= 1.0):
-            raise ValueError("coverage.target_success must lie in (0,1]")
+        if self.persistent_validation_launches <= 0 or self.batch_launches <= 0:
+            raise ValueError("coverage launch batch sizes must be positive")
+        if (
+            self.validation_rows <= 0
+            or self.validation_reservoir_rows <= 0
+            or self.validation_retest_rows_per_round <= 0
+            or self.validation_cell_size <= 0.0
+            or self.validation_reservoir_cell_size <= 0.0
+        ):
+            raise ValueError("coverage validation settings must be positive")
+        if not (0.0 <= self.minimum_launch_fraction_before_stop <= 1.0):
+            raise ValueError("coverage.minimum_launch_fraction_before_stop must lie in [0,1]")
+        for name, value in (
+            ("target_success", self.target_success),
+            ("fresh_target_success", self.fresh_target_success),
+            ("target_stratum_success", self.target_stratum_success),
+            ("minimum_strata_fraction", self.minimum_strata_fraction),
+            ("circular_target_success", self.circular_target_success),
+        ):
+            if not (0.0 < value <= 1.0):
+                raise ValueError(f"coverage.{name} must lie in (0,1]")
+        if self.minimum_stratum_rows <= 0 or self.minimum_validation_rows <= 0:
+            raise ValueError("coverage minimum sample counts must be positive")
+        if (
+            self.maximum_p95_distance <= 0.0
+            or self.maximum_p99_distance <= 0.0
+            or self.fresh_maximum_p95_distance <= 0.0
+        ):
+            raise ValueError("coverage distance thresholds must be positive")
+        if self.maximum_p99_distance < self.maximum_p95_distance:
+            raise ValueError("coverage.maximum_p99_distance must be >= maximum_p95_distance")
         if self.patience <= 0 or self.max_rounds <= 0:
             raise ValueError("coverage patience and max_rounds must be positive")
-        if self.minimum_validation_rows <= 0:
-            raise ValueError("coverage.minimum_validation_rows must be positive")
+        if len(self.strata_bins) != 3 or any(int(v) <= 0 for v in self.strata_bins):
+            raise ValueError("coverage.strata_bins must contain three positive integers")
+        if self.circular_validation_rows <= 0 or self.circular_homotopy_steps <= 0:
+            raise ValueError("coverage circular validation settings must be positive")
+        if self.circular_batch_rows <= 0 or self.circular_bootstrap_per_round < 0:
+            raise ValueError("coverage circular batch settings are invalid")
+        if self.circular_nearest_seeds <= 0 or self.circular_insertions_per_round < 0:
+            raise ValueError("coverage circular insertion settings are invalid")
+        if self.circular_max_nfev <= 0:
+            raise ValueError("coverage.circular_max_nfev must be positive")
+        if self.circular_maximum_p95_distance <= 0.0:
+            raise ValueError("coverage.circular_maximum_p95_distance must be positive")
         if self.neighbours <= 0 or self.direct_seeds <= 0:
             raise ValueError("coverage neighbour counts must be positive")
         if self.regression_neighbours <= 0 or self.max_nfev <= 0:
             raise ValueError("coverage correction settings must be positive")
         if self.initial_cell_size <= 0.0 or self.insertion_cell_size <= 0.0:
             raise ValueError("coverage cell sizes must be positive")
+        if self.acquisition_insertions_per_round <= 0 or self.acquisition_candidate_limit <= 0:
+            raise ValueError("coverage acquisition limits must be positive")
+        if self.acquisition_min_separation <= 0.0:
+            raise ValueError("coverage.acquisition_min_separation must be positive")
+        for name, value in (
+            ("acquisition_distance_weight", self.acquisition_distance_weight),
+            ("acquisition_radius_weight", self.acquisition_radius_weight),
+            ("acquisition_failure_weight", self.acquisition_failure_weight),
+            ("acquisition_cell_deficit_weight", self.acquisition_cell_deficit_weight),
+            ("acquisition_branch_weight", self.acquisition_branch_weight),
+            ("acquisition_condition_weight", self.acquisition_condition_weight),
+        ):
+            if value < 0.0:
+                raise ValueError(f"coverage.{name} cannot be negative")
+        if self.exploration_insertions_per_round < 0:
+            raise ValueError("coverage.exploration_insertions_per_round cannot be negative")
         if self.insert_failures_per_round <= 0 or self.max_atlas_rows <= 0:
             raise ValueError("coverage insertion limits must be positive")
+        if self.jacobian_initial_rows < 0 or self.jacobian_compute_per_round < 0:
+            raise ValueError("coverage Jacobian budgets cannot be negative")
+        if self.jacobian_shortlist <= 0 or self.jacobian_regularization <= 0.0:
+            raise ValueError("coverage Jacobian settings must be positive")
+        if self.jacobian_condition_limit <= 1.0:
+            raise ValueError("coverage.jacobian_condition_limit must exceed one")
+        if self.frontier_seeds_per_round < 0 or self.frontier_directions_per_seed <= 0:
+            raise ValueError("coverage frontier counts are invalid")
+        if self.frontier_insertions_per_round < 0 or self.frontier_max_nfev <= 0:
+            raise ValueError("coverage frontier limits are invalid")
+        if not (0.0 < self.frontier_min_step <= self.frontier_max_step):
+            raise ValueError("coverage frontier step bounds are invalid")
+        if self.frontier_step_factor <= 0.0:
+            raise ValueError("coverage.frontier_step_factor must be positive")
+        if self.adaptive_max_depth < 0 or self.adaptive_min_points <= 1:
+            raise ValueError("coverage adaptive partition settings are invalid")
+        if not (0.0 <= self.adaptive_split_failure_rate <= 1.0):
+            raise ValueError("coverage.adaptive_split_failure_rate must lie in [0,1]")
+        if self.adaptive_split_p95_distance <= 0.0:
+            raise ValueError("coverage.adaptive_split_p95_distance must be positive")
         if self.prune_distance <= 0.0 or self.prune_max_checks < 0:
             raise ValueError("invalid coverage pruning settings")
+        if self.prune_every_rounds <= 0 or self.prune_probe_limit <= 0:
+            raise ValueError("coverage pruning cadence/probe limit must be positive")
+        if self.prune_protect_condition <= 1.0 or self.prune_min_branch_rows <= 0:
+            raise ValueError("coverage pruning protection settings are invalid")
+        if self.checkpoint_every_rounds <= 0 or self.checkpoint_bootstrap_launches <= 0:
+            raise ValueError("coverage checkpoint intervals must be positive")
 
 
 @dataclass
@@ -990,6 +1166,250 @@ def _launch_correction_bounds(
     return lo, hi
 
 
+def _configured_correction_bounds(config: AtlasConfig) -> tuple[FloatArray, FloatArray]:
+    """Exact configured bounds for (Ar0, At0, Jr0, ell, log(tau))."""
+    lo = np.array(
+        [
+            config.ar0_bounds[0],
+            config.at0_bounds[0],
+            config.jr0_bounds[0],
+            config.ell_bounds[0],
+            math.log(config.tau_bounds[0]),
+        ],
+        dtype=float,
+    )
+    hi = np.array(
+        [
+            config.ar0_bounds[1],
+            config.at0_bounds[1],
+            config.jr0_bounds[1],
+            config.ell_bounds[1],
+            math.log(config.tau_bounds[1]),
+        ],
+        dtype=float,
+    )
+    return lo, hi
+
+
+
+def _combined_correction_bounds(
+    config: AtlasConfig, launch: FloatArray, margin: float = 0.25
+) -> tuple[FloatArray, FloatArray]:
+    """Union configured launch bounds with the actual atlas/subarc range."""
+    configured_lo, configured_hi = _configured_correction_bounds(config)
+    if len(launch) == 0:
+        return configured_lo, configured_hi
+    q = np.column_stack((launch[:, 2:6], np.log(np.maximum(launch[:, 6], 1.0e-12))))
+    observed_lo = np.min(q, axis=0)
+    observed_hi = np.max(q, axis=0)
+    span = np.maximum(observed_hi - observed_lo, 1.0e-6)
+    lo = np.minimum(configured_lo, observed_lo - margin * span)
+    hi = np.maximum(configured_hi, observed_hi + margin * span)
+    return lo, hi
+
+
+def _launch_q_scale(config: AtlasConfig) -> FloatArray:
+    """Characteristic scales for [Ar0, At0, Jr0, ell, log(tau)]."""
+    spans = np.array(
+        [
+            config.ar0_bounds[1] - config.ar0_bounds[0],
+            config.at0_bounds[1] - config.at0_bounds[0],
+            config.jr0_bounds[1] - config.jr0_bounds[0],
+            config.ell_bounds[1] - config.ell_bounds[0],
+            math.log(config.tau_bounds[1] / config.tau_bounds[0]),
+        ],
+        dtype=float,
+    )
+    return np.maximum(0.25 * spans, np.array([0.25, 0.25, 0.5, 0.5, 0.25]))
+
+
+def _endpoint_jacobian_for_launch(
+    launch: FloatArray, config: AtlasConfig
+) -> tuple[FloatArray, float, float, bool]:
+    """Return raw d(logR,theta,ur,ut,logkappa)/d(Ar,At,Jr,ell,logtau)."""
+    yf, sens, normal_constant, status = _integrate_launch_with_sens(
+        np.asarray(launch, dtype=float),
+        rtol=config.rtol,
+        atol=config.atol,
+        max_step=config.max_step,
+        r_collision=config.r_collision,
+        r_escape=config.r_escape,
+        max_acceleration=config.max_acceleration,
+    )
+    if yf is None or sens is None or status != "ok" or normal_constant <= 0.0:
+        return np.full((5, 5), np.nan), math.inf, 0.0, False
+    try:
+        output_jac = _endpoint_output_jacobian(yf)
+        jac = np.empty((5, 5), dtype=float)
+        jac[:, :4] = output_jac @ sens
+        jac[:, 4] = output_jac @ (_rhs(float(launch[6]), yf) * float(launch[6]))
+        singular = np.linalg.svd(jac, compute_uv=False)
+    except (ValueError, np.linalg.LinAlgError, FloatingPointError):
+        return np.full((5, 5), np.nan), math.inf, 0.0, False
+    if not np.all(np.isfinite(jac)) or singular[-1] <= 0.0:
+        return np.full((5, 5), np.nan), math.inf, 0.0, False
+    condition = float(singular[0] / singular[-1])
+    return jac, condition, float(singular[-1]), True
+
+
+def _worker_jacobian_batch(args):
+    indices, launch_batch, cfg_dict = args
+    config = _atlas_config_from_dict(cfg_dict)
+    output = []
+    for index, launch in zip(indices, launch_batch):
+        jac, condition, sigma_min, valid = _endpoint_jacobian_for_launch(launch, config)
+        output.append((int(index), jac, condition, sigma_min, bool(valid)))
+    return output
+
+
+def _empty_jacobian_arrays(count: int) -> tuple[FloatArray, FloatArray, FloatArray]:
+    return (
+        np.full((count, 5, 5), np.nan, dtype=np.float32),
+        np.full(count, np.inf, dtype=np.float64),
+        np.zeros(count, dtype=np.float64),
+    )
+
+
+def _ensure_seed_jacobians(
+    launch: FloatArray,
+    jacobian: FloatArray,
+    condition: FloatArray,
+    sigma_min: FloatArray,
+    indices: ArrayLike,
+    config: AtlasConfig,
+) -> int:
+    """Compute missing exact endpoint Jacobians for selected seed rows in place."""
+    if not config.coverage.jacobian_enabled or len(launch) == 0:
+        return 0
+    selected = np.unique(np.asarray(indices, dtype=int))
+    selected = selected[(selected >= 0) & (selected < len(launch))]
+    if len(selected) == 0:
+        return 0
+    missing = selected[~np.all(np.isfinite(jacobian[selected]), axis=(1, 2))]
+    if len(missing) == 0:
+        return 0
+    cfg_dict = asdict(config)
+    computed = 0
+    if config.workers == 1 or len(missing) < 16:
+        batches = [(missing, launch[missing])]
+        results = [_worker_jacobian_batch((idx, rows, cfg_dict)) for idx, rows in batches]
+    else:
+        batch_size = max(8, min(128, len(missing) // (config.workers * 4) or 8))
+        chunks = [missing[i : i + batch_size] for i in range(0, len(missing), batch_size)]
+        results = []
+        with ProcessPoolExecutor(max_workers=config.workers) as pool:
+            futures = [
+                pool.submit(_worker_jacobian_batch, (chunk, launch[chunk], cfg_dict))
+                for chunk in chunks
+            ]
+            for future in as_completed(futures):
+                results.append(future.result())
+    for batch in results:
+        for index, jac, cond, smin, valid in batch:
+            if valid:
+                jacobian[index] = np.asarray(jac, dtype=np.float32)
+                condition[index] = float(cond)
+                sigma_min[index] = float(smin)
+            else:
+                # A finite all-zero marker prevents repeated failed integration.
+                jacobian[index] = np.zeros((5, 5), dtype=np.float32)
+                condition[index] = math.inf
+                sigma_min[index] = 0.0
+            computed += 1
+    return computed
+
+
+def _regularized_inverse(jac: FloatArray, regularization: float) -> Optional[FloatArray]:
+    try:
+        u, singular, vt = np.linalg.svd(np.asarray(jac, dtype=float), full_matrices=False)
+    except np.linalg.LinAlgError:
+        return None
+    if not np.all(np.isfinite(singular)) or singular[0] <= 0.0:
+        return None
+    cutoff = regularization * singular[0]
+    inverse_s = singular / (singular * singular + cutoff * cutoff)
+    result = (vt.T * inverse_s) @ u.T
+    return result if np.all(np.isfinite(result)) else None
+
+
+def _jacobian_seed_distance(
+    target: FloatArray,
+    seed_index: int,
+    endpoint: FloatArray,
+    feature_scale: FloatArray,
+    jacobian: Optional[FloatArray],
+    condition: Optional[FloatArray],
+    q_scale: Optional[FloatArray],
+    coverage: Optional[CoverageConfig],
+) -> tuple[float, Optional[FloatArray]]:
+    """Estimate correction effort and optional q prediction from one chart."""
+    euclidean = float(np.linalg.norm((target - endpoint[seed_index]) / feature_scale))
+    if (
+        jacobian is None
+        or condition is None
+        or q_scale is None
+        or coverage is None
+        or seed_index >= len(jacobian)
+        or not np.all(np.isfinite(jacobian[seed_index]))
+        or not np.isfinite(condition[seed_index])
+        or condition[seed_index] > coverage.jacobian_condition_limit
+    ):
+        return euclidean, None
+    inverse = _regularized_inverse(jacobian[seed_index], coverage.jacobian_regularization)
+    if inverse is None:
+        return euclidean, None
+    delta_q = inverse @ (target[2:7] - endpoint[seed_index, 2:7])
+    initial_velocity_distance = np.linalg.norm(
+        (target[:2] - endpoint[seed_index, :2]) / feature_scale[:2]
+    )
+    effort = float(math.sqrt(initial_velocity_distance**2 + np.sum((delta_q / q_scale) ** 2)))
+    # A local inverse chart is a predictor, not a proof.  Use it when it offers a
+    # shorter correction estimate than the global normalized endpoint metric;
+    # otherwise retain the robust Euclidean distance.
+    return max(min(euclidean, effort), 1.0e-12), delta_q
+
+
+def _rank_seed_indices(
+    target: FloatArray,
+    launch: FloatArray,
+    endpoint: FloatArray,
+    feature_scale: FloatArray,
+    tree: cKDTree,
+    count: int,
+    *,
+    jacobian: Optional[FloatArray] = None,
+    condition: Optional[FloatArray] = None,
+    q_scale: Optional[FloatArray] = None,
+    coverage: Optional[CoverageConfig] = None,
+    excluded: Optional[set[int]] = None,
+) -> tuple[FloatArray, FloatArray, dict[int, Optional[FloatArray]]]:
+    excluded = excluded or set()
+    shortlist = min(
+        len(launch),
+        max(count + len(excluded) + 4, coverage.jacobian_shortlist if coverage else count),
+    )
+    _distance, indices = tree.query(target / feature_scale, k=max(shortlist, 1))
+    indices = np.atleast_1d(indices).astype(int)
+    ranked: list[tuple[float, int]] = []
+    predictions: dict[int, Optional[FloatArray]] = {}
+    for index in indices:
+        index = int(index)
+        if index in excluded:
+            continue
+        distance, delta_q = _jacobian_seed_distance(
+            target, index, endpoint, feature_scale, jacobian, condition, q_scale, coverage
+        )
+        ranked.append((distance, index))
+        predictions[index] = delta_q
+    ranked.sort(key=lambda item: item[0])
+    ranked = ranked[:count]
+    return (
+        np.asarray([i for _d, i in ranked], dtype=int),
+        np.asarray([d for d, _i in ranked], dtype=float),
+        predictions,
+    )
+
+
 def _fast_correct_target(
     target: FloatArray,
     launch: FloatArray,
@@ -1000,6 +1420,10 @@ def _fast_correct_target(
     tree: Optional[cKDTree] = None,
     excluded: Optional[set[int]] = None,
     bounds: Optional[tuple[FloatArray, FloatArray]] = None,
+    seed_jacobian: Optional[FloatArray] = None,
+    seed_condition: Optional[FloatArray] = None,
+    q_scale: Optional[FloatArray] = None,
+    coverage_config: Optional[CoverageConfig] = None,
 ) -> tuple[Optional[FloatArray], float, int]:
     """Correct one exact endpoint using only other atlas seeds.
 
@@ -1011,17 +1435,33 @@ def _fast_correct_target(
     if tree is None:
         tree = cKDTree(endpoint / feature_scale)
     excluded = excluded or set()
-    requested = min(len(launch), max(config.neighbours + len(excluded) + 4, 1))
-    distances, indices = tree.query(target / feature_scale, k=requested)
-    distances = np.atleast_1d(distances).astype(float)
-    indices = np.atleast_1d(indices).astype(int)
-    retained = [(d, i) for d, i in zip(distances, indices) if int(i) not in excluded]
-    if not retained:
+    nearest, ranked_distances, predictions = _rank_seed_indices(
+        target,
+        launch,
+        endpoint,
+        feature_scale,
+        tree,
+        config.neighbours,
+        jacobian=seed_jacobian,
+        condition=seed_condition,
+        q_scale=q_scale,
+        coverage=coverage_config,
+        excluded=excluded,
+    )
+    if len(nearest) == 0:
         return None, math.inf, 0
-    nearest_distance = float(retained[0][0])
-    nearest = np.array([i for _d, i in retained[: config.neighbours]], dtype=int)
+    nearest_distance = float(ranked_distances[0])
 
     seeds: list[FloatArray] = []
+    # Local inverse-Jacobian predictions are the most physically meaningful
+    # initial guesses when the chart is regular.
+    for index in nearest[: min(config.direct_seeds, len(nearest))]:
+        delta_q = predictions.get(int(index))
+        if delta_q is None:
+            continue
+        base_q = np.concatenate((launch[index, 2:6], [math.log(launch[index, 6])]))
+        seeds.append(base_q + delta_q)
+
     regression_indices = nearest[: min(config.regression_neighbours, len(nearest))]
     regression = _local_regression_seed_arrays(
         target, regression_indices, launch, endpoint, feature_scale
@@ -1053,6 +1493,28 @@ def _fast_correct_target(
                     x, float(target[0]), float(target[1]), target5, config
                 )
             return cache_value
+
+        # Exact atlas rows and high-quality local predictions should not be
+        # perturbed by an unnecessary trust-region iteration.
+        initial_scaled, _initial_jac, initial_yf, initial_normal, initial_status, initial_launch = evaluate(seed)
+        if initial_yf is not None and initial_status == "ok" and initial_normal > 0.0:
+            radius, theta, ur, ut, kappa = _endpoint_from_state(initial_yf)
+            initial_raw = np.array(
+                [
+                    math.log(radius) - target5[0],
+                    theta - target5[1],
+                    ur - target5[2],
+                    ut - target5[3],
+                    math.log(kappa) - target5[4],
+                ],
+                dtype=float,
+            )
+            if np.all(np.abs(initial_raw) <= np.asarray(config.acceptance, dtype=float)):
+                norm = float(np.linalg.norm(initial_scaled))
+                if norm < best_norm:
+                    best_norm = norm
+                    best = initial_launch.copy()
+                continue
 
         result = least_squares(
             lambda x: evaluate(x)[0],
@@ -1092,13 +1554,20 @@ def _fast_correct_target(
     return best, nearest_distance, total_nfev
 
 
-def _coverage_query_config(config: AtlasConfig, *, pruning: bool = False) -> QueryConfig:
+def _coverage_query_config(
+    config: AtlasConfig, *, pruning: bool = False, circular: bool = False
+) -> QueryConfig:
     coverage = config.coverage
+    max_nfev = (
+        coverage.prune_max_nfev
+        if pruning
+        else (coverage.circular_max_nfev if circular else coverage.max_nfev)
+    )
     return QueryConfig(
         neighbours=coverage.neighbours,
         direct_seeds=coverage.direct_seeds,
         regression_neighbours=coverage.regression_neighbours,
-        max_nfev=coverage.prune_max_nfev if pruning else coverage.max_nfev,
+        max_nfev=max_nfev,
         rtol=max(config.rtol, 5.0e-10),
         atol=max(config.atol, 5.0e-12),
         max_step=config.max_step,
@@ -1169,30 +1638,447 @@ def _failure_insertion_indices(
     return np.asarray(keep, dtype=int)
 
 
+
+def _merge_validation_reservoir(
+    reservoir_launch: FloatArray,
+    reservoir_endpoint: FloatArray,
+    reservoir_diag: FloatArray,
+    reservoir_tested: NDArray[np.bool_],
+    reservoir_success: NDArray[np.bool_],
+    reservoir_distance: FloatArray,
+    new_launch: FloatArray,
+    new_endpoint: FloatArray,
+    new_diag: FloatArray,
+    new_tested: NDArray[np.bool_],
+    new_success: NDArray[np.bool_],
+    new_distance: FloatArray,
+    feature_scale: FloatArray,
+    config: AtlasConfig,
+) -> tuple[
+    FloatArray,
+    FloatArray,
+    FloatArray,
+    NDArray[np.bool_],
+    NDArray[np.bool_],
+    FloatArray,
+]:
+    """Maintain a bounded, spatially diverse cumulative feasible reservoir."""
+    if len(new_launch) == 0:
+        return (
+            reservoir_launch,
+            reservoir_endpoint,
+            reservoir_diag,
+            reservoir_tested,
+            reservoir_success,
+            reservoir_distance,
+        )
+    launch = np.vstack((reservoir_launch, new_launch)) if len(reservoir_launch) else new_launch.copy()
+    endpoint = (
+        np.vstack((reservoir_endpoint, new_endpoint)) if len(reservoir_endpoint) else new_endpoint.copy()
+    )
+    diag = np.vstack((reservoir_diag, new_diag)) if len(reservoir_diag) else new_diag.copy()
+    tested = (
+        np.concatenate((reservoir_tested, new_tested)) if len(reservoir_tested) else new_tested.copy()
+    )
+    success = (
+        np.concatenate((reservoir_success, new_success)) if len(reservoir_success) else new_success.copy()
+    )
+    distance = (
+        np.concatenate((reservoir_distance, new_distance)) if len(reservoir_distance) else new_distance.copy()
+    )
+    limit = min(config.coverage.validation_reservoir_rows, len(launch))
+    if len(launch) <= limit:
+        return launch, endpoint, diag, tested, success, distance
+
+    labels = _branch_labels(diag)
+    cell_size = config.coverage.validation_reservoir_cell_size
+    inv = 1.0 / cell_size
+    # Failed and distant probes are retained preferentially.  One representative
+    # per endpoint/branch cell is chosen first, then the remaining budget is
+    # filled by the same priority score.
+    priority = (
+        (~tested).astype(float) * 2.0e6
+        + (tested & ~success).astype(float) * 1.0e6
+        + np.nan_to_num(distance, nan=1.0e3, posinf=1.0e3)
+    )
+    order = np.argsort(priority)[::-1]
+    occupied: set[tuple[int, ...]] = set()
+    keep: list[int] = []
+    deferred: list[int] = []
+    for index in order:
+        cell = tuple(np.floor(endpoint[index] / feature_scale * inv).astype(np.int64)) + tuple(
+            labels[index]
+        )
+        if cell in occupied:
+            deferred.append(int(index))
+            continue
+        occupied.add(cell)
+        keep.append(int(index))
+        if len(keep) >= limit:
+            break
+    if len(keep) < limit:
+        selected = set(keep)
+        for index in deferred:
+            if index in selected:
+                continue
+            keep.append(index)
+            if len(keep) >= limit:
+                break
+    idx = np.asarray(keep[:limit], dtype=int)
+    return launch[idx], endpoint[idx], diag[idx], tested[idx], success[idx], distance[idx]
+
+
+@dataclass
+class _AdaptiveCellNode:
+    deficit: float
+    count: int
+    success_rate: float
+    p95_distance: float
+    split_dim: int = -1
+    split_value: float = 0.0
+    left: Optional["_AdaptiveCellNode"] = None
+    right: Optional["_AdaptiveCellNode"] = None
+
+    def score(self, point: FloatArray) -> float:
+        if self.split_dim < 0 or self.left is None or self.right is None:
+            return self.deficit
+        child = self.left if point[self.split_dim] <= self.split_value else self.right
+        return child.score(point)
+
+
+def _build_adaptive_partition(
+    endpoint: FloatArray,
+    success: NDArray[np.bool_],
+    distance: FloatArray,
+    feature_scale: FloatArray,
+    config: AtlasConfig,
+) -> Optional[_AdaptiveCellNode]:
+    if not config.coverage.adaptive_partition_enabled or len(endpoint) == 0:
+        return None
+    features = endpoint / feature_scale
+    coverage = config.coverage
+
+    def build(indices: FloatArray, depth: int) -> _AdaptiveCellNode:
+        values = success[indices]
+        distances = distance[indices]
+        rate = float(np.mean(values)) if len(values) else 0.0
+        p95 = float(np.quantile(distances, 0.95)) if len(distances) else math.inf
+        deficit = (
+            (1.0 - rate)
+            + min(4.0, p95 / max(coverage.maximum_p95_distance, 1.0e-12))
+            + 1.0 / math.sqrt(max(len(indices), 1))
+        )
+        node = _AdaptiveCellNode(deficit, int(len(indices)), rate, p95)
+        should_split = (
+            depth < coverage.adaptive_max_depth
+            and len(indices) >= 2 * coverage.adaptive_min_points
+            and (
+                (1.0 - rate) >= coverage.adaptive_split_failure_rate
+                or p95 >= coverage.adaptive_split_p95_distance
+            )
+        )
+        if not should_split:
+            return node
+        local = features[indices]
+        spreads = np.ptp(local, axis=0)
+        dim = int(np.argmax(spreads))
+        if spreads[dim] <= 1.0e-12:
+            return node
+        split = float(np.median(local[:, dim]))
+        left_mask = local[:, dim] <= split
+        if np.all(left_mask) or not np.any(left_mask):
+            return node
+        node.split_dim = dim
+        node.split_value = split
+        node.left = build(indices[left_mask], depth + 1)
+        node.right = build(indices[~left_mask], depth + 1)
+        return node
+
+    return build(np.arange(len(endpoint), dtype=int), 0)
+
+
+def _branch_frequency(diagnostics: FloatArray) -> dict[tuple[int, int], int]:
+    frequency: dict[tuple[int, int], int] = {}
+    for label in _branch_labels(diagnostics):
+        key = (int(label[0]), int(label[1]))
+        frequency[key] = frequency.get(key, 0) + 1
+    return frequency
+
+
+def _acquisition_select_indices(
+    candidate_endpoint: FloatArray,
+    candidate_diag: FloatArray,
+    failed: NDArray[np.bool_],
+    atlas_endpoint: FloatArray,
+    atlas_diag: FloatArray,
+    feature_scale: FloatArray,
+    coverage_radius: FloatArray,
+    jacobian_condition: FloatArray,
+    adaptive_partition: Optional[_AdaptiveCellNode],
+    config: AtlasConfig,
+    limit: int,
+) -> tuple[FloatArray, FloatArray]:
+    """Score and greedily diversify candidate insertions."""
+    count = len(candidate_endpoint)
+    if count == 0 or limit <= 0:
+        return np.empty(0, dtype=int), np.empty(0, dtype=float)
+    coverage = config.coverage
+    tree = cKDTree(atlas_endpoint / feature_scale)
+    distance, nearest = tree.query(candidate_endpoint / feature_scale, k=1)
+    distance = np.asarray(distance, dtype=float)
+    nearest = np.asarray(nearest, dtype=int)
+    radius = np.maximum(coverage_radius[nearest], 0.25 * coverage.insertion_cell_size)
+    radius_ratio = distance / radius
+
+    branch_frequency = _branch_frequency(atlas_diag)
+    labels = _branch_labels(candidate_diag)
+    branch_score = np.array(
+        [1.0 / math.sqrt(branch_frequency.get((int(a), int(b)), 0) + 1.0) for a, b in labels],
+        dtype=float,
+    )
+    if adaptive_partition is None:
+        cell_deficit = np.ones(count, dtype=float)
+    else:
+        cell_deficit = np.array(
+            [adaptive_partition.score(row / feature_scale) for row in candidate_endpoint],
+            dtype=float,
+        )
+    nearest_condition = jacobian_condition[nearest]
+    condition_score = np.where(
+        np.isfinite(nearest_condition),
+        np.clip(np.log10(np.maximum(nearest_condition, 1.0)) / 10.0, 0.0, 2.0),
+        1.0,
+    )
+    score = (
+        coverage.acquisition_distance_weight * distance
+        + coverage.acquisition_radius_weight * np.clip(radius_ratio, 0.0, 20.0)
+        + coverage.acquisition_failure_weight * failed.astype(float)
+        + coverage.acquisition_cell_deficit_weight * cell_deficit
+        + coverage.acquisition_branch_weight * branch_score
+        + coverage.acquisition_condition_weight * condition_score
+    )
+
+    # Bound sorting/memory cost while always retaining failures and the farthest
+    # candidates.  This pool reduction itself is deterministic.
+    if count > coverage.acquisition_candidate_limit:
+        mandatory = np.flatnonzero(failed)
+        remaining_budget = max(0, coverage.acquisition_candidate_limit - len(mandatory))
+        non_failed = np.flatnonzero(~failed)
+        high = non_failed[np.argsort(score[non_failed])[::-1][:remaining_budget]]
+        pool = np.unique(np.concatenate((mandatory, high)))
+    else:
+        pool = np.arange(count, dtype=int)
+    order = pool[np.argsort(score[pool])[::-1]]
+
+    minimum = coverage.acquisition_min_separation
+    inv = 1.0 / minimum
+    selected: list[int] = []
+    occupied: set[tuple[int, ...]] = set()
+    for index in order:
+        # Failed known-feasible probes may be inserted even when geometrically
+        # close, but only once per branch-aware fine cell.
+        cell = tuple(np.floor(candidate_endpoint[index] / feature_scale * inv).astype(np.int64)) + tuple(
+            labels[index]
+        )
+        if cell in occupied:
+            continue
+        if not failed[index] and distance[index] < 0.35 * minimum:
+            continue
+        occupied.add(cell)
+        selected.append(int(index))
+        if len(selected) >= limit:
+            break
+    idx = np.asarray(selected, dtype=int)
+    return idx, score[idx]
+
+
+def _clip_endpoint_target(target: FloatArray, config: AtlasConfig) -> FloatArray:
+    result = np.asarray(target, dtype=float).copy()
+    result[0] = np.clip(result[0], *config.u0_bounds)
+    result[1] = np.clip(result[1], *config.w0_bounds)
+    result[2] = np.clip(result[2], math.log(config.rho_bounds[0]), math.log(config.rho_bounds[1]))
+    result[3] = np.clip(result[3], *config.theta_bounds)
+    result[4] = np.clip(result[4], -config.final_speed_max, config.final_speed_max)
+    result[5] = np.clip(result[5], -config.final_speed_max, config.final_speed_max)
+    result[6] = np.clip(
+        result[6], math.log(config.kappa_bounds[0]), math.log(config.kappa_bounds[1])
+    )
+    return result
+
+
+def _frontier_expand(
+    atlas_launch: FloatArray,
+    atlas_endpoint: FloatArray,
+    atlas_diag: FloatArray,
+    atlas_jacobian: FloatArray,
+    atlas_condition: FloatArray,
+    coverage_radius: FloatArray,
+    failed_probe_endpoint: FloatArray,
+    feature_scale: FloatArray,
+    config: AtlasConfig,
+    rng: np.random.Generator,
+) -> tuple[FloatArray, FloatArray, FloatArray, int]:
+    """Expand local inverse charts toward uncovered probes and free directions."""
+    coverage = config.coverage
+    if (
+        not coverage.frontier_enabled
+        or coverage.frontier_insertions_per_round <= 0
+        or len(atlas_launch) == 0
+    ):
+        return (
+            np.empty((0, 7), dtype=float),
+            np.empty((0, 7), dtype=float),
+            np.empty((0, 6), dtype=float),
+            0,
+        )
+    tree = cKDTree(atlas_endpoint / feature_scale)
+    seed_indices: list[int] = []
+    seed_targets: dict[int, list[FloatArray]] = {}
+    if len(failed_probe_endpoint):
+        _dist, nearest = tree.query(failed_probe_endpoint / feature_scale, k=1)
+        for target, seed in zip(failed_probe_endpoint, np.asarray(nearest, dtype=int)):
+            seed = int(seed)
+            seed_targets.setdefault(seed, []).append(target)
+        # Prioritize seeds facing several uncovered probes and seeds with small cells.
+        seed_indices.extend(
+            sorted(
+                seed_targets,
+                key=lambda i: (-len(seed_targets[i]), coverage_radius[i]),
+            )
+        )
+    if len(seed_indices) < coverage.frontier_seeds_per_round:
+        finite = np.flatnonzero(
+            np.all(np.isfinite(atlas_jacobian), axis=(1, 2))
+            & np.isfinite(atlas_condition)
+            & (atlas_condition <= coverage.jacobian_condition_limit)
+        )
+        if len(finite):
+            order = finite[np.argsort(coverage_radius[finite])]
+            seed_indices.extend(map(int, order))
+    # Stable unique ordering.
+    seed_indices = list(dict.fromkeys(seed_indices))[: coverage.frontier_seeds_per_round]
+    bounds = _combined_correction_bounds(config, atlas_launch, 0.25)
+    query = _coverage_query_config(config)
+    query.max_nfev = coverage.frontier_max_nfev
+    q_scale = _launch_q_scale(config)
+
+    output_launch: list[FloatArray] = []
+    output_endpoint: list[FloatArray] = []
+    output_diag: list[FloatArray] = []
+    attempts = 0
+    for seed in seed_indices:
+        jac = atlas_jacobian[seed]
+        inverse = None
+        if (
+            np.all(np.isfinite(jac))
+            and np.isfinite(atlas_condition[seed])
+            and atlas_condition[seed] <= coverage.jacobian_condition_limit
+        ):
+            inverse = _regularized_inverse(jac, coverage.jacobian_regularization)
+        source = atlas_endpoint[seed]
+        directions: list[FloatArray] = []
+        for target in seed_targets.get(seed, []):
+            delta = (target - source) / feature_scale
+            norm = float(np.linalg.norm(delta))
+            if norm > 1.0e-10:
+                directions.append(delta / norm)
+        while len(directions) < coverage.frontier_directions_per_seed:
+            direction = rng.normal(size=7)
+            norm = float(np.linalg.norm(direction))
+            if norm > 1.0e-12:
+                directions.append(direction / norm)
+        for direction in directions[: coverage.frontier_directions_per_seed]:
+            cell_radius = max(float(coverage_radius[seed]), coverage.frontier_min_step)
+            step = np.clip(
+                coverage.frontier_step_factor * cell_radius,
+                coverage.frontier_min_step,
+                coverage.frontier_max_step,
+            )
+            target = _clip_endpoint_target(source + direction * step * feature_scale, config)
+            base_q = np.concatenate((atlas_launch[seed, 2:6], [math.log(atlas_launch[seed, 6])]))
+            if inverse is not None:
+                base_q = base_q + inverse @ (target[2:7] - source[2:7])
+            predicted = np.array(
+                [target[0], target[1], base_q[0], base_q[1], base_q[2], base_q[3], math.exp(base_q[4])],
+                dtype=float,
+            )
+            predicted[2:6] = np.clip(predicted[2:6], bounds[0][:4], bounds[1][:4])
+            predicted[6] = float(np.clip(predicted[6], config.tau_bounds[0], config.tau_bounds[1]))
+            corrected, _nfev = _correct_target_from_explicit_seed(target, predicted, query, bounds)
+            attempts += 1
+            if corrected is None:
+                continue
+            diag = _diagnostics_for_exact_launch(corrected, config)
+            if diag is None:
+                continue
+            output_launch.append(corrected)
+            output_endpoint.append(target)
+            output_diag.append(diag)
+            if len(output_launch) >= coverage.frontier_insertions_per_round:
+                break
+        if len(output_launch) >= coverage.frontier_insertions_per_round:
+            break
+    if not output_launch:
+        return (
+            np.empty((0, 7), dtype=float),
+            np.empty((0, 7), dtype=float),
+            np.empty((0, 6), dtype=float),
+            attempts,
+        )
+    return np.vstack(output_launch), np.vstack(output_endpoint), np.vstack(output_diag), attempts
+
+
 def _prune_redundant_rows(
     launch: FloatArray,
     endpoint: FloatArray,
     diagnostics: FloatArray,
     feature_scale: FloatArray,
     config: AtlasConfig,
-) -> tuple[FloatArray, FloatArray, FloatArray, int]:
+    *,
+    jacobian: Optional[FloatArray] = None,
+    condition: Optional[FloatArray] = None,
+    sigma_min: Optional[FloatArray] = None,
+    probe_endpoint: Optional[FloatArray] = None,
+    probe_success: Optional[NDArray[np.bool_]] = None,
+) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray, FloatArray, FloatArray, int]:
+    """Conservative branch-aware coverage-dominance pruning.
+
+    A close seed is removed only when its own endpoint and every successful
+    validation probe assigned to it remain exactly recoverable from the active
+    retained set.  Rare branches and ill-conditioned/fold-adjacent charts are
+    protected.
+    """
     coverage = config.coverage
+    if jacobian is None or condition is None or sigma_min is None:
+        jacobian, condition, sigma_min = _empty_jacobian_arrays(len(launch))
     if not coverage.prune_enabled or coverage.prune_max_checks == 0 or len(launch) < 3:
-        return launch, endpoint, diagnostics, 0
+        return launch, endpoint, diagnostics, jacobian, condition, sigma_min, 0
 
     features = endpoint / feature_scale
     tree = cKDTree(features)
     distances, neighbours = tree.query(features, k=2)
     labels = _branch_labels(diagnostics)
+    branch_counts = _branch_frequency(diagnostics)
     candidates = np.argsort(distances[:, 1])
     active = np.ones(len(launch), dtype=bool)
     protected: set[int] = set()
     removed = 0
     checks = 0
     query_config = _coverage_query_config(config, pruning=True)
-    correction_bounds = _launch_correction_bounds(
-        launch, query_config.launch_bound_margin
-    )
+    correction_bounds = _combined_correction_bounds(config, launch, 0.25)
+    q_scale = _launch_q_scale(config)
+
+    assigned: dict[int, list[int]] = {}
+    if probe_endpoint is not None and len(probe_endpoint):
+        probe_mask = (
+            np.asarray(probe_success, dtype=bool)
+            if probe_success is not None
+            else np.ones(len(probe_endpoint), dtype=bool)
+        )
+        _probe_distance, probe_seed = tree.query(probe_endpoint / feature_scale, k=1)
+        for probe_index, (seed, valid) in enumerate(zip(probe_seed, probe_mask)):
+            if valid:
+                assigned.setdefault(int(seed), []).append(int(probe_index))
 
     for index in candidates:
         index = int(index)
@@ -1203,21 +2089,66 @@ def _prune_redundant_rows(
             break
         if not active[index] or not active[neighbour] or index in protected:
             continue
+        label_key = (int(labels[index, 0]), int(labels[index, 1]))
+        if branch_counts.get(label_key, 0) <= coverage.prune_min_branch_rows:
+            continue
         if not np.array_equal(labels[index], labels[neighbour]):
             continue
+        if np.isfinite(condition[index]) and condition[index] >= coverage.prune_protect_condition:
+            continue
         checks += 1
-        excluded = {index}
-        corrected, _distance, _nfev = _fast_correct_target(
-            endpoint[index], launch, endpoint, feature_scale, query_config,
-            tree=tree, excluded=excluded, bounds=correction_bounds,
-        )
-        if corrected is None:
+        excluded = set(map(int, np.flatnonzero(~active)))
+        excluded.add(index)
+
+        targets = [endpoint[index]]
+        if probe_endpoint is not None:
+            probe_indices = assigned.get(index, [])
+            if len(probe_indices) > coverage.prune_probe_limit:
+                # Prefer the farthest assigned probes; they are the strongest
+                # evidence that this chart owns a unique convergence region.
+                local_distance = np.linalg.norm(
+                    (probe_endpoint[probe_indices] - endpoint[index]) / feature_scale,
+                    axis=1,
+                )
+                order = np.argsort(local_distance)[::-1][: coverage.prune_probe_limit]
+                probe_indices = [probe_indices[i] for i in order]
+            targets.extend(probe_endpoint[probe_indices])
+
+        dominated = True
+        for target in targets:
+            corrected, _distance, _nfev = _fast_correct_target(
+                target,
+                launch,
+                endpoint,
+                feature_scale,
+                query_config,
+                tree=tree,
+                excluded=excluded,
+                bounds=correction_bounds,
+                seed_jacobian=jacobian,
+                seed_condition=condition,
+                q_scale=q_scale,
+                coverage_config=coverage,
+            )
+            if corrected is None:
+                dominated = False
+                break
+        if not dominated:
             continue
         active[index] = False
         protected.add(neighbour)
+        branch_counts[label_key] -= 1
         removed += 1
 
-    return launch[active], endpoint[active], diagnostics[active], removed
+    return (
+        launch[active],
+        endpoint[active],
+        diagnostics[active],
+        jacobian[active],
+        condition[active],
+        sigma_min[active],
+        removed,
+    )
 
 
 def _estimate_coverage_cells(
@@ -1225,6 +2156,10 @@ def _estimate_coverage_cells(
     feature_scale: FloatArray,
     probe_endpoint: FloatArray,
     probe_success: NDArray[np.bool_],
+    *,
+    jacobian: Optional[FloatArray] = None,
+    condition: Optional[FloatArray] = None,
+    config: Optional[AtlasConfig] = None,
 ) -> tuple[FloatArray, NDArray[np.int32], NDArray[np.int32]]:
     radius = np.zeros(len(atlas_endpoint), dtype=float)
     success_count = np.zeros(len(atlas_endpoint), dtype=np.int32)
@@ -1234,8 +2169,14 @@ def _estimate_coverage_cells(
     tree = cKDTree(atlas_endpoint / feature_scale)
     distances, indices = tree.query(probe_endpoint / feature_scale, k=1)
     nearest_failure = np.full(len(atlas_endpoint), np.inf, dtype=float)
-    for distance, index, success in zip(distances, indices, probe_success):
+    q_scale = _launch_q_scale(config) if config is not None else None
+    coverage = config.coverage if config is not None else None
+    for target, distance, index, success in zip(probe_endpoint, distances, indices, probe_success):
         index = int(index)
+        if config is not None:
+            distance = _jacobian_seed_distance(
+                target, index, atlas_endpoint, feature_scale, jacobian, condition, q_scale, coverage
+            )[0]
         distance = float(distance)
         if success:
             success_count[index] += 1
@@ -1248,12 +2189,557 @@ def _estimate_coverage_cells(
     return radius, success_count, failure_count
 
 
-def generate_atlas(path: str | Path, config: AtlasConfig) -> Path:
-    """Generate an adaptive, coverage-validated forward extremal atlas.
 
-    When ``config.coverage.enabled`` is false, generation falls back to the
-    original fixed-count forward cloud.  Adaptive coverage is tested on
-    independent feasible holdout extremals from the configured launch domain.
+def _evaluate_probe_set(
+    probe_endpoint: FloatArray,
+    atlas_launch: FloatArray,
+    atlas_endpoint: FloatArray,
+    feature_scale: FloatArray,
+    query_config: QueryConfig,
+    bounds: Optional[tuple[FloatArray, FloatArray]] = None,
+    *,
+    seed_jacobian: Optional[FloatArray] = None,
+    seed_condition: Optional[FloatArray] = None,
+    q_scale: Optional[FloatArray] = None,
+    coverage_config: Optional[CoverageConfig] = None,
+) -> tuple[NDArray[np.bool_], FloatArray, list[Optional[FloatArray]], int]:
+    """Correct a persistent probe set against the current atlas."""
+    count = len(probe_endpoint)
+    success = np.zeros(count, dtype=bool)
+    distances = np.full(count, np.inf, dtype=float)
+    corrected: list[Optional[FloatArray]] = [None] * count
+    if count == 0 or len(atlas_launch) == 0:
+        return success, distances, corrected, 0
+    tree = cKDTree(atlas_endpoint / feature_scale)
+    correction_bounds = bounds or _launch_correction_bounds(
+        atlas_launch, query_config.launch_bound_margin
+    )
+    nfev_total = 0
+    for i, target in enumerate(probe_endpoint):
+        launch, distance, nfev = _fast_correct_target(
+            target,
+            atlas_launch,
+            atlas_endpoint,
+            feature_scale,
+            query_config,
+            tree=tree,
+            bounds=correction_bounds,
+            seed_jacobian=seed_jacobian,
+            seed_condition=seed_condition,
+            q_scale=q_scale,
+            coverage_config=coverage_config,
+        )
+        corrected[i] = launch
+        success[i] = launch is not None
+        distances[i] = distance
+        nfev_total += nfev
+    return success, distances, corrected, nfev_total
+
+
+def _stratum_keys(
+    endpoint: FloatArray,
+    diagnostics: FloatArray,
+    config: AtlasConfig,
+) -> list[tuple[int, ...]]:
+    """Coarse output/branch strata used by the stopping certificate."""
+    if len(endpoint) == 0:
+        return []
+    bins = np.asarray(config.coverage.strata_bins, dtype=int)
+    lo = np.array(
+        [math.log(config.rho_bounds[0]), config.theta_bounds[0], math.log(config.kappa_bounds[0])],
+        dtype=float,
+    )
+    hi = np.array(
+        [math.log(config.rho_bounds[1]), config.theta_bounds[1], math.log(config.kappa_bounds[1])],
+        dtype=float,
+    )
+    values = endpoint[:, [2, 3, 6]]
+    unit = np.clip((values - lo) / np.maximum(hi - lo, 1.0e-12), 0.0, 1.0 - 1.0e-12)
+    spatial = np.floor(unit * bins).astype(int)
+    labels = _branch_labels(diagnostics)
+    # Cap labels so isolated extreme branches do not create one-row strata.
+    labels = np.column_stack((np.clip(labels[:, 0], 0, 5), np.clip(labels[:, 1], -4, 4)))
+    return [tuple(map(int, row)) for row in np.column_stack((spatial, labels))]
+
+
+def _stratum_coverage_metrics(
+    success: NDArray[np.bool_],
+    endpoint: FloatArray,
+    diagnostics: FloatArray,
+    config: AtlasConfig,
+) -> dict:
+    keys = _stratum_keys(endpoint, diagnostics, config)
+    groups: dict[tuple[int, ...], list[bool]] = {}
+    for key, value in zip(keys, success):
+        groups.setdefault(key, []).append(bool(value))
+    qualified = {
+        key: values
+        for key, values in groups.items()
+        if len(values) >= config.coverage.minimum_stratum_rows
+    }
+    if not qualified:
+        return {
+            "qualified_strata": 0,
+            "passing_strata": 0,
+            "passing_fraction": 0.0,
+            "minimum_success_rate": 0.0,
+        }
+    rates = np.array([np.mean(values) for values in qualified.values()], dtype=float)
+    passing = rates >= config.coverage.target_stratum_success
+    return {
+        "qualified_strata": int(len(rates)),
+        "passing_strata": int(np.count_nonzero(passing)),
+        "passing_fraction": float(np.mean(passing)),
+        "minimum_success_rate": float(np.min(rates)),
+    }
+
+
+def _sample_circular_targets(config: AtlasConfig) -> FloatArray:
+    coverage = config.coverage
+    if not coverage.circular_enabled or coverage.circular_validation_rows <= 0:
+        return np.empty((0, 7), dtype=float)
+    sampler = qmc.Sobol(d=3, scramble=True, seed=coverage.circular_validation_seed)
+    unit = sampler.random(coverage.circular_validation_rows)
+    log_rho = math.log(config.rho_bounds[0]) + unit[:, 0] * math.log(
+        config.rho_bounds[1] / config.rho_bounds[0]
+    )
+    theta = config.theta_bounds[0] + unit[:, 1] * (
+        config.theta_bounds[1] - config.theta_bounds[0]
+    )
+    log_kappa = math.log(config.kappa_bounds[0]) + unit[:, 2] * math.log(
+        config.kappa_bounds[1] / config.kappa_bounds[0]
+    )
+    rho = np.exp(log_rho)
+    return np.column_stack(
+        (
+            np.zeros(len(unit)),
+            np.ones(len(unit)),
+            log_rho,
+            theta,
+            np.zeros(len(unit)),
+            rho ** -0.5,
+            log_kappa,
+        )
+    ).astype(float)
+
+
+def _correct_target_from_explicit_seed(
+    target: FloatArray,
+    seed_launch: FloatArray,
+    query_config: QueryConfig,
+    bounds: tuple[FloatArray, FloatArray],
+) -> tuple[Optional[FloatArray], int]:
+    seed = np.concatenate((seed_launch[2:6], [math.log(seed_launch[6])]))
+    lo, hi = bounds
+    seed = np.clip(seed, lo + 1.0e-10, hi - 1.0e-10)
+    target5 = target[2:7]
+    cache_x: Optional[FloatArray] = None
+    cache_value = None
+
+    def evaluate(x):
+        nonlocal cache_x, cache_value
+        x = np.asarray(x, dtype=float)
+        if cache_x is None or not np.array_equal(x, cache_x):
+            cache_x = x.copy()
+            cache_value = ExtremalAtlas._shooting_residual_and_jacobian(
+                x, float(target[0]), float(target[1]), target5, query_config
+            )
+        return cache_value
+
+    result = least_squares(
+        lambda x: evaluate(x)[0],
+        seed,
+        bounds=(lo, hi),
+        method="trf",
+        jac=lambda x: evaluate(x)[1],
+        x_scale="jac",
+        max_nfev=query_config.max_nfev,
+        ftol=1.0e-11,
+        xtol=1.0e-11,
+        gtol=1.0e-11,
+    )
+    _scaled, _jac, yf, normal_constant, status, launch = evaluate(result.x)
+    if yf is None or status != "ok" or normal_constant <= 0.0:
+        return None, int(result.nfev)
+    radius, theta, ur, ut, kappa = _endpoint_from_state(yf)
+    raw = np.array(
+        [
+            math.log(radius) - target5[0],
+            theta - target5[1],
+            ur - target5[2],
+            ut - target5[3],
+            math.log(kappa) - target5[4],
+        ],
+        dtype=float,
+    )
+    if np.any(np.abs(raw) > np.asarray(query_config.acceptance, dtype=float)):
+        return None, int(result.nfev)
+    launch = launch.copy()
+    launch[0:2] = target[0:2]
+    return launch, int(result.nfev)
+
+
+def _continuation_correct_target(
+    source_launch: FloatArray,
+    source_endpoint: FloatArray,
+    target: FloatArray,
+    query_config: QueryConfig,
+    bounds: tuple[FloatArray, FloatArray],
+    steps: int,
+) -> tuple[Optional[FloatArray], int]:
+    """Homotopy in all seven endpoint coordinates from a known extremal."""
+    current_launch = np.asarray(source_launch, dtype=float).copy()
+    total_nfev = 0
+    for fraction in np.linspace(1.0 / steps, 1.0, steps):
+        intermediate = (1.0 - fraction) * source_endpoint + fraction * target
+        corrected, nfev = _correct_target_from_explicit_seed(
+            intermediate, current_launch, query_config, bounds
+        )
+        total_nfev += nfev
+        if corrected is None:
+            return None, total_nfev
+        current_launch = corrected
+    current_launch[0:2] = target[0:2]
+    return current_launch, total_nfev
+
+
+def _diagnostics_for_exact_launch(
+    launch: FloatArray,
+    config: AtlasConfig,
+) -> Optional[FloatArray]:
+    t_eval = np.linspace(0.0, float(launch[6]), config.diagnostic_points)
+    sol, normal_constant, status = _integrate_launch(
+        launch,
+        rtol=config.rtol,
+        atol=config.atol,
+        max_step=config.max_step,
+        r_collision=config.r_collision,
+        r_escape=config.r_escape,
+        max_acceleration=config.max_acceleration,
+        t_eval=t_eval,
+    )
+    if sol is None or status != "ok" or normal_constant <= 0.0:
+        return None
+    radii = np.linalg.norm(sol.y[0:2, :], axis=0)
+    acceleration = np.linalg.norm(sol.y[4:6, :], axis=0)
+    theta = float(sol.y[9, -1])
+    return np.array(
+        [
+            normal_constant,
+            float(np.min(radii)),
+            float(np.max(radii)),
+            float(np.max(acceleration)),
+            float(_count_radial_turns(sol.y)),
+            float(round(theta / (2.0 * math.pi))),
+        ],
+        dtype=float,
+    )
+
+
+def _evaluate_circular_targets(
+    targets: FloatArray,
+    atlas_launch: FloatArray,
+    atlas_endpoint: FloatArray,
+    feature_scale: FloatArray,
+    query_config: QueryConfig,
+    config: AtlasConfig,
+    *,
+    continuation_limit: Optional[int] = None,
+    seed_jacobian: Optional[FloatArray] = None,
+    seed_condition: Optional[FloatArray] = None,
+    q_scale: Optional[FloatArray] = None,
+) -> tuple[NDArray[np.bool_], FloatArray, list[Optional[FloatArray]], int]:
+    """Solve exact circular probes with bounded continuation work.
+
+    Every target first receives the normal nearest-neighbour/Newton attempt.
+    Homotopy continuation is then applied only to the closest failed targets,
+    capped by ``continuation_limit``.  This keeps large persistent circular
+    banks computationally tractable while allowing the solved frontier to grow
+    from round to round.
+    """
+    success = np.zeros(len(targets), dtype=bool)
+    distances = np.full(len(targets), np.inf, dtype=float)
+    corrected: list[Optional[FloatArray]] = [None] * len(targets)
+    if len(targets) == 0 or len(atlas_launch) == 0:
+        return success, distances, corrected, 0
+
+    tree = cKDTree(atlas_endpoint / feature_scale)
+    bounds = _combined_correction_bounds(config, atlas_launch, 0.25)
+    k_nearest = min(config.coverage.circular_nearest_seeds, len(atlas_launch))
+    nearest_distance, nearest_index = tree.query(
+        targets / feature_scale,
+        k=k_nearest,
+    )
+    nearest_distance = np.asarray(nearest_distance, dtype=float)
+    nearest_index = np.asarray(nearest_index, dtype=int)
+    if nearest_distance.ndim == 1:
+        if len(targets) == 1:
+            nearest_distance = nearest_distance.reshape(1, -1)
+            nearest_index = nearest_index.reshape(1, -1)
+        elif k_nearest == 1:
+            nearest_distance = nearest_distance[:, None]
+            nearest_index = nearest_index[:, None]
+    distances[:] = nearest_distance[:, 0]
+
+    total_nfev = 0
+    # Direct correction is much cheaper than continuation and is attempted for
+    # the entire selected batch.
+    for probe_index, target in enumerate(targets):
+        launch, _distance, nfev = _fast_correct_target(
+            target,
+            atlas_launch,
+            atlas_endpoint,
+            feature_scale,
+            query_config,
+            tree=tree,
+            bounds=bounds,
+            seed_jacobian=seed_jacobian,
+            seed_condition=seed_condition,
+            q_scale=q_scale,
+            coverage_config=config.coverage,
+        )
+        total_nfev += nfev
+        corrected[probe_index] = launch
+        success[probe_index] = launch is not None
+
+    failed = np.flatnonzero(~success)
+    if continuation_limit is None:
+        continuation_limit = len(failed)
+    continuation_limit = max(0, min(int(continuation_limit), len(failed)))
+    # Grow outward from the currently best represented circular region.
+    failed = failed[np.argsort(distances[failed])]
+    for probe_index in failed[:continuation_limit]:
+        target = targets[probe_index]
+        for seed_index in np.atleast_1d(nearest_index[probe_index]):
+            seed_index = int(seed_index)
+            launch, nfev = _continuation_correct_target(
+                atlas_launch[seed_index],
+                atlas_endpoint[seed_index],
+                target,
+                query_config,
+                bounds,
+                config.coverage.circular_homotopy_steps,
+            )
+            total_nfev += nfev
+            if launch is not None:
+                corrected[probe_index] = launch
+                success[probe_index] = True
+                break
+    return success, distances, corrected, total_nfev
+
+
+def _append_rows_with_distance_filter(
+    atlas_launch: FloatArray,
+    atlas_endpoint: FloatArray,
+    atlas_diag: FloatArray,
+    new_launch: FloatArray,
+    new_endpoint: FloatArray,
+    new_diag: FloatArray,
+    feature_scale: FloatArray,
+    minimum_distance: float,
+    capacity: int,
+) -> tuple[FloatArray, FloatArray, FloatArray, int]:
+    if capacity <= 0 or len(new_launch) == 0:
+        return atlas_launch, atlas_endpoint, atlas_diag, 0
+    tree = cKDTree(atlas_endpoint / feature_scale)
+    distances, _ = tree.query(new_endpoint / feature_scale, k=1)
+    labels = _branch_labels(new_diag)
+    order = np.argsort(distances)[::-1]
+    occupied: set[tuple[int, ...]] = set()
+    keep: list[int] = []
+    inv = 1.0 / max(minimum_distance, 1.0e-12)
+    for index in order:
+        if distances[index] < minimum_distance:
+            continue
+        cell = tuple(np.floor(new_endpoint[index] / feature_scale * inv).astype(np.int64)) + tuple(labels[index])
+        if cell in occupied:
+            continue
+        occupied.add(cell)
+        keep.append(int(index))
+        if len(keep) >= capacity:
+            break
+    if not keep:
+        return atlas_launch, atlas_endpoint, atlas_diag, 0
+    idx = np.asarray(keep, dtype=int)
+    return (
+        np.vstack((atlas_launch, new_launch[idx])),
+        np.vstack((atlas_endpoint, new_endpoint[idx])),
+        np.vstack((atlas_diag, new_diag[idx])),
+        int(len(idx)),
+    )
+
+
+
+def _append_atlas_rows(
+    atlas_launch: FloatArray,
+    atlas_endpoint: FloatArray,
+    atlas_diag: FloatArray,
+    atlas_jacobian: FloatArray,
+    atlas_condition: FloatArray,
+    atlas_sigma_min: FloatArray,
+    new_launch: FloatArray,
+    new_endpoint: FloatArray,
+    new_diag: FloatArray,
+) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray, FloatArray, FloatArray]:
+    if len(new_launch) == 0:
+        return (
+            atlas_launch,
+            atlas_endpoint,
+            atlas_diag,
+            atlas_jacobian,
+            atlas_condition,
+            atlas_sigma_min,
+        )
+    new_jac, new_condition, new_sigma = _empty_jacobian_arrays(len(new_launch))
+    return (
+        np.vstack((atlas_launch, new_launch)),
+        np.vstack((atlas_endpoint, new_endpoint)),
+        np.vstack((atlas_diag, new_diag)),
+        np.concatenate((atlas_jacobian, new_jac), axis=0),
+        np.concatenate((atlas_condition, new_condition)),
+        np.concatenate((atlas_sigma_min, new_sigma)),
+    )
+
+
+def _jacobian_priority_indices(
+    atlas_endpoint: FloatArray,
+    probe_endpoint: FloatArray,
+    atlas_jacobian: FloatArray,
+    feature_scale: FloatArray,
+    limit: int,
+) -> FloatArray:
+    if limit <= 0 or len(atlas_endpoint) == 0:
+        return np.empty(0, dtype=int)
+    missing = ~np.all(np.isfinite(atlas_jacobian), axis=(1, 2))
+    if not np.any(missing):
+        return np.empty(0, dtype=int)
+    candidates: list[int] = []
+    if len(probe_endpoint):
+        tree = cKDTree(atlas_endpoint / feature_scale)
+        k = min(4, len(atlas_endpoint))
+        _dist, idx = tree.query(probe_endpoint / feature_scale, k=k)
+        candidates.extend(map(int, np.atleast_1d(idx).ravel()))
+    candidates.extend(map(int, np.flatnonzero(missing)))
+    unique = []
+    seen = set()
+    for index in candidates:
+        if index in seen or not missing[index]:
+            continue
+        seen.add(index)
+        unique.append(index)
+        if len(unique) >= limit:
+            break
+    return np.asarray(unique, dtype=int)
+
+
+def _probe_metrics(success: NDArray[np.bool_], distance: FloatArray) -> dict:
+    if len(success) == 0:
+        return {
+            "rows": 0,
+            "successes": 0,
+            "success_rate": 0.0,
+            "median_distance": math.inf,
+            "p95_distance": math.inf,
+            "p99_distance": math.inf,
+        }
+    return {
+        "rows": int(len(success)),
+        "successes": int(np.count_nonzero(success)),
+        "success_rate": float(np.mean(success)),
+        "median_distance": float(np.median(distance)),
+        "p95_distance": float(np.quantile(distance, 0.95)),
+        "p99_distance": float(np.quantile(distance, 0.99)),
+    }
+
+
+
+def _coverage_distances(
+    targets: FloatArray,
+    atlas_endpoint: FloatArray,
+    feature_scale: FloatArray,
+    jacobian: Optional[FloatArray],
+    condition: Optional[FloatArray],
+    config: AtlasConfig,
+) -> FloatArray:
+    """Nearest chart distance, using the local inverse Jacobian when regular."""
+    if len(targets) == 0 or len(atlas_endpoint) == 0:
+        return np.full(len(targets), np.inf, dtype=float)
+    tree = cKDTree(atlas_endpoint / feature_scale)
+    _euclidean, nearest = tree.query(targets / feature_scale, k=1)
+    nearest = np.asarray(nearest, dtype=int)
+    q_scale = _launch_q_scale(config)
+    output = np.empty(len(targets), dtype=float)
+    for i, (target, seed) in enumerate(zip(targets, nearest)):
+        output[i] = _jacobian_seed_distance(
+            target,
+            int(seed),
+            atlas_endpoint,
+            feature_scale,
+            jacobian,
+            condition,
+            q_scale,
+            config.coverage,
+        )[0]
+    return output
+
+
+def _atomic_save_npz(
+    path: str | Path,
+    *,
+    compressed: bool = True,
+    **arrays,
+) -> Path:
+    """Atomically replace an NPZ file after a complete temporary write.
+
+    A process interruption can therefore leave either the previous valid
+    checkpoint or the new valid checkpoint, but not a half-written target.
+    """
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp.npz")
+    writer = np.savez_compressed if compressed else np.savez
+    try:
+        writer(temporary, **arrays)
+        # Flush the completed temporary file before the atomic rename.
+        fd = os.open(temporary, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(temporary, target)
+        try:
+            dir_fd = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            # Directory fsync is not supported on every platform/filesystem.
+            pass
+    finally:
+        if temporary.exists():
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+    return target
+
+
+def _checkpoint_config_matches(saved: dict, current: AtlasConfig) -> bool:
+    """Require an exact generation configuration match for safe resume."""
+    left = json.dumps(saved, sort_keys=True, separators=(",", ":"))
+    right = json.dumps(asdict(current), sort_keys=True, separators=(",", ":"))
+    return left == right
+
+
+def generate_atlas(path: str | Path, config: AtlasConfig, *, resume: bool = False) -> Path:
+    """Generate an adaptive convergence-cell atlas.
+
+    Point selection is driven by a cumulative feasible validation reservoir,
+    independent fresh audits, acquisition scoring, lazy exact endpoint
+    Jacobians, local frontier expansion, and conservative coverage-dominance
+    pruning.  A complete atomic NPZ checkpoint is written after initialization,
+    every configured number of rounds, and on graceful interruption.
     """
     config.validate()
     if not config.coverage.enabled:
@@ -1263,219 +2749,1256 @@ def generate_atlas(path: str | Path, config: AtlasConfig) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     coverage = config.coverage
     launches = _sample_launches(config)
-    initial_count = int(round(config.n_samples * coverage.initial_fraction))
-    initial_count = min(max(initial_count, 1), max(config.n_samples - 1, 1))
+    q_scale = _launch_q_scale(config)
 
-    print(f"Integrating initial coverage seed launches: {initial_count:,}")
-    seed_launch, seed_endpoint, seed_diag = _generate_rows_from_launches(
-        launches[:initial_count], config
+    initial_count = int(round(config.n_samples * coverage.initial_fraction))
+    initial_count = min(max(initial_count, 1), max(config.n_samples - 2, 1))
+    remaining_after_initial = max(0, config.n_samples - initial_count)
+    reservoir_launch_count = min(
+        coverage.persistent_validation_launches,
+        max(1, remaining_after_initial // 3),
     )
-    if len(seed_launch) == 0:
-        raise RuntimeError("No initial atlas samples survived integration")
+
+    resumed = False
+    phase = "initial"
+    initial_rows_before_thinning = 0
+    last_fresh_launch = np.empty((0, 7), dtype=float)
+    last_fresh_endpoint = np.empty((0, 7), dtype=float)
+    last_fresh_diag = np.empty((0, 6), dtype=float)
+    last_fresh_success = np.empty(0, dtype=bool)
+    last_fresh_distance = np.empty(0, dtype=float)
+
+    atlas_launch = np.empty((0, 7), dtype=float)
+    atlas_endpoint = np.empty((0, 7), dtype=float)
+    atlas_diag = np.empty((0, 6), dtype=float)
+    atlas_jacobian, atlas_condition, atlas_sigma_min = _empty_jacobian_arrays(0)
+    reservoir_launch = np.empty((0, 7), dtype=float)
+    reservoir_endpoint = np.empty((0, 7), dtype=float)
+    reservoir_diag = np.empty((0, 6), dtype=float)
+    reservoir_tested = np.empty(0, dtype=bool)
+    reservoir_success = np.empty(0, dtype=bool)
+    reservoir_distance = np.empty(0, dtype=float)
+    circular_targets = np.empty((0, 7), dtype=float)
+    circular_tested_state = np.empty(0, dtype=bool)
+    circular_success_state = np.empty(0, dtype=bool)
+    circular_distance_state = np.empty(0, dtype=float)
+    circular_corrected_state: list[Optional[FloatArray]] = []
 
     if config.feature_scale is None:
-        feature_scale = _robust_feature_scale(seed_endpoint)
+        feature_scale = np.ones(7, dtype=float)
+        feature_scale_initialized = False
     else:
         feature_scale = np.asarray(config.feature_scale, dtype=float)
         if feature_scale.shape != (7,) or np.any(feature_scale <= 0.0):
             raise ValueError("feature_scale must contain seven positive values")
+        feature_scale_initialized = True
 
-    atlas_launch, atlas_endpoint, atlas_diag = _thin_endpoint_rows(
-        seed_launch,
-        seed_endpoint,
-        seed_diag,
-        feature_scale,
-        coverage.initial_cell_size,
-        coverage.max_atlas_rows,
-    )
-    print(
-        f"Initial accepted rows: {len(seed_launch):,}; "
-        f"after coarse branch-aware thinning: {len(atlas_launch):,}"
-    )
-
-    rng = np.random.default_rng(coverage.validation_seed)
-    query_config = _coverage_query_config(config)
-    cursor = initial_count
-    successful_rounds = 0
+    cursor = 0
     round_number = 0
+    successful_rounds = 0
     coverage_history: list[dict] = []
-    last_probe_endpoint = np.empty((0, 7), dtype=float)
-    last_probe_success = np.empty(0, dtype=bool)
+    rng = np.random.default_rng(coverage.validation_seed)
 
-    while (
-        cursor < config.n_samples
-        and round_number < coverage.max_rounds
-        and len(atlas_launch) < coverage.max_atlas_rows
-    ):
-        round_number += 1
-        stop = min(cursor + coverage.batch_launches, config.n_samples)
-        batch_launches = launches[cursor:stop]
-        cursor = stop
-        candidate_launch, candidate_endpoint, candidate_diag = _generate_rows_from_launches(
-            batch_launches, config
+    def save_bootstrap_checkpoint(reason: str, *, interrupted: bool = False) -> None:
+        """Save initialization/reservoir progress before the main coverage loop exists."""
+        if not coverage.checkpoint_enabled:
+            return
+        row_count = len(atlas_launch)
+        checkpoint_metadata = {
+            "format_version": 5,
+            "model": "planar-kepler-costate-free-normal-pmp",
+            "atlas_strategy": "cumulative-reservoir-jacobian-acquisition-frontier",
+            "launch_columns": ["u0", "w0", "Ar0", "At0", "Jr0", "ell", "tau"],
+            "endpoint_columns": [
+                "u0", "w0", "log_rho", "theta_unwrapped", "ur_final", "ut_final", "log_kappa"
+            ],
+            "diagnostic_columns": [
+                "normal_constant", "minimum_radius", "maximum_radius",
+                "maximum_acceleration", "radial_turns", "rounded_winding"
+            ],
+            "jacobian_columns": [
+                "log_rho", "theta_unwrapped", "ur_final", "ut_final", "log_kappa"
+            ],
+            "jacobian_parameters": ["Ar0", "At0", "Jr0", "ell", "log_tau"],
+            "config": asdict(config),
+            "accepted_atlas_rows": int(row_count),
+            "initial_rows_before_thinning": int(initial_rows_before_thinning),
+            "validation_reservoir_rows": int(len(reservoir_endpoint)),
+            "validation_reservoir_tested": int(np.count_nonzero(reservoir_tested)),
+            "circular_validation_rows": int(len(circular_targets)),
+            "computed_jacobians": int(
+                np.count_nonzero(np.all(np.isfinite(atlas_jacobian), axis=(1, 2)))
+            ) if row_count else 0,
+            "integrated_launch_attempts": int(cursor),
+            "launch_attempt_budget": int(config.n_samples),
+            "subarcs_per_trajectory": int(config.subarcs_per_trajectory),
+            "coverage_converged": False,
+            "generation_complete": False,
+            "generation_interrupted": bool(interrupted),
+            "checkpoint_reason": reason,
+            "checkpoint_round": int(round_number),
+            "coverage_successful_rounds": int(successful_rounds),
+            "coverage_history": coverage_history,
+            "generation_state": {
+                "phase": phase,
+                "cursor": int(cursor),
+                "round_number": int(round_number),
+                "successful_rounds": int(successful_rounds),
+                "feature_scale_initialized": bool(feature_scale_initialized),
+                "rng_state": rng.bit_generator.state,
+            },
+            "coverage_definition": (
+                "Known-feasible cumulative reservoir and fresh audits are covered only "
+                "when exact shooting correction converges. Local inverse-Jacobian effort "
+                "defines chart distance when available."
+            ),
+        }
+        _atomic_save_npz(
+            path,
+            compressed=coverage.checkpoint_compressed,
+            launch=atlas_launch,
+            endpoint=atlas_endpoint,
+            diagnostics=atlas_diag,
+            feature_scale=feature_scale,
+            endpoint_jacobian=atlas_jacobian,
+            jacobian_condition=atlas_condition,
+            jacobian_sigma_min=atlas_sigma_min,
+            coverage_radius=np.zeros(row_count, dtype=float),
+            coverage_success_count=np.zeros(row_count, dtype=np.int32),
+            coverage_failure_count=np.zeros(row_count, dtype=np.int32),
+            persistent_probe_launch=reservoir_launch,
+            persistent_probe_endpoint=reservoir_endpoint,
+            persistent_probe_diagnostics=reservoir_diag,
+            persistent_probe_tested=reservoir_tested,
+            persistent_probe_success=reservoir_success,
+            persistent_probe_distance=reservoir_distance,
+            circular_probe_endpoint=circular_targets,
+            circular_probe_tested=circular_tested_state,
+            circular_probe_success=circular_success_state,
+            circular_probe_distance=circular_distance_state,
+            circular_probe_status=np.where(
+                ~circular_tested_state,
+                0,
+                np.where(circular_success_state, 1, 2),
+            ).astype(np.int8),
+            last_fresh_launch=last_fresh_launch,
+            last_fresh_endpoint=last_fresh_endpoint,
+            last_fresh_diagnostics=last_fresh_diag,
+            last_fresh_success=last_fresh_success,
+            last_fresh_distance=last_fresh_distance,
+            metadata_json=np.array(json.dumps(checkpoint_metadata)),
         )
-        if len(candidate_launch) == 0:
-            coverage_history.append(
-                {"round": round_number, "launches": int(len(batch_launches)), "rows": 0}
+        print(
+            f"Bootstrap checkpoint saved after {reason}: {path} "
+            f"(phase={phase}, rows={row_count:,}, cursor={cursor:,}/{config.n_samples:,})"
+        )
+
+    if resume and path.exists():
+        with np.load(path, allow_pickle=False) as data:
+            saved_metadata = json.loads(str(data["metadata_json"].item()))
+            if not _checkpoint_config_matches(saved_metadata.get("config", {}), config):
+                raise ValueError(
+                    "Checkpoint configuration does not match the requested configuration. "
+                    "Resume with the original JSON or choose a new output path."
+                )
+            if saved_metadata.get("generation_complete", False):
+                print(f"Atlas generation is already complete: {path}")
+                return path
+            required = (
+                "launch", "endpoint", "diagnostics", "feature_scale",
+                "endpoint_jacobian", "jacobian_condition", "jacobian_sigma_min",
+                "persistent_probe_launch", "persistent_probe_endpoint",
+                "persistent_probe_diagnostics", "persistent_probe_tested",
+                "persistent_probe_success", "persistent_probe_distance",
+                "circular_probe_endpoint", "circular_probe_tested",
+                "circular_probe_success", "circular_probe_distance",
             )
-            continue
+            missing = [name for name in required if name not in data.files]
+            if missing:
+                raise ValueError(
+                    "The existing NPZ is not a resumable format-v5 checkpoint; missing arrays: "
+                    + ", ".join(missing)
+                )
+            atlas_launch = np.asarray(data["launch"], dtype=float)
+            atlas_endpoint = np.asarray(data["endpoint"], dtype=float)
+            atlas_diag = np.asarray(data["diagnostics"], dtype=float)
+            feature_scale = np.asarray(data["feature_scale"], dtype=float)
+            atlas_jacobian = np.asarray(data["endpoint_jacobian"], dtype=np.float32)
+            atlas_condition = np.asarray(data["jacobian_condition"], dtype=float)
+            atlas_sigma_min = np.asarray(data["jacobian_sigma_min"], dtype=float)
+            reservoir_launch = np.asarray(data["persistent_probe_launch"], dtype=float)
+            reservoir_endpoint = np.asarray(data["persistent_probe_endpoint"], dtype=float)
+            reservoir_diag = np.asarray(data["persistent_probe_diagnostics"], dtype=float)
+            reservoir_tested = np.asarray(data["persistent_probe_tested"], dtype=bool)
+            reservoir_success = np.asarray(data["persistent_probe_success"], dtype=bool)
+            reservoir_distance = np.asarray(data["persistent_probe_distance"], dtype=float)
+            circular_targets = np.asarray(data["circular_probe_endpoint"], dtype=float)
+            circular_tested_state = np.asarray(data["circular_probe_tested"], dtype=bool)
+            circular_success_state = np.asarray(data["circular_probe_success"], dtype=bool)
+            circular_distance_state = np.asarray(data["circular_probe_distance"], dtype=float)
+            if "last_fresh_launch" in data.files:
+                last_fresh_launch = np.asarray(data["last_fresh_launch"], dtype=float)
+                last_fresh_endpoint = np.asarray(data["last_fresh_endpoint"], dtype=float)
+                last_fresh_diag = np.asarray(data["last_fresh_diagnostics"], dtype=float)
+                last_fresh_success = np.asarray(data["last_fresh_success"], dtype=bool)
+                last_fresh_distance = np.asarray(data["last_fresh_distance"], dtype=float)
+        state = saved_metadata.get("generation_state", {})
+        phase = str(state.get("phase", "coverage"))
+        cursor = int(state.get("cursor", saved_metadata.get("integrated_launch_attempts", 0)))
+        round_number = int(state.get("round_number", 0))
+        successful_rounds = int(state.get("successful_rounds", 0))
+        feature_scale_initialized = bool(state.get("feature_scale_initialized", True))
+        coverage_history = list(saved_metadata.get("coverage_history", []))
+        initial_rows_before_thinning = int(
+            saved_metadata.get("initial_rows_before_thinning", len(atlas_launch))
+        )
+        if "rng_state" in state:
+            rng.bit_generator.state = state["rng_state"]
+        circular_corrected_state = [None] * len(circular_targets)
+        resumed = True
+        print(
+            f"Resuming checkpoint {path}: phase={phase}, round {round_number}, "
+            f"launch cursor {cursor:,}/{config.n_samples:,}, atlas rows {len(atlas_launch):,}"
+        )
+    elif resume:
+        raise FileNotFoundError(f"Cannot resume; checkpoint does not exist: {path}")
 
-        validation_indices = _select_validation_indices(
-            candidate_endpoint,
-            candidate_diag,
+    bootstrap_chunk = max(1, int(coverage.checkpoint_bootstrap_launches))
+    reservoir_start = initial_count
+    reservoir_stop = min(reservoir_start + reservoir_launch_count, config.n_samples)
+
+    try:
+        if not resumed and coverage.checkpoint_enabled and coverage.checkpoint_initial:
+            save_bootstrap_checkpoint("empty initialization checkpoint")
+
+        if phase == "initial":
+            if cursor < initial_count:
+                print(
+                    f"Integrating initial coverage seed launches in chunks of "
+                    f"{bootstrap_chunk:,}: {initial_count - cursor:,} remaining"
+                )
+            while cursor < initial_count:
+                stop = min(cursor + bootstrap_chunk, initial_count)
+                new_launch, new_endpoint, new_diag = _generate_rows_from_launches(
+                    launches[cursor:stop], config
+                )
+                initial_rows_before_thinning += int(len(new_launch))
+                if len(new_launch):
+                    if not feature_scale_initialized:
+                        feature_scale = _robust_feature_scale(new_endpoint)
+                        feature_scale_initialized = True
+                    combined_launch = (
+                        np.vstack((atlas_launch, new_launch)) if len(atlas_launch) else new_launch
+                    )
+                    combined_endpoint = (
+                        np.vstack((atlas_endpoint, new_endpoint)) if len(atlas_endpoint) else new_endpoint
+                    )
+                    combined_diag = (
+                        np.vstack((atlas_diag, new_diag)) if len(atlas_diag) else new_diag
+                    )
+                    atlas_launch, atlas_endpoint, atlas_diag = _thin_endpoint_rows(
+                        combined_launch,
+                        combined_endpoint,
+                        combined_diag,
+                        feature_scale,
+                        coverage.initial_cell_size,
+                        coverage.max_atlas_rows,
+                    )
+                    atlas_jacobian, atlas_condition, atlas_sigma_min = _empty_jacobian_arrays(
+                        len(atlas_launch)
+                    )
+                cursor = stop
+                if coverage.checkpoint_enabled:
+                    save_bootstrap_checkpoint("initial launch chunk")
+            if len(atlas_launch) == 0:
+                raise RuntimeError("No initial atlas samples survived integration")
+            phase = "reservoir"
+            print(
+                f"Initial accepted rows before thinning: {initial_rows_before_thinning:,}; "
+                f"retained atlas rows: {len(atlas_launch):,}"
+            )
+            if coverage.checkpoint_enabled:
+                save_bootstrap_checkpoint("initial phase complete")
+
+        # Initial exact Jacobians are computed once the seed cloud exists.  The
+        # operation is idempotent, so it is safe to repeat after a bootstrap resume.
+        if phase == "reservoir" and coverage.jacobian_initial_rows > 0:
+            finite_j = np.all(np.isfinite(atlas_jacobian), axis=(1, 2))
+            needed_j = max(0, min(coverage.jacobian_initial_rows, len(atlas_endpoint)) - int(np.count_nonzero(finite_j)))
+            if needed_j:
+                jac_idx = _select_validation_indices(
+                    atlas_endpoint[~finite_j],
+                    atlas_diag[~finite_j],
+                    feature_scale,
+                    min(needed_j, int(np.count_nonzero(~finite_j))),
+                    rng,
+                    coverage.validation_reservoir_cell_size,
+                )
+                missing_global = np.flatnonzero(~finite_j)[jac_idx]
+                computed = _ensure_seed_jacobians(
+                    atlas_launch,
+                    atlas_jacobian,
+                    atlas_condition,
+                    atlas_sigma_min,
+                    missing_global,
+                    config,
+                )
+                print(f"Initial exact endpoint Jacobians computed: {computed:,}")
+                if coverage.checkpoint_enabled:
+                    save_bootstrap_checkpoint("initial Jacobian batch")
+
+        if phase == "reservoir":
+            if cursor < reservoir_start:
+                cursor = reservoir_start
+            if cursor < reservoir_stop:
+                print(
+                    f"Integrating cumulative feasible validation launches in chunks of "
+                    f"{bootstrap_chunk:,}: {reservoir_stop - cursor:,} remaining"
+                )
+            while cursor < reservoir_stop:
+                stop = min(cursor + bootstrap_chunk, reservoir_stop)
+                new_launch, new_endpoint, new_diag = _generate_rows_from_launches(
+                    launches[cursor:stop], config
+                )
+                if len(new_launch):
+                    zeros = np.zeros(len(new_launch), dtype=bool)
+                    infinities = np.full(len(new_launch), np.inf, dtype=float)
+                    (
+                        reservoir_launch,
+                        reservoir_endpoint,
+                        reservoir_diag,
+                        reservoir_tested,
+                        reservoir_success,
+                        reservoir_distance,
+                    ) = _merge_validation_reservoir(
+                        reservoir_launch,
+                        reservoir_endpoint,
+                        reservoir_diag,
+                        reservoir_tested,
+                        reservoir_success,
+                        reservoir_distance,
+                        new_launch,
+                        new_endpoint,
+                        new_diag,
+                        zeros,
+                        zeros,
+                        infinities,
+                        feature_scale,
+                        config,
+                    )
+                cursor = stop
+                if coverage.checkpoint_enabled:
+                    save_bootstrap_checkpoint("validation-reservoir launch chunk")
+            if len(reservoir_launch) == 0:
+                raise RuntimeError("No validation-reservoir extremals survived integration")
+            print(f"Cumulative validation reservoir rows: {len(reservoir_endpoint):,}")
+            if len(circular_targets) == 0:
+                circular_targets = _sample_circular_targets(config)
+                circular_tested_state = np.zeros(len(circular_targets), dtype=bool)
+                circular_success_state = np.zeros(len(circular_targets), dtype=bool)
+                circular_distance_state = np.full(len(circular_targets), np.inf, dtype=float)
+                circular_corrected_state = [None] * len(circular_targets)
+                if len(circular_targets):
+                    print(f"Persistent exact circular targets: {len(circular_targets):,}")
+            phase = "coverage"
+            if coverage.checkpoint_enabled:
+                save_bootstrap_checkpoint("bootstrap phases complete")
+    except KeyboardInterrupt:
+        if coverage.checkpoint_enabled and coverage.checkpoint_on_interrupt:
+            try:
+                save_bootstrap_checkpoint("keyboard interrupt during bootstrap", interrupted=True)
+            except BaseException as exc:
+                print(f"Bootstrap interrupt checkpoint could not be refreshed: {exc}")
+        print(
+            "Generation interrupted during bootstrap. Resume with the same command plus --resume."
+        )
+        return path
+
+    if phase != "coverage":
+        raise RuntimeError(f"Unexpected generation phase after bootstrap: {phase}")
+
+    query_config = _coverage_query_config(config)
+    circular_query_config = _coverage_query_config(config, circular=True)
+    correction_bounds = _combined_correction_bounds(config, atlas_launch, 0.25)
+
+    def coverage_cell_arrays() -> tuple[FloatArray, NDArray[np.int32], NDArray[np.int32]]:
+        endpoints: list[FloatArray] = []
+        successes: list[NDArray[np.bool_]] = []
+        if len(reservoir_endpoint):
+            endpoints.append(reservoir_endpoint[reservoir_tested])
+            successes.append(reservoir_success[reservoir_tested])
+        if len(circular_targets) and np.any(circular_tested_state):
+            endpoints.append(circular_targets[circular_tested_state])
+            successes.append(circular_success_state[circular_tested_state])
+        if not endpoints:
+            return (
+                np.zeros(len(atlas_launch), dtype=float),
+                np.zeros(len(atlas_launch), dtype=np.int32),
+                np.zeros(len(atlas_launch), dtype=np.int32),
+            )
+        return _estimate_coverage_cells(
+            atlas_endpoint,
             feature_scale,
-            coverage.validation_rows,
-            rng,
-            coverage.validation_cell_size,
+            np.vstack(endpoints),
+            np.concatenate(successes),
+            jacobian=atlas_jacobian,
+            condition=atlas_condition,
+            config=config,
         )
-        tree = cKDTree(atlas_endpoint / feature_scale)
-        correction_bounds = _launch_correction_bounds(
-            atlas_launch, query_config.launch_bound_margin
-        )
-        success = np.zeros(len(validation_indices), dtype=bool)
-        nearest_distance = np.full(len(validation_indices), np.inf, dtype=float)
-        nfev_total = 0
 
-        for local, candidate_index in enumerate(validation_indices):
-            corrected, distance, nfev = _fast_correct_target(
-                candidate_endpoint[candidate_index],
+    def save_checkpoint(
+        reason: str, *, interrupted: bool = False, fast: bool = False
+    ) -> None:
+        if not coverage.checkpoint_enabled:
+            return
+        if fast:
+            radius = np.zeros(len(atlas_launch), dtype=float)
+            success_count = np.zeros(len(atlas_launch), dtype=np.int32)
+            failure_count = np.zeros(len(atlas_launch), dtype=np.int32)
+        else:
+            radius, success_count, failure_count = coverage_cell_arrays()
+        checkpoint_metadata = {
+            "format_version": 5,
+            "model": "planar-kepler-costate-free-normal-pmp",
+            "atlas_strategy": "cumulative-reservoir-jacobian-acquisition-frontier",
+            "launch_columns": ["u0", "w0", "Ar0", "At0", "Jr0", "ell", "tau"],
+            "endpoint_columns": [
+                "u0",
+                "w0",
+                "log_rho",
+                "theta_unwrapped",
+                "ur_final",
+                "ut_final",
+                "log_kappa",
+            ],
+            "diagnostic_columns": [
+                "normal_constant",
+                "minimum_radius",
+                "maximum_radius",
+                "maximum_acceleration",
+                "radial_turns",
+                "rounded_winding",
+            ],
+            "jacobian_columns": [
+                "log_rho",
+                "theta_unwrapped",
+                "ur_final",
+                "ut_final",
+                "log_kappa",
+            ],
+            "jacobian_parameters": ["Ar0", "At0", "Jr0", "ell", "log_tau"],
+            "config": asdict(config),
+            "accepted_atlas_rows": int(len(atlas_launch)),
+            "initial_rows_before_thinning": int(initial_rows_before_thinning),
+            "validation_reservoir_rows": int(len(reservoir_endpoint)),
+            "validation_reservoir_tested": int(np.count_nonzero(reservoir_tested)),
+            "circular_validation_rows": int(len(circular_targets)),
+            "computed_jacobians": int(
+                np.count_nonzero(np.all(np.isfinite(atlas_jacobian), axis=(1, 2)))
+            ),
+            "integrated_launch_attempts": int(cursor),
+            "launch_attempt_budget": int(config.n_samples),
+            "subarcs_per_trajectory": int(config.subarcs_per_trajectory),
+            "coverage_converged": False,
+            "generation_complete": False,
+            "generation_interrupted": bool(interrupted),
+            "checkpoint_reason": reason,
+            "checkpoint_round": int(round_number),
+            "coverage_successful_rounds": int(successful_rounds),
+            "coverage_history": coverage_history,
+            "generation_state": {
+                "phase": phase,
+                "cursor": int(cursor),
+                "round_number": int(round_number),
+                "successful_rounds": int(successful_rounds),
+                "feature_scale_initialized": bool(feature_scale_initialized),
+                "rng_state": rng.bit_generator.state,
+            },
+            "coverage_definition": (
+                "Known-feasible cumulative reservoir and fresh audits are covered only "
+                "when exact shooting correction converges.  Local inverse-Jacobian "
+                "effort defines chart distance when available."
+            ),
+        }
+        _atomic_save_npz(
+            path,
+            compressed=coverage.checkpoint_compressed,
+            launch=atlas_launch,
+            endpoint=atlas_endpoint,
+            diagnostics=atlas_diag,
+            feature_scale=feature_scale,
+            endpoint_jacobian=atlas_jacobian,
+            jacobian_condition=atlas_condition,
+            jacobian_sigma_min=atlas_sigma_min,
+            coverage_radius=radius,
+            coverage_success_count=success_count,
+            coverage_failure_count=failure_count,
+            persistent_probe_launch=reservoir_launch,
+            persistent_probe_endpoint=reservoir_endpoint,
+            persistent_probe_diagnostics=reservoir_diag,
+            persistent_probe_tested=reservoir_tested,
+            persistent_probe_success=reservoir_success,
+            persistent_probe_distance=reservoir_distance,
+            circular_probe_endpoint=circular_targets,
+            circular_probe_tested=circular_tested_state,
+            circular_probe_success=circular_success_state,
+            circular_probe_distance=circular_distance_state,
+            circular_probe_status=np.where(
+                ~circular_tested_state,
+                0,
+                np.where(circular_success_state, 1, 2),
+            ).astype(np.int8),
+            last_fresh_launch=last_fresh_launch,
+            last_fresh_endpoint=last_fresh_endpoint,
+            last_fresh_diagnostics=last_fresh_diag,
+            last_fresh_success=last_fresh_success,
+            last_fresh_distance=last_fresh_distance,
+            metadata_json=np.array(json.dumps(checkpoint_metadata)),
+        )
+        print(
+            f"Checkpoint saved atomically after {reason}: {path} "
+            f"({len(atlas_launch):,} rows, cursor {cursor:,}/{config.n_samples:,})"
+        )
+
+    if not resumed and coverage.checkpoint_enabled and coverage.checkpoint_initial:
+        save_checkpoint("initialization")
+
+    try:
+        while (
+            cursor < config.n_samples
+            and round_number < coverage.max_rounds
+            and len(atlas_launch) < coverage.max_atlas_rows
+        ):
+            round_number += 1
+            stop = min(cursor + coverage.batch_launches, config.n_samples)
+            batch_launches = launches[cursor:stop]
+            cursor = stop
+            candidate_launch, candidate_endpoint, candidate_diag = _generate_rows_from_launches(
+                batch_launches, config
+            )
+            # The canonical subarc transformation can create launch/time values
+            # outside the original sampling box; refresh the safe correction
+            # bounds as the atlas grows.
+            correction_bounds = _combined_correction_bounds(config, atlas_launch, 0.25)
+
+            if len(candidate_launch) == 0:
+                coverage_history.append(
+                    {
+                        "round": round_number,
+                        "launch_attempts": int(len(batch_launches)),
+                        "candidate_rows": 0,
+                    }
+                )
+                if coverage.checkpoint_enabled:
+                    save_checkpoint(f"empty coverage round {round_number}")
+                continue
+
+            audit_indices = _select_validation_indices(
+                candidate_endpoint,
+                candidate_diag,
+                feature_scale,
+                min(coverage.validation_rows, len(candidate_endpoint)),
+                rng,
+                coverage.validation_cell_size,
+            )
+            audit_launch = candidate_launch[audit_indices]
+            audit_endpoint = candidate_endpoint[audit_indices]
+            audit_diag = candidate_diag[audit_indices]
+
+            # Compute exact Jacobians where they provide the most value: near
+            # unresolved reservoir probes, fresh audits, and circular targets.
+            jacobian_probe_parts = [audit_endpoint]
+            unresolved_for_jac = reservoir_endpoint[~reservoir_success]
+            if len(unresolved_for_jac):
+                jacobian_probe_parts.append(unresolved_for_jac)
+            if len(circular_targets):
+                jacobian_probe_parts.append(circular_targets[~circular_success_state])
+            jacobian_probes = np.vstack(jacobian_probe_parts)
+            jacobian_indices = _jacobian_priority_indices(
+                atlas_endpoint,
+                jacobian_probes,
+                atlas_jacobian,
+                feature_scale,
+                coverage.jacobian_compute_per_round,
+            )
+            jacobians_computed = _ensure_seed_jacobians(
+                atlas_launch,
+                atlas_jacobian,
+                atlas_condition,
+                atlas_sigma_min,
+                jacobian_indices,
+                config,
+            )
+
+            # Independent fresh audit.
+            audit_success, audit_distance, _audit_corrected, nfev_audit = _evaluate_probe_set(
+                audit_endpoint,
                 atlas_launch,
                 atlas_endpoint,
                 feature_scale,
                 query_config,
-                tree=tree,
-                bounds=correction_bounds,
+                correction_bounds,
+                seed_jacobian=atlas_jacobian,
+                seed_condition=atlas_condition,
+                q_scale=q_scale,
+                coverage_config=coverage,
             )
-            success[local] = corrected is not None
-            nearest_distance[local] = distance
-            nfev_total += nfev
+            fresh_metrics = _probe_metrics(audit_success, audit_distance)
+            last_fresh_launch = audit_launch.copy()
+            last_fresh_endpoint = audit_endpoint.copy()
+            last_fresh_diag = audit_diag.copy()
+            last_fresh_success = audit_success.copy()
+            last_fresh_distance = audit_distance.copy()
 
-        tested = len(validation_indices)
-        success_rate = float(np.mean(success)) if tested else 0.0
-        failed_local = np.flatnonzero(~success)
-        failed_candidate_indices = validation_indices[failed_local]
+            # Add fresh feasible probes to the cumulative spatially diverse bank.
+            (
+                reservoir_launch,
+                reservoir_endpoint,
+                reservoir_diag,
+                reservoir_tested,
+                reservoir_success,
+                reservoir_distance,
+            ) = _merge_validation_reservoir(
+                reservoir_launch,
+                reservoir_endpoint,
+                reservoir_diag,
+                reservoir_tested,
+                reservoir_success,
+                reservoir_distance,
+                audit_launch,
+                audit_endpoint,
+                audit_diag,
+                np.ones(len(audit_endpoint), dtype=bool),
+                audit_success,
+                audit_distance,
+                feature_scale,
+                config,
+            )
 
-        # Distances indexed in candidate-row space for insertion ranking.
-        candidate_distances = np.full(len(candidate_launch), -np.inf, dtype=float)
-        candidate_distances[validation_indices] = nearest_distance
-        remaining_capacity = max(0, coverage.max_atlas_rows - len(atlas_launch))
-        insertion_limit = min(coverage.insert_failures_per_round, remaining_capacity)
-        insert_indices = _failure_insertion_indices(
-            failed_candidate_indices,
-            candidate_distances,
-            candidate_endpoint,
-            candidate_diag,
-            feature_scale,
-            coverage.insertion_cell_size,
-            insertion_limit,
-        )
-        if len(insert_indices):
-            atlas_launch = np.vstack((atlas_launch, candidate_launch[insert_indices]))
-            atlas_endpoint = np.vstack((atlas_endpoint, candidate_endpoint[insert_indices]))
-            atlas_diag = np.vstack((atlas_diag, candidate_diag[insert_indices]))
+            # Retest a bounded priority subset: never-tested probes first, then
+            # failed probes with the largest current chart distance.
+            unresolved = np.flatnonzero(~reservoir_tested | ~reservoir_success)
+            if len(unresolved):
+                priority = (
+                    (~reservoir_tested[unresolved]).astype(float) * 1.0e6
+                    + np.nan_to_num(
+                        reservoir_distance[unresolved], nan=1.0e3, posinf=1.0e3
+                    )
+                )
+                unresolved = unresolved[np.argsort(priority)[::-1]]
+                unresolved = unresolved[: coverage.validation_retest_rows_per_round]
+            nfev_reservoir = 0
+            if len(unresolved):
+                (
+                    retest_success,
+                    retest_distance,
+                    _retest_corrected,
+                    nfev_reservoir,
+                ) = _evaluate_probe_set(
+                    reservoir_endpoint[unresolved],
+                    atlas_launch,
+                    atlas_endpoint,
+                    feature_scale,
+                    query_config,
+                    correction_bounds,
+                    seed_jacobian=atlas_jacobian,
+                    seed_condition=atlas_condition,
+                    q_scale=q_scale,
+                    coverage_config=coverage,
+                )
+                reservoir_tested[unresolved] = True
+                reservoir_success[unresolved] |= retest_success
+                reservoir_distance[unresolved] = retest_distance
+            # Distances are cheap enough to refresh for the whole reservoir and
+            # use local inverse-Jacobian effort where available.
+            reservoir_distance[:] = _coverage_distances(
+                reservoir_endpoint,
+                atlas_endpoint,
+                feature_scale,
+                atlas_jacobian,
+                atlas_condition,
+                config,
+            )
+            reservoir_metrics = _probe_metrics(reservoir_success, reservoir_distance)
+            reservoir_tested_fraction = float(np.mean(reservoir_tested))
+            strata = _stratum_coverage_metrics(
+                reservoir_success, reservoir_endpoint, reservoir_diag, config
+            )
 
-        enough = tested >= coverage.minimum_validation_rows
-        if enough and success_rate >= coverage.target_success:
-            successful_rounds += 1
-        else:
-            successful_rounds = 0
+            # Incremental exact circular family validation.
+            circular_batch_indices = np.empty(0, dtype=int)
+            circular_batch_success = np.empty(0, dtype=bool)
+            nfev_circular = 0
+            if len(circular_targets):
+                untested = np.flatnonzero(~circular_tested_state)
+                failed_tested = np.flatnonzero(circular_tested_state & ~circular_success_state)
+                if len(failed_tested):
+                    failed_tested = failed_tested[
+                        np.argsort(circular_distance_state[failed_tested])
+                    ]
+                needed = coverage.circular_batch_rows
+                circular_batch_indices = untested[:needed]
+                if len(circular_batch_indices) < needed:
+                    circular_batch_indices = np.concatenate(
+                        (
+                            circular_batch_indices,
+                            failed_tested[: needed - len(circular_batch_indices)],
+                        )
+                    )
+                if len(circular_batch_indices):
+                    (
+                        circular_batch_success,
+                        circular_batch_distance,
+                        circular_batch_corrected,
+                        nfev_circular,
+                    ) = _evaluate_circular_targets(
+                        circular_targets[circular_batch_indices],
+                        atlas_launch,
+                        atlas_endpoint,
+                        feature_scale,
+                        circular_query_config,
+                        config,
+                        continuation_limit=coverage.circular_bootstrap_per_round,
+                        seed_jacobian=atlas_jacobian,
+                        seed_condition=atlas_condition,
+                        q_scale=q_scale,
+                    )
+                    circular_tested_state[circular_batch_indices] = True
+                    circular_success_state[circular_batch_indices] |= circular_batch_success
+                    circular_distance_state[circular_batch_indices] = circular_batch_distance
+                    for local, global_index in enumerate(circular_batch_indices):
+                        if circular_batch_corrected[local] is not None:
+                            circular_corrected_state[int(global_index)] = circular_batch_corrected[local]
+                circular_distance_state[:] = _coverage_distances(
+                    circular_targets,
+                    atlas_endpoint,
+                    feature_scale,
+                    atlas_jacobian,
+                    atlas_condition,
+                    config,
+                )
+            circular_metrics = _probe_metrics(
+                circular_success_state, circular_distance_state
+            )
+            circular_all_tested = bool(
+                len(circular_targets) == 0 or np.all(circular_tested_state)
+            )
 
-        record = {
-            "round": round_number,
-            "launch_attempts": int(len(batch_launches)),
-            "candidate_rows": int(len(candidate_launch)),
-            "validation_rows": int(tested),
-            "successes": int(np.count_nonzero(success)),
-            "success_rate": success_rate,
-            "inserted_failures": int(len(insert_indices)),
-            "atlas_rows": int(len(atlas_launch)),
-            "median_nearest_distance": float(np.median(nearest_distance)) if tested else math.nan,
-            "p95_nearest_distance": float(np.quantile(nearest_distance, 0.95)) if tested else math.nan,
-            "correction_nfev": int(nfev_total),
-        }
-        coverage_history.append(record)
-        last_probe_endpoint = candidate_endpoint[validation_indices].copy()
-        last_probe_success = success.copy()
-        print(
-            f"Coverage round {round_number}: success {success_rate:.1%} "
-            f"({np.count_nonzero(success)}/{tested}), inserted {len(insert_indices)}, "
-            f"atlas rows {len(atlas_launch):,}"
-        )
+            # Empirical cells and adaptive leaf deficits are computed before
+            # insertion so acquisition targets the current holes.
+            current_radius, _cell_success_count, _cell_failure_count = coverage_cell_arrays()
+            adaptive_partition = _build_adaptive_partition(
+                reservoir_endpoint,
+                reservoir_success,
+                reservoir_distance,
+                feature_scale,
+                config,
+            )
 
-        if successful_rounds >= coverage.patience:
+            # Direct frontier expansion from local charts facing unresolved probes.
+            frontier_launch = np.empty((0, 7), dtype=float)
+            frontier_endpoint = np.empty((0, 7), dtype=float)
+            frontier_diag = np.empty((0, 6), dtype=float)
+            frontier_attempts = 0
+            if coverage.frontier_enabled:
+                frontier_launch, frontier_endpoint, frontier_diag, frontier_attempts = (
+                    _frontier_expand(
+                        atlas_launch,
+                        atlas_endpoint,
+                        atlas_diag,
+                        atlas_jacobian,
+                        atlas_condition,
+                        current_radius,
+                        reservoir_endpoint[~reservoir_success],
+                        feature_scale,
+                        config,
+                        rng,
+                    )
+                )
+
+            # Build one acquisition pool.  Known feasible failures and successful
+            # circular/frontier continuations receive a strong priority bonus.
+            pool_launch: list[FloatArray] = []
+            pool_endpoint: list[FloatArray] = []
+            pool_diag: list[FloatArray] = []
+            pool_failed: list[NDArray[np.bool_]] = []
+
+            failed_reservoir = ~reservoir_success
+            if np.any(failed_reservoir):
+                pool_launch.append(reservoir_launch[failed_reservoir])
+                pool_endpoint.append(reservoir_endpoint[failed_reservoir])
+                pool_diag.append(reservoir_diag[failed_reservoir])
+                pool_failed.append(np.ones(np.count_nonzero(failed_reservoir), dtype=bool))
+
+            candidate_failure = np.zeros(len(candidate_launch), dtype=bool)
+            candidate_failure[audit_indices] = ~audit_success
+            pool_launch.append(candidate_launch)
+            pool_endpoint.append(candidate_endpoint)
+            pool_diag.append(candidate_diag)
+            pool_failed.append(candidate_failure)
+
+            if len(frontier_launch):
+                pool_launch.append(frontier_launch)
+                pool_endpoint.append(frontier_endpoint)
+                pool_diag.append(frontier_diag)
+                pool_failed.append(np.ones(len(frontier_launch), dtype=bool))
+
+            circular_rows_launch: list[FloatArray] = []
+            circular_rows_endpoint: list[FloatArray] = []
+            circular_rows_diag: list[FloatArray] = []
+            for index in np.flatnonzero(circular_success_state):
+                launch = circular_corrected_state[int(index)]
+                if launch is None:
+                    continue
+                diag = _diagnostics_for_exact_launch(launch, config)
+                if diag is None:
+                    continue
+                circular_rows_launch.append(launch)
+                circular_rows_endpoint.append(circular_targets[int(index)])
+                circular_rows_diag.append(diag)
+            if circular_rows_launch:
+                pool_launch.append(np.vstack(circular_rows_launch))
+                pool_endpoint.append(np.vstack(circular_rows_endpoint))
+                pool_diag.append(np.vstack(circular_rows_diag))
+                pool_failed.append(np.ones(len(circular_rows_launch), dtype=bool))
+
+            acquisition_launch = np.vstack(pool_launch)
+            acquisition_endpoint = np.vstack(pool_endpoint)
+            acquisition_diag = np.vstack(pool_diag)
+            acquisition_failed = np.concatenate(pool_failed)
+            capacity = max(0, coverage.max_atlas_rows - len(atlas_launch))
+            insertion_limit = min(coverage.acquisition_insertions_per_round, capacity)
+            if coverage.acquisition_enabled:
+                acquisition_indices, acquisition_scores = _acquisition_select_indices(
+                    acquisition_endpoint,
+                    acquisition_diag,
+                    acquisition_failed,
+                    atlas_endpoint,
+                    atlas_diag,
+                    feature_scale,
+                    current_radius,
+                    atlas_condition,
+                    adaptive_partition,
+                    config,
+                    insertion_limit,
+                )
+            else:
+                tree_simple = cKDTree(atlas_endpoint / feature_scale)
+                simple_distance, _ = tree_simple.query(
+                    acquisition_endpoint / feature_scale, k=1
+                )
+                acquisition_indices = _failure_insertion_indices(
+                    np.arange(len(acquisition_endpoint), dtype=int),
+                    np.asarray(simple_distance, dtype=float),
+                    acquisition_endpoint,
+                    acquisition_diag,
+                    feature_scale,
+                    coverage.insertion_cell_size,
+                    insertion_limit,
+                )
+                acquisition_scores = np.asarray(simple_distance)[acquisition_indices]
+            inserted = int(len(acquisition_indices))
+            if inserted:
+                (
+                    atlas_launch,
+                    atlas_endpoint,
+                    atlas_diag,
+                    atlas_jacobian,
+                    atlas_condition,
+                    atlas_sigma_min,
+                ) = _append_atlas_rows(
+                    atlas_launch,
+                    atlas_endpoint,
+                    atlas_diag,
+                    atlas_jacobian,
+                    atlas_condition,
+                    atlas_sigma_min,
+                    acquisition_launch[acquisition_indices],
+                    acquisition_endpoint[acquisition_indices],
+                    acquisition_diag[acquisition_indices],
+                )
+
+            # Conservative periodic coverage-dominance pruning.
+            periodic_pruned = 0
+            if (
+                coverage.prune_enabled
+                and round_number % coverage.prune_every_rounds == 0
+                and len(atlas_launch) > 2
+            ):
+                (
+                    atlas_launch,
+                    atlas_endpoint,
+                    atlas_diag,
+                    atlas_jacobian,
+                    atlas_condition,
+                    atlas_sigma_min,
+                    periodic_pruned,
+                ) = _prune_redundant_rows(
+                    atlas_launch,
+                    atlas_endpoint,
+                    atlas_diag,
+                    feature_scale,
+                    config,
+                    jacobian=atlas_jacobian,
+                    condition=atlas_condition,
+                    sigma_min=atlas_sigma_min,
+                    probe_endpoint=reservoir_endpoint,
+                    probe_success=reservoir_success,
+                )
+
+            launch_fraction = cursor / config.n_samples
+            reservoir_ok = (
+                len(reservoir_success) >= coverage.minimum_validation_rows
+                and reservoir_tested_fraction >= 0.99
+                and reservoir_metrics["success_rate"] >= coverage.target_success
+                and reservoir_metrics["p95_distance"] <= coverage.maximum_p95_distance
+                and reservoir_metrics["p99_distance"] <= coverage.maximum_p99_distance
+                and strata["passing_fraction"] >= coverage.minimum_strata_fraction
+            )
+            fresh_ok = (
+                fresh_metrics["success_rate"] >= coverage.fresh_target_success
+                and fresh_metrics["p95_distance"] <= coverage.fresh_maximum_p95_distance
+            )
+            circular_ok = (
+                not coverage.circular_enabled
+                or (
+                    circular_all_tested
+                    and circular_metrics["success_rate"] >= coverage.circular_target_success
+                    and circular_metrics["p95_distance"]
+                    <= coverage.circular_maximum_p95_distance
+                )
+            )
+            budget_ok = launch_fraction >= coverage.minimum_launch_fraction_before_stop
+            round_ok = reservoir_ok and fresh_ok and circular_ok and budget_ok
+            successful_rounds = successful_rounds + 1 if round_ok else 0
+
+            record = {
+                "round": int(round_number),
+                "launch_attempts": int(len(batch_launches)),
+                "launch_fraction": float(launch_fraction),
+                "candidate_rows": int(len(candidate_launch)),
+                "reservoir": reservoir_metrics,
+                "reservoir_tested_fraction": reservoir_tested_fraction,
+                "fresh_audit": fresh_metrics,
+                "strata": strata,
+                "circular": circular_metrics,
+                "circular_tested": int(np.count_nonzero(circular_tested_state)),
+                "circular_all_tested": bool(circular_all_tested),
+                "jacobians_computed": int(jacobians_computed),
+                "frontier_attempts": int(frontier_attempts),
+                "frontier_solutions": int(len(frontier_launch)),
+                "acquisition_pool_rows": int(len(acquisition_launch)),
+                "acquisition_inserted": int(inserted),
+                "acquisition_score_median": (
+                    float(np.median(acquisition_scores)) if len(acquisition_scores) else math.nan
+                ),
+                "periodic_pruned": int(periodic_pruned),
+                "atlas_rows": int(len(atlas_launch)),
+                "correction_nfev": int(nfev_audit + nfev_reservoir + nfev_circular),
+                "reservoir_ok": bool(reservoir_ok),
+                "fresh_ok": bool(fresh_ok),
+                "circular_ok": bool(circular_ok),
+                "budget_ok": bool(budget_ok),
+                "round_ok": bool(round_ok),
+            }
+            coverage_history.append(record)
+
             print(
-                f"Coverage target {coverage.target_success:.1%} reached for "
-                f"{coverage.patience} consecutive rounds."
+                f"Coverage round {round_number}: reservoir "
+                f"{reservoir_metrics['success_rate']:.1%} "
+                f"({reservoir_tested_fraction:.1%} tested), "
+                f"p95={reservoir_metrics['p95_distance']:.3g}, "
+                f"p99={reservoir_metrics['p99_distance']:.3g}; fresh "
+                f"{fresh_metrics['success_rate']:.1%}, "
+                f"p95={fresh_metrics['p95_distance']:.3g}; "
+                f"strata={strata['passing_fraction']:.1%}; circular "
+                f"{circular_metrics['success_rate']:.1%}, "
+                f"p95={circular_metrics['p95_distance']:.3g}; "
+                f"inserted={inserted}, frontier={len(frontier_launch)}, "
+                f"pruned={periodic_pruned}, atlas={len(atlas_launch):,}"
             )
-            break
 
+            if (
+                coverage.checkpoint_enabled
+                and round_number % coverage.checkpoint_every_rounds == 0
+            ):
+                save_checkpoint(f"coverage round {round_number}")
+
+            if successful_rounds >= coverage.patience:
+                print(
+                    "Coverage criteria reached for "
+                    f"{coverage.patience} consecutive cumulative/fresh rounds."
+                )
+                break
+
+    except KeyboardInterrupt:
+        if coverage.checkpoint_enabled and coverage.checkpoint_on_interrupt:
+            try:
+                save_checkpoint("keyboard interrupt", interrupted=True, fast=True)
+            except BaseException as exc:
+                print(f"Interrupt checkpoint could not be refreshed: {exc}")
+        print(
+            "Generation interrupted. The latest completed-round atlas checkpoint "
+            f"is available at {path}. Resume with the same command plus --resume."
+        )
+        return path
+
+    # Final conservative dominance pruning and exact re-audit.
     before_prune = len(atlas_launch)
-    atlas_launch, atlas_endpoint, atlas_diag, pruned = _prune_redundant_rows(
-        atlas_launch, atlas_endpoint, atlas_diag, feature_scale, config
+    (
+        atlas_launch,
+        atlas_endpoint,
+        atlas_diag,
+        atlas_jacobian,
+        atlas_condition,
+        atlas_sigma_min,
+        pruned,
+    ) = _prune_redundant_rows(
+        atlas_launch,
+        atlas_endpoint,
+        atlas_diag,
+        feature_scale,
+        config,
+        jacobian=atlas_jacobian,
+        condition=atlas_condition,
+        sigma_min=atlas_sigma_min,
+        probe_endpoint=reservoir_endpoint,
+        probe_success=reservoir_success,
     )
     if pruned:
-        print(f"Verified redundant seeds removed: {pruned:,}")
+        print(f"Coverage-dominated seeds removed: {pruned:,}")
 
-    coverage_radius, coverage_success_count, coverage_failure_count = _estimate_coverage_cells(
-        atlas_endpoint, feature_scale, last_probe_endpoint, last_probe_success
+    correction_bounds = _combined_correction_bounds(config, atlas_launch, 0.25)
+    final_jac_indices = _jacobian_priority_indices(
+        atlas_endpoint,
+        np.vstack((reservoir_endpoint, circular_targets))
+        if len(circular_targets)
+        else reservoir_endpoint,
+        atlas_jacobian,
+        feature_scale,
+        coverage.jacobian_compute_per_round,
+    )
+    _ensure_seed_jacobians(
+        atlas_launch,
+        atlas_jacobian,
+        atlas_condition,
+        atlas_sigma_min,
+        final_jac_indices,
+        config,
     )
 
-    final_success_rate = (
-        float(np.mean(last_probe_success)) if len(last_probe_success) else math.nan
+    final_success, final_distance, _corrected, final_nfev = _evaluate_probe_set(
+        reservoir_endpoint,
+        atlas_launch,
+        atlas_endpoint,
+        feature_scale,
+        query_config,
+        correction_bounds,
+        seed_jacobian=atlas_jacobian,
+        seed_condition=atlas_condition,
+        q_scale=q_scale,
+        coverage_config=coverage,
     )
-    converged = bool(
-        len(last_probe_success) >= coverage.minimum_validation_rows
-        and final_success_rate >= coverage.target_success
-        and successful_rounds >= coverage.patience
+    reservoir_tested[:] = True
+    reservoir_success[:] = final_success
+    reservoir_distance[:] = _coverage_distances(
+        reservoir_endpoint,
+        atlas_endpoint,
+        feature_scale,
+        atlas_jacobian,
+        atlas_condition,
+        config,
     )
-    cfg_dict = asdict(config)
+    final_reservoir_metrics = _probe_metrics(reservoir_success, reservoir_distance)
+    final_strata = _stratum_coverage_metrics(
+        reservoir_success, reservoir_endpoint, reservoir_diag, config
+    )
+
+    final_fresh_nfev = 0
+    if len(last_fresh_endpoint):
+        (
+            last_fresh_success,
+            _last_fresh_distance_exact,
+            _last_fresh_corrected,
+            final_fresh_nfev,
+        ) = _evaluate_probe_set(
+            last_fresh_endpoint,
+            atlas_launch,
+            atlas_endpoint,
+            feature_scale,
+            query_config,
+            correction_bounds,
+            seed_jacobian=atlas_jacobian,
+            seed_condition=atlas_condition,
+            q_scale=q_scale,
+            coverage_config=coverage,
+        )
+        last_fresh_distance = _coverage_distances(
+            last_fresh_endpoint,
+            atlas_endpoint,
+            feature_scale,
+            atlas_jacobian,
+            atlas_condition,
+            config,
+        )
+    final_fresh_metrics = _probe_metrics(last_fresh_success, last_fresh_distance)
+    final_circular_nfev = 0
+    if len(circular_targets):
+        (
+            circular_success_state,
+            _circular_distance_exact,
+            _circular_corrected,
+            final_circular_nfev,
+        ) = _evaluate_circular_targets(
+            circular_targets,
+            atlas_launch,
+            atlas_endpoint,
+            feature_scale,
+            circular_query_config,
+            config,
+            continuation_limit=len(circular_targets),
+            seed_jacobian=atlas_jacobian,
+            seed_condition=atlas_condition,
+            q_scale=q_scale,
+        )
+        circular_tested_state[:] = True
+        circular_distance_state[:] = _coverage_distances(
+            circular_targets,
+            atlas_endpoint,
+            feature_scale,
+            atlas_jacobian,
+            atlas_condition,
+            config,
+        )
+    final_circular_metrics = _probe_metrics(
+        circular_success_state, circular_distance_state
+    )
+
+    launch_fraction = cursor / config.n_samples
+    final_reservoir_ok = (
+        len(reservoir_success) >= coverage.minimum_validation_rows
+        and final_reservoir_metrics["success_rate"] >= coverage.target_success
+        and final_reservoir_metrics["p95_distance"] <= coverage.maximum_p95_distance
+        and final_reservoir_metrics["p99_distance"] <= coverage.maximum_p99_distance
+        and final_strata["passing_fraction"] >= coverage.minimum_strata_fraction
+    )
+    final_fresh_ok = (
+        len(last_fresh_success) > 0
+        and final_fresh_metrics["success_rate"] >= coverage.fresh_target_success
+        and final_fresh_metrics["p95_distance"] <= coverage.fresh_maximum_p95_distance
+    )
+    final_circular_ok = (
+        not coverage.circular_enabled
+        or (
+            len(circular_success_state) > 0
+            and final_circular_metrics["success_rate"] >= coverage.circular_target_success
+            and final_circular_metrics["p95_distance"]
+            <= coverage.circular_maximum_p95_distance
+        )
+    )
+    final_budget_ok = launch_fraction >= coverage.minimum_launch_fraction_before_stop
+    coverage_converged = bool(
+        final_reservoir_ok and final_fresh_ok and final_circular_ok and final_budget_ok
+    )
+
+    radius, success_count, failure_count = coverage_cell_arrays()
     metadata = {
-        "format_version": 2,
+        "format_version": 5,
         "model": "planar-kepler-costate-free-normal-pmp",
-        "atlas_strategy": "adaptive-feasible-holdout-coverage",
+        "atlas_strategy": "cumulative-reservoir-jacobian-acquisition-frontier",
         "launch_columns": ["u0", "w0", "Ar0", "At0", "Jr0", "ell", "tau"],
         "endpoint_columns": [
-            "u0", "w0", "log_rho", "theta_unwrapped", "ur_final", "ut_final", "log_kappa"
+            "u0",
+            "w0",
+            "log_rho",
+            "theta_unwrapped",
+            "ur_final",
+            "ut_final",
+            "log_kappa",
         ],
         "diagnostic_columns": [
-            "normal_constant", "minimum_radius", "maximum_radius", "maximum_acceleration",
-            "radial_turns", "rounded_winding"
+            "normal_constant",
+            "minimum_radius",
+            "maximum_radius",
+            "maximum_acceleration",
+            "radial_turns",
+            "rounded_winding",
         ],
-        "config": cfg_dict,
+        "jacobian_columns": [
+            "log_rho",
+            "theta_unwrapped",
+            "ur_final",
+            "ut_final",
+            "log_kappa",
+        ],
+        "jacobian_parameters": ["Ar0", "At0", "Jr0", "ell", "log_tau"],
+        "config": asdict(config),
         "accepted_atlas_rows": int(len(atlas_launch)),
-        "initial_rows_before_thinning": int(len(seed_launch)),
-        "rows_before_verified_pruning": int(before_prune),
-        "verified_pruned_rows": int(pruned),
+        "initial_rows_before_thinning": int(initial_rows_before_thinning),
+        "rows_before_final_pruning": int(before_prune),
+        "coverage_dominated_rows_removed": int(pruned),
+        "computed_jacobians": int(
+            np.count_nonzero(np.all(np.isfinite(atlas_jacobian), axis=(1, 2)))
+        ),
         "integrated_launch_attempts": int(cursor),
         "launch_attempt_budget": int(config.n_samples),
         "subarcs_per_trajectory": int(config.subarcs_per_trajectory),
-        "coverage_converged": converged,
-        "coverage_final_success_rate": final_success_rate,
+        "generation_complete": True,
+        "coverage_converged": coverage_converged,
+        "coverage_final_reservoir": final_reservoir_metrics,
+        "coverage_final_fresh_audit": final_fresh_metrics,
+        "coverage_final_strata": final_strata,
+        "coverage_final_circular": final_circular_metrics,
+        "coverage_final_reservoir_ok": bool(final_reservoir_ok),
+        "coverage_final_fresh_ok": bool(final_fresh_ok),
+        "coverage_final_circular_ok": bool(final_circular_ok),
+        "coverage_final_budget_ok": bool(final_budget_ok),
         "coverage_successful_rounds": int(successful_rounds),
         "coverage_history": coverage_history,
+        "final_audit_nfev": int(final_nfev + final_fresh_nfev + final_circular_nfev),
         "coverage_definition": (
-            "Independent feasible holdout endpoint is covered when exact shooting correction "
-            "converges from atlas seeds without using the holdout launch."
+            "A cumulative known-feasible endpoint reservoir plus independent fresh "
+            "audits must converge by exact shooting.  Seed selection uses empirical "
+            "cell radii, adaptive-cell deficits, branch novelty, and local exact "
+            "endpoint Jacobians."
         ),
     }
-    np.savez_compressed(
+    _atomic_save_npz(
         path,
+        compressed=coverage.checkpoint_compressed,
         launch=atlas_launch,
         endpoint=atlas_endpoint,
         diagnostics=atlas_diag,
         feature_scale=feature_scale,
-        coverage_radius=coverage_radius,
-        coverage_success_count=coverage_success_count,
-        coverage_failure_count=coverage_failure_count,
+        endpoint_jacobian=atlas_jacobian,
+        jacobian_condition=atlas_condition,
+        jacobian_sigma_min=atlas_sigma_min,
+        coverage_radius=radius,
+        coverage_success_count=success_count,
+        coverage_failure_count=failure_count,
+        persistent_probe_launch=reservoir_launch,
+        persistent_probe_endpoint=reservoir_endpoint,
+        persistent_probe_diagnostics=reservoir_diag,
+        persistent_probe_tested=reservoir_tested,
+        persistent_probe_success=reservoir_success,
+        persistent_probe_distance=reservoir_distance,
+        circular_probe_endpoint=circular_targets,
+        circular_probe_tested=circular_tested_state,
+        circular_probe_success=circular_success_state,
+        circular_probe_distance=circular_distance_state,
+        circular_probe_status=np.where(
+            ~circular_tested_state,
+            0,
+            np.where(circular_success_state, 1, 2),
+        ).astype(np.int8),
+        last_fresh_launch=last_fresh_launch,
+        last_fresh_endpoint=last_fresh_endpoint,
+        last_fresh_diagnostics=last_fresh_diag,
+        last_fresh_success=last_fresh_success,
+        last_fresh_distance=last_fresh_distance,
         metadata_json=np.array(json.dumps(metadata)),
     )
-    if not converged:
-        print(
-            "WARNING: launch budget ended before the configured coverage criterion was met. "
-            "The atlas was saved with coverage_converged=false."
-        )
     return path
-
 
 def _generate_atlas_fixed(path: str | Path, config: AtlasConfig) -> Path:
     """Generate and save a forward-extremal atlas.
@@ -1594,6 +4117,21 @@ class ExtremalAtlas:
                 if "coverage_failure_count" in data.files
                 else np.zeros(len(self.launch), dtype=np.int32)
             )
+            self.endpoint_jacobian = (
+                np.asarray(data["endpoint_jacobian"], dtype=np.float32)
+                if "endpoint_jacobian" in data.files
+                else np.full((len(self.launch), 5, 5), np.nan, dtype=np.float32)
+            )
+            self.jacobian_condition = (
+                np.asarray(data["jacobian_condition"], dtype=float)
+                if "jacobian_condition" in data.files
+                else np.full(len(self.launch), np.inf, dtype=float)
+            )
+            self.jacobian_sigma_min = (
+                np.asarray(data["jacobian_sigma_min"], dtype=float)
+                if "jacobian_sigma_min" in data.files
+                else np.zeros(len(self.launch), dtype=float)
+            )
             self.metadata = json.loads(str(data["metadata_json"].item()))
         if self.launch.ndim != 2 or self.launch.shape[1] != 7:
             raise ValueError("invalid atlas launch array")
@@ -1603,6 +4141,16 @@ class ExtremalAtlas:
             raise ValueError("invalid atlas feature scales")
         if self.coverage_radius.shape != (len(self.launch),):
             raise ValueError("invalid atlas coverage_radius array")
+        if self.endpoint_jacobian.shape != (len(self.launch), 5, 5):
+            raise ValueError("invalid atlas endpoint_jacobian array")
+        if self.jacobian_condition.shape != (len(self.launch),):
+            raise ValueError("invalid atlas jacobian_condition array")
+        try:
+            self._generation_config = _atlas_config_from_dict(self.metadata.get("config", {}))
+        except (TypeError, ValueError):
+            self._generation_config = AtlasConfig()
+        self._coverage_config = self._generation_config.coverage
+        self._q_scale = _launch_q_scale(self._generation_config)
         self._features = self.endpoint / self.feature_scale
         self._tree = cKDTree(self._features)
         self._launch_min = np.min(self.launch[:, 2:7], axis=0)
@@ -1617,8 +4165,20 @@ class ExtremalAtlas:
     ) -> dict:
         """Return the nearest seed and its empirically validated cell radius."""
         boundary = _canonicalize_boundary(initial, final, capability, revolutions)
-        distance, index = self._tree.query(boundary.target / self.feature_scale, k=1)
-        index = int(index)
+        indices, distances, _predictions = _rank_seed_indices(
+            boundary.target,
+            self.launch,
+            self.endpoint,
+            self.feature_scale,
+            self._tree,
+            1,
+            jacobian=self.endpoint_jacobian,
+            condition=self.jacobian_condition,
+            q_scale=self._q_scale,
+            coverage=self._coverage_config,
+        )
+        index = int(indices[0])
+        distance = float(distances[0])
         radius = float(self.coverage_radius[index])
         return {
             "seed_index": index,
@@ -1642,8 +4202,19 @@ class ExtremalAtlas:
 
     def _nearest_indices(self, target: FloatArray, k: int) -> FloatArray:
         k = min(max(1, k), len(self.launch))
-        _dist, idx = self._tree.query(target / self.feature_scale, k=k)
-        return np.atleast_1d(idx).astype(int)
+        idx, _distance, _predictions = _rank_seed_indices(
+            target,
+            self.launch,
+            self.endpoint,
+            self.feature_scale,
+            self._tree,
+            k,
+            jacobian=self.endpoint_jacobian,
+            condition=self.jacobian_condition,
+            q_scale=self._q_scale,
+            coverage=self._coverage_config,
+        )
+        return idx
 
     def _local_regression_seed(self, target: FloatArray, indices: FloatArray) -> Optional[FloatArray]:
         """Weighted local affine inverse chart endpoint -> launch variables."""
@@ -1765,15 +4336,9 @@ class ExtremalAtlas:
         return (scaled, sol, normal_constant, status, raw, launch) if return_details else scaled
 
     def _bounds_for_correction(self, config: QueryConfig) -> tuple[FloatArray, FloatArray]:
-        lo = self._launch_min.copy()
-        hi = self._launch_max.copy()
-        span = np.maximum(hi - lo, 1.0e-6)
-        lo -= config.launch_bound_margin * span
-        hi += config.launch_bound_margin * span
-        # Convert the final tau coordinate to log(tau).
-        lo[-1] = math.log(max(lo[-1], 1.0e-5))
-        hi[-1] = math.log(max(hi[-1], math.exp(lo[-1]) * 1.001))
-        return lo, hi
+        return _combined_correction_bounds(
+            self._generation_config, self.launch, config.launch_bound_margin
+        )
 
     def solve(
         self,
@@ -1794,10 +4359,29 @@ class ExtremalAtlas:
         cfg = config or QueryConfig()
         boundary = _canonicalize_boundary(initial, final, capability, revolutions)
         target = boundary.target
-        idx = self._nearest_indices(target, cfg.neighbours)
+        idx, _ranked_distance, predictions = _rank_seed_indices(
+            target,
+            self.launch,
+            self.endpoint,
+            self.feature_scale,
+            self._tree,
+            min(cfg.neighbours, len(self.launch)),
+            jacobian=self.endpoint_jacobian,
+            condition=self.jacobian_condition,
+            q_scale=self._q_scale,
+            coverage=self._coverage_config,
+        )
 
         seed_vectors: list[FloatArray] = []
-        # Local inverse-chart prediction.
+        # Exact local inverse-Jacobian chart predictions.
+        for i in idx[: min(cfg.direct_seeds, len(idx))]:
+            delta_q = predictions.get(int(i))
+            if delta_q is None:
+                continue
+            base = np.concatenate((self.launch[i, 2:6], [math.log(self.launch[i, 6])]))
+            seed_vectors.append(base + delta_q)
+
+        # Local inverse-chart regression prediction.
         reg_idx = idx[: min(cfg.regression_neighbours, len(idx))]
         reg = self._local_regression_seed(target, reg_idx)
         if reg is not None:
@@ -1833,19 +4417,46 @@ class ExtremalAtlas:
             def jac(x):
                 return evaluate(x)[1]
 
-            result = least_squares(
-                fun,
-                seed,
-                bounds=(lo, hi),
-                method="trf",
-                jac=jac,
-                x_scale="jac",
-                max_nfev=cfg.max_nfev,
-                ftol=1.0e-12,
-                xtol=1.0e-12,
-                gtol=1.0e-12,
-            )
-            scaled, _jac, yf, normal_constant, status, launch = evaluate(result.x)
+            initial_scaled, _initial_jac, initial_yf, initial_normal, initial_status, initial_launch = evaluate(seed)
+            use_initial = False
+            if initial_yf is not None and initial_status == "ok" and initial_normal > 0.0:
+                ir, itheta, iur, iut, ikappa = _endpoint_from_state(initial_yf)
+                initial_raw = np.array(
+                    [
+                        math.log(ir) - target5[0],
+                        itheta - target5[1],
+                        iur - target5[2],
+                        iut - target5[3],
+                        math.log(ikappa) - target5[4],
+                    ],
+                    dtype=float,
+                )
+                use_initial = bool(
+                    np.all(np.abs(initial_raw) <= np.asarray(cfg.acceptance, dtype=float))
+                )
+            if use_initial:
+                scaled, _jac, yf, normal_constant, status, launch = (
+                    initial_scaled,
+                    _initial_jac,
+                    initial_yf,
+                    initial_normal,
+                    initial_status,
+                    initial_launch,
+                )
+            else:
+                result = least_squares(
+                    fun,
+                    seed,
+                    bounds=(lo, hi),
+                    method="trf",
+                    jac=jac,
+                    x_scale="jac",
+                    max_nfev=cfg.max_nfev,
+                    ftol=1.0e-12,
+                    xtol=1.0e-12,
+                    gtol=1.0e-12,
+                )
+                scaled, _jac, yf, normal_constant, status, launch = evaluate(result.x)
             if yf is None or status != "ok" or normal_constant <= 0.0:
                 continue
             radius, theta, ur, ut, kappa = _endpoint_from_state(yf)
@@ -1992,7 +4603,7 @@ def validate_atlas_coverage(
     seed: Optional[int] = None,
     workers: Optional[int] = None,
 ) -> dict:
-    """Measure atlas coverage on a fresh independent feasible holdout set."""
+    """Audit an atlas with fresh feasible probes and exact circular targets."""
     atlas = ExtremalAtlas(atlas_path)
     payload = atlas.metadata.get("config", {})
     config = _atlas_config_from_dict(payload) if payload else AtlasConfig()
@@ -2011,29 +4622,82 @@ def validate_atlas_coverage(
         probe_endpoint,
         probe_diag,
         atlas.feature_scale,
-        validation_rows,
+        min(validation_rows, len(probe_endpoint)),
         rng,
         config.coverage.validation_cell_size,
     )
     query_config = _coverage_query_config(config)
-    tree = cKDTree(atlas.endpoint / atlas.feature_scale)
-    bounds = _launch_correction_bounds(atlas.launch, query_config.launch_bound_margin)
-    success = np.zeros(len(indices), dtype=bool)
-    distances = np.full(len(indices), np.inf, dtype=float)
-    total_nfev = 0
-    for local, index in enumerate(indices):
-        corrected, distance, nfev = _fast_correct_target(
-            probe_endpoint[index],
-            atlas.launch,
-            atlas.endpoint,
-            atlas.feature_scale,
-            query_config,
-            tree=tree,
-            bounds=bounds,
+    success, distances, _corrected, total_nfev = _evaluate_probe_set(
+        probe_endpoint[indices],
+        atlas.launch,
+        atlas.endpoint,
+        atlas.feature_scale,
+        query_config,
+        _combined_correction_bounds(config, atlas.launch, 0.25),
+        seed_jacobian=atlas.endpoint_jacobian,
+        seed_condition=atlas.jacobian_condition,
+        q_scale=atlas._q_scale,
+        coverage_config=atlas._coverage_config,
+    )
+    strata = _stratum_coverage_metrics(
+        success, probe_endpoint[indices], probe_diag[indices], config
+    )
+
+    # Use a fresh circular Sobol sequence for the audit.
+    original_circular_seed = config.coverage.circular_validation_seed
+    config.coverage.circular_validation_seed = int(config.seed + 2_000_033)
+    config.coverage.circular_validation_rows = min(
+        max(64, validation_rows // 2),
+        max(64, config.coverage.circular_validation_rows),
+    )
+    circular_targets = _sample_circular_targets(config)
+    circular_query_config = _coverage_query_config(config, circular=True)
+    circular_success = np.empty(0, dtype=bool)
+    circular_distances = np.empty(0, dtype=float)
+    circular_nfev = 0
+    if len(circular_targets):
+        circular_success, circular_distances, _launches, circular_nfev = (
+            _evaluate_circular_targets(
+                circular_targets,
+                atlas.launch,
+                atlas.endpoint,
+                atlas.feature_scale,
+                circular_query_config,
+                config,
+                continuation_limit=config.coverage.circular_bootstrap_per_round,
+                seed_jacobian=atlas.endpoint_jacobian,
+                seed_condition=atlas.jacobian_condition,
+                q_scale=atlas._q_scale,
+            )
         )
-        success[local] = corrected is not None
-        distances[local] = distance
-        total_nfev += nfev
+    config.coverage.circular_validation_seed = original_circular_seed
+
+    p95 = float(np.quantile(distances, 0.95)) if len(distances) else math.nan
+    p99 = float(np.quantile(distances, 0.99)) if len(distances) else math.nan
+    circular_p95 = (
+        float(np.quantile(circular_distances, 0.95))
+        if len(circular_distances)
+        else math.nan
+    )
+    general_rate = float(np.mean(success)) if len(success) else math.nan
+    circular_rate = (
+        float(np.mean(circular_success)) if len(circular_success) else math.nan
+    )
+    general_ok = bool(
+        len(success) >= config.coverage.minimum_validation_rows
+        and general_rate >= config.coverage.target_success
+        and p95 <= config.coverage.maximum_p95_distance
+        and p99 <= config.coverage.maximum_p99_distance
+        and strata["passing_fraction"] >= config.coverage.minimum_strata_fraction
+    )
+    circular_ok = bool(
+        not config.coverage.circular_enabled
+        or (
+            len(circular_success) > 0
+            and circular_rate >= config.coverage.circular_target_success
+            and circular_p95 <= config.coverage.circular_maximum_p95_distance
+        )
+    )
 
     return {
         "atlas": str(Path(atlas_path).resolve()),
@@ -2041,11 +4705,20 @@ def validate_atlas_coverage(
         "accepted_probe_rows": int(len(probe_launch)),
         "tested_probe_rows": int(len(indices)),
         "successes": int(np.count_nonzero(success)),
-        "success_rate": float(np.mean(success)) if len(success) else math.nan,
+        "success_rate": general_rate,
         "median_nearest_distance": float(np.median(distances)) if len(distances) else math.nan,
-        "p95_nearest_distance": float(np.quantile(distances, 0.95)) if len(distances) else math.nan,
+        "p95_nearest_distance": p95,
+        "p99_nearest_distance": p99,
         "maximum_nearest_distance": float(np.max(distances)) if len(distances) else math.nan,
-        "correction_nfev": int(total_nfev),
+        "strata": strata,
+        "circular_tested": int(len(circular_targets)),
+        "circular_successes": int(np.count_nonzero(circular_success)),
+        "circular_success_rate": circular_rate,
+        "circular_p95_nearest_distance": circular_p95,
+        "general_criteria_passed": general_ok,
+        "circular_criteria_passed": circular_ok,
+        "all_criteria_passed": bool(general_ok and circular_ok),
+        "correction_nfev": int(total_nfev + circular_nfev),
         "seed": int(config.seed),
     }
 
@@ -2058,6 +4731,38 @@ def _parse_config(path: Optional[str]) -> AtlasConfig:
     return _atlas_config_from_dict(payload)
 
 
+
+def _mark_checkpoint_interrupted(path: str | Path, reason: str) -> bool:
+    """Atomically mark an existing incomplete checkpoint after an outer interrupt."""
+    target = Path(path)
+    if not target.exists():
+        return False
+    try:
+        with np.load(target, allow_pickle=False) as data:
+            if "metadata_json" not in data.files:
+                return False
+            metadata = json.loads(str(data["metadata_json"].item()))
+            if metadata.get("generation_complete", False):
+                return True
+            arrays = {
+                name: np.asarray(data[name])
+                for name in data.files
+                if name != "metadata_json"
+            }
+        metadata["generation_interrupted"] = True
+        metadata["checkpoint_reason"] = reason
+        compressed = bool(
+            metadata.get("config", {})
+            .get("coverage", {})
+            .get("checkpoint_compressed", True)
+        )
+        arrays["metadata_json"] = np.array(json.dumps(metadata))
+        _atomic_save_npz(target, compressed=compressed, **arrays)
+        return True
+    except BaseException as exc:
+        print(f"Could not mark checkpoint as interrupted: {exc}")
+        return False
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -2067,6 +4772,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     make.add_argument("--config", help="JSON file overriding AtlasConfig fields")
     make.add_argument("--samples", type=int, help="override number of Sobol samples")
     make.add_argument("--workers", type=int, help="override worker count")
+    make.add_argument(
+        "--resume",
+        action="store_true",
+        help="resume an incomplete atomic checkpoint at the output path",
+    )
 
     inspect = sub.add_parser("inspect", help="show atlas metadata")
     inspect.add_argument("atlas")
@@ -2085,7 +4795,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             cfg.n_samples = args.samples
         if args.workers is not None:
             cfg.workers = args.workers
-        output = generate_atlas(args.output, cfg)
+        try:
+            output = generate_atlas(args.output, cfg, resume=args.resume)
+        except KeyboardInterrupt:
+            marked = _mark_checkpoint_interrupted(
+                args.output, "keyboard interrupt outside adaptive coverage loop"
+            )
+            if marked:
+                print(
+                    f"Generation interrupted. The latest atomic checkpoint remains at "
+                    f"{args.output}; resume with the same command plus --resume."
+                )
+            else:
+                print("Generation interrupted before a checkpoint could be created.")
+            return 130
         print(output)
         return 0
     if args.command == "inspect":
