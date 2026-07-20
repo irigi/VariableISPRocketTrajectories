@@ -50,6 +50,7 @@ import argparse
 import json
 import math
 import os
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -149,6 +150,10 @@ class CoverageConfig:
     target_stratum_success: float = 0.90
     minimum_stratum_rows: int = 6
     minimum_strata_fraction: float = 0.95
+    # Geometric distances remain diagnostic by default. The production
+    # certificate is success under the bounded query solver; a global
+    # Euclidean feature distance is not a reliable convergence radius.
+    distance_criteria_enabled: bool = False
     maximum_p95_distance: float = 1.5
     maximum_p99_distance: float = 2.5
     patience: int = 3
@@ -168,6 +173,7 @@ class CoverageConfig:
     circular_batch_rows: int = 16
     circular_bootstrap_per_round: int = 4
     circular_target_success: float = 0.90
+    circular_distance_criteria_enabled: bool = False
     circular_maximum_p95_distance: float = 2.0
     circular_homotopy_steps: int = 8
     circular_nearest_seeds: int = 4
@@ -175,11 +181,22 @@ class CoverageConfig:
     circular_insertions_per_round: int = 64
     circular_validation_seed: int = 719_231
 
-    # Fast correction used during coverage testing.
+    # Production query solver used identically by generation validation and the viewer.
+    # ``fast_newton`` is deliberately bounded: if it cannot converge quickly,
+    # the probe/pixel is marked failed instead of spending minutes in a robust solve.
+    query_method: str = "fast_newton"
     neighbours: int = 24
     direct_seeds: int = 4
     regression_neighbours: int = 16
-    max_nfev: int = 35
+    max_nfev: int = 35  # retained for robust_least_squares compatibility
+    query_max_iterations: int = 5
+    query_max_seed_attempts: int = 3
+    query_wall_seconds: float = 2.0
+    query_line_search_steps: int = 3
+    query_step_limit: float = 0.30
+    query_regularization: float = 1.0e-8
+    query_robust_fallback: bool = False
+    query_allow_continuation: bool = False
 
     # Initial cloud thinning and acquisition-driven insertion.  Distances are
     # measured in endpoint coordinates divided by feature_scale unless a local
@@ -305,6 +322,14 @@ class CoverageConfig:
             raise ValueError("coverage neighbour counts must be positive")
         if self.regression_neighbours <= 0 or self.max_nfev <= 0:
             raise ValueError("coverage correction settings must be positive")
+        if self.query_method not in {"fast_newton", "robust_least_squares"}:
+            raise ValueError("coverage.query_method must be fast_newton or robust_least_squares")
+        if self.query_max_iterations <= 0 or self.query_max_seed_attempts <= 0:
+            raise ValueError("coverage fast-query iteration and seed limits must be positive")
+        if self.query_wall_seconds <= 0.0 or self.query_line_search_steps <= 0:
+            raise ValueError("coverage fast-query time and line-search limits must be positive")
+        if self.query_step_limit <= 0.0 or self.query_regularization < 0.0:
+            raise ValueError("coverage fast-query step/regularization settings are invalid")
         if self.initial_cell_size <= 0.0 or self.insertion_cell_size <= 0.0:
             raise ValueError("coverage cell sizes must be positive")
         if self.acquisition_insertions_per_round <= 0 or self.acquisition_candidate_limit <= 0:
@@ -446,14 +471,23 @@ class AtlasConfig:
 class QueryConfig:
     """Settings for atlas retrieval and exact shooting correction."""
 
-    neighbours: int = 48
-    direct_seeds: int = 8
-    regression_neighbours: int = 24
-    max_nfev: int = 90
-    rtol: float = 3.0e-10
-    atol: float = 3.0e-12
-    max_step: float = 0.025
-    trajectory_points: int = 1200
+    method: str = "fast_newton"
+    neighbours: int = 32
+    direct_seeds: int = 4
+    regression_neighbours: int = 20
+    max_nfev: int = 60  # robust_least_squares only
+    max_iterations: int = 6
+    max_seed_attempts: int = 3
+    wall_time_seconds: float = 3.0
+    line_search_steps: int = 3
+    step_limit: float = 0.30
+    regularization: float = 1.0e-8
+    robust_fallback: bool = False
+    allow_continuation: bool = False
+    rtol: float = 8.0e-10
+    atol: float = 8.0e-12
+    max_step: float = 0.04
+    trajectory_points: int = 500
     r_collision: float = 0.01
     r_escape: float = 100.0
     max_acceleration: float = 300.0
@@ -598,6 +632,25 @@ def _initial_vector(launch: FloatArray) -> tuple[FloatArray, float]:
     return y0, float(normal_constant)
 
 
+class _IntegrationDeadline(RuntimeError):
+    """Internal exception used to abort a query integration at its time budget."""
+
+
+def _deadline_rhs(function, deadline: Optional[float]):
+    if deadline is None:
+        return function
+    calls = 0
+
+    def wrapped(t, y):
+        nonlocal calls
+        calls += 1
+        if calls % 16 == 0 and time.monotonic() >= deadline:
+            raise _IntegrationDeadline
+        return function(t, y)
+
+    return wrapped
+
+
 def _rhs(_t: float, y: FloatArray) -> FloatArray:
     r = y[0:2]
     v = y[2:4]
@@ -718,6 +771,7 @@ def _integrate_launch_with_sens(
     r_collision: float,
     r_escape: float,
     max_acceleration: float,
+    deadline: Optional[float] = None,
 ):
     y0, normal_constant = _initial_vector(launch)
     tau = float(launch[6])
@@ -738,7 +792,7 @@ def _integrate_launch_with_sens(
 
     try:
         sol = solve_ivp(
-            _rhs_with_sens,
+            _deadline_rhs(_rhs_with_sens, deadline),
             (0.0, tau),
             aug0,
             method="DOP853",
@@ -747,6 +801,8 @@ def _integrate_launch_with_sens(
             max_step=max_step,
             events=tuple(events),
         )
+    except _IntegrationDeadline:
+        return None, None, normal_constant, "timeout"
     except (FloatingPointError, OverflowError, ValueError):
         return None, None, normal_constant, "integration-exception"
     if not sol.success:
@@ -787,6 +843,7 @@ def _integrate_launch(
     max_acceleration: float,
     dense_output: bool = False,
     t_eval: Optional[FloatArray] = None,
+    deadline: Optional[float] = None,
 ) -> tuple[Optional[object], float, str]:
     y0, normal_constant = _initial_vector(launch)
     tau = float(launch[6])
@@ -796,7 +853,7 @@ def _integrate_launch(
     events = _make_events(r_collision, r_escape, max_acceleration)
     try:
         sol = solve_ivp(
-            _rhs,
+            _deadline_rhs(_rhs, deadline),
             (0.0, tau),
             y0,
             method="DOP853",
@@ -807,6 +864,8 @@ def _integrate_launch(
             t_eval=t_eval,
             events=events,
         )
+    except _IntegrationDeadline:
+        return None, normal_constant, "timeout"
     except (FloatingPointError, OverflowError, ValueError):
         return None, normal_constant, "integration-exception"
 
@@ -1410,6 +1469,183 @@ def _rank_seed_indices(
     )
 
 
+
+def _accepted_correction_details(
+    details,
+    target5: FloatArray,
+    config: QueryConfig,
+) -> tuple[bool, float, Optional[FloatArray]]:
+    """Check one shooting evaluation against the unscaled endpoint tolerances."""
+    scaled, _jac, yf, normal_constant, status, launch = details
+    if yf is None or status != "ok" or normal_constant <= 0.0:
+        return False, math.inf, None
+    radius, theta, ur, ut, kappa = _endpoint_from_state(yf)
+    if radius <= 0.0 or kappa <= 0.0:
+        return False, math.inf, None
+    raw = np.array(
+        [
+            math.log(radius) - target5[0],
+            theta - target5[1],
+            ur - target5[2],
+            ut - target5[3],
+            math.log(kappa) - target5[4],
+        ],
+        dtype=float,
+    )
+    accepted = bool(np.all(np.abs(raw) <= np.asarray(config.acceptance, dtype=float)))
+    return accepted, float(np.linalg.norm(scaled)), launch.copy()
+
+
+def _bounded_fast_newton(
+    seed: FloatArray,
+    lo: FloatArray,
+    hi: FloatArray,
+    target5: FloatArray,
+    config: QueryConfig,
+    evaluate_with_jac,
+    evaluate_residual,
+    *,
+    deadline: Optional[float] = None,
+) -> tuple[Optional[FloatArray], int, str]:
+    """Small-budget damped Newton corrector.
+
+    The method uses one exact variational Jacobian per accepted Newton iterate
+    and cheaper state-only integrations for line search. It is intentionally
+    fail-fast: the atlas is useful only when a nearby chart converges within a
+    small, predictable budget.
+    """
+    x = np.clip(np.asarray(seed, dtype=float), lo + 1.0e-10, hi - 1.0e-10)
+    span = np.maximum(hi - lo, 1.0e-8)
+    evaluations = 0
+    best_x = x.copy()
+    best_norm = math.inf
+
+    for _iteration in range(config.max_iterations + 1):
+        if deadline is not None and time.monotonic() >= deadline:
+            return None, evaluations, "timeout"
+        details = evaluate_with_jac(x)
+        evaluations += 1
+        accepted, norm, launch = _accepted_correction_details(details, target5, config)
+        if norm < best_norm:
+            best_norm = norm
+            best_x = x.copy()
+        if accepted and launch is not None:
+            return launch, evaluations, "converged"
+
+        scaled, jac, yf, normal_constant, status, _launch = details
+        if yf is None or status != "ok" or normal_constant <= 0.0:
+            return None, evaluations, status
+        if not np.all(np.isfinite(jac)) or not np.all(np.isfinite(scaled)):
+            return None, evaluations, "nonfinite"
+
+        # Tikhonov-regularized SVD Newton step.
+        try:
+            u, singular, vt = np.linalg.svd(jac, full_matrices=False)
+        except np.linalg.LinAlgError:
+            return None, evaluations, "svd-failed"
+        reg = max(float(config.regularization), 0.0)
+        inverse = singular / (singular * singular + reg)
+        step = -(vt.T * inverse) @ (u.T @ scaled)
+        if not np.all(np.isfinite(step)):
+            return None, evaluations, "nonfinite-step"
+
+        normalized_length = float(np.linalg.norm(step / span))
+        if normalized_length > config.step_limit:
+            step *= config.step_limit / normalized_length
+
+        current_norm = float(np.linalg.norm(scaled))
+        improved = False
+        for line in range(config.line_search_steps):
+            if deadline is not None and time.monotonic() >= deadline:
+                return None, evaluations, "timeout"
+            alpha = 0.5 ** line
+            trial = np.clip(x + alpha * step, lo + 1.0e-10, hi - 1.0e-10)
+            residual_details = evaluate_residual(trial)
+            evaluations += 1
+            trial_scaled, trial_state, trial_normal, trial_status, trial_raw, trial_launch = residual_details
+            if (
+                trial_state is not None
+                and trial_status == "ok"
+                and trial_normal > 0.0
+                and np.all(np.isfinite(trial_scaled))
+            ):
+                trial_norm = float(np.linalg.norm(trial_scaled))
+                if np.all(np.abs(trial_raw) <= np.asarray(config.acceptance, dtype=float)):
+                    return trial_launch.copy(), evaluations, "converged"
+                if trial_norm < current_norm * (1.0 - 1.0e-4 * alpha):
+                    x = trial
+                    improved = True
+                    break
+        if not improved:
+            return None, evaluations, "no-descent"
+
+    return None, evaluations, "iteration-limit"
+
+
+def _correct_one_seed(
+    seed: FloatArray,
+    lo: FloatArray,
+    hi: FloatArray,
+    u0: float,
+    w0: float,
+    target5: FloatArray,
+    config: QueryConfig,
+    *,
+    deadline: Optional[float] = None,
+) -> tuple[Optional[FloatArray], int, str]:
+    """Run the configured production query solver for one launch seed."""
+    seed = np.clip(np.asarray(seed, dtype=float), lo + 1.0e-10, hi - 1.0e-10)
+
+    def with_jac(x):
+        return ExtremalAtlas._shooting_residual_and_jacobian(
+            np.asarray(x, dtype=float), float(u0), float(w0), target5, config,
+            deadline=deadline,
+        )
+
+    def residual_only(x):
+        return ExtremalAtlas._shooting_residual(
+            np.asarray(x, dtype=float), float(u0), float(w0), target5, config,
+            return_details=True, deadline=deadline,
+        )
+
+    if config.method == "fast_newton":
+        launch, nfev, reason = _bounded_fast_newton(
+            seed, lo, hi, target5, config, with_jac, residual_only, deadline=deadline
+        )
+        if launch is not None or not config.robust_fallback:
+            return launch, nfev, reason
+    elif config.method != "robust_least_squares":
+        raise ValueError(f"unsupported query method {config.method!r}")
+
+    if deadline is not None and time.monotonic() >= deadline:
+        return None, 0, "timeout"
+    cache_x: Optional[FloatArray] = None
+    cache_value = None
+
+    def evaluate(x):
+        nonlocal cache_x, cache_value
+        x = np.asarray(x, dtype=float)
+        if cache_x is None or not np.array_equal(x, cache_x):
+            cache_x = x.copy()
+            cache_value = with_jac(x)
+        return cache_value
+
+    result = least_squares(
+        lambda x: evaluate(x)[0],
+        seed,
+        bounds=(lo, hi),
+        method="trf",
+        jac=lambda x: evaluate(x)[1],
+        x_scale="jac",
+        max_nfev=config.max_nfev,
+        ftol=1.0e-10,
+        xtol=1.0e-10,
+        gtol=1.0e-10,
+    )
+    details = evaluate(result.x)
+    accepted, _norm, launch = _accepted_correction_details(details, target5, config)
+    return (launch if accepted else None), int(result.nfev), ("converged" if accepted else "robust-failed")
+
 def _fast_correct_target(
     target: FloatArray,
     launch: FloatArray,
@@ -1477,86 +1713,36 @@ def _fast_correct_target(
     target5 = target[2:7]
     total_nfev = 0
     best: Optional[FloatArray] = None
-    best_norm = math.inf
+    deadline = time.monotonic() + max(config.wall_time_seconds, 1.0e-3)
 
+    # Keep the production cost predictable: try only a small number of the
+    # highest-quality chart/regression/direct seeds.
+    unique_seeds: list[FloatArray] = []
     for seed in seeds:
-        seed = np.clip(np.asarray(seed, dtype=float), lo + 1.0e-10, hi - 1.0e-10)
-        cache_x: Optional[FloatArray] = None
-        cache_value = None
+        seed = np.asarray(seed, dtype=float)
+        if not any(np.linalg.norm(seed - old) < 1.0e-10 for old in unique_seeds):
+            unique_seeds.append(seed)
+        if len(unique_seeds) >= config.max_seed_attempts:
+            break
 
-        def evaluate(x):
-            nonlocal cache_x, cache_value
-            x = np.asarray(x, dtype=float)
-            if cache_x is None or not np.array_equal(x, cache_x):
-                cache_x = x.copy()
-                cache_value = ExtremalAtlas._shooting_residual_and_jacobian(
-                    x, float(target[0]), float(target[1]), target5, config
-                )
-            return cache_value
-
-        # Exact atlas rows and high-quality local predictions should not be
-        # perturbed by an unnecessary trust-region iteration.
-        initial_scaled, _initial_jac, initial_yf, initial_normal, initial_status, initial_launch = evaluate(seed)
-        if initial_yf is not None and initial_status == "ok" and initial_normal > 0.0:
-            radius, theta, ur, ut, kappa = _endpoint_from_state(initial_yf)
-            initial_raw = np.array(
-                [
-                    math.log(radius) - target5[0],
-                    theta - target5[1],
-                    ur - target5[2],
-                    ut - target5[3],
-                    math.log(kappa) - target5[4],
-                ],
-                dtype=float,
-            )
-            if np.all(np.abs(initial_raw) <= np.asarray(config.acceptance, dtype=float)):
-                norm = float(np.linalg.norm(initial_scaled))
-                if norm < best_norm:
-                    best_norm = norm
-                    best = initial_launch.copy()
-                continue
-
-        result = least_squares(
-            lambda x: evaluate(x)[0],
-            seed,
-            bounds=(lo, hi),
-            method="trf",
-            jac=lambda x: evaluate(x)[1],
-            x_scale="jac",
-            max_nfev=config.max_nfev,
-            ftol=1.0e-11,
-            xtol=1.0e-11,
-            gtol=1.0e-11,
+    for seed in unique_seeds:
+        if time.monotonic() >= deadline:
+            break
+        corrected, nfev, _reason = _correct_one_seed(
+            seed, lo, hi, float(target[0]), float(target[1]), target5, config,
+            deadline=deadline,
         )
-        total_nfev += int(result.nfev)
-        _scaled, _jac, yf, normal_constant, status, corrected_launch = evaluate(result.x)
-        if yf is None or status != "ok" or normal_constant <= 0.0:
-            continue
-        radius, theta, ur, ut, kappa = _endpoint_from_state(yf)
-        if radius <= 0.0 or kappa <= 0.0:
-            continue
-        raw = np.array(
-            [
-                math.log(radius) - target5[0],
-                theta - target5[1],
-                ur - target5[2],
-                ut - target5[3],
-                math.log(kappa) - target5[4],
-            ],
-            dtype=float,
-        )
-        if np.any(np.abs(raw) > np.asarray(config.acceptance, dtype=float)):
-            continue
-        norm = float(np.linalg.norm(raw / np.asarray(config.residual_scale, dtype=float)))
-        if norm < best_norm:
-            best_norm = norm
-            best = corrected_launch.copy()
+        total_nfev += int(nfev)
+        if corrected is not None:
+            best = corrected.copy()
+            break
     return best, nearest_distance, total_nfev
 
 
 def _coverage_query_config(
     config: AtlasConfig, *, pruning: bool = False, circular: bool = False
 ) -> QueryConfig:
+    """Use the same bounded production query policy for validation and viewing."""
     coverage = config.coverage
     max_nfev = (
         coverage.prune_max_nfev
@@ -1564,19 +1750,28 @@ def _coverage_query_config(
         else (coverage.circular_max_nfev if circular else coverage.max_nfev)
     )
     return QueryConfig(
+        method=coverage.query_method,
         neighbours=coverage.neighbours,
         direct_seeds=coverage.direct_seeds,
         regression_neighbours=coverage.regression_neighbours,
         max_nfev=max_nfev,
-        rtol=max(config.rtol, 5.0e-10),
-        atol=max(config.atol, 5.0e-12),
-        max_step=config.max_step,
+        max_iterations=coverage.query_max_iterations,
+        max_seed_attempts=coverage.query_max_seed_attempts,
+        wall_time_seconds=coverage.query_wall_seconds,
+        line_search_steps=coverage.query_line_search_steps,
+        step_limit=coverage.query_step_limit,
+        regularization=coverage.query_regularization,
+        robust_fallback=coverage.query_robust_fallback,
+        allow_continuation=coverage.query_allow_continuation,
+        rtol=max(config.rtol, 8.0e-10),
+        atol=max(config.atol, 8.0e-12),
+        max_step=max(config.max_step, 0.04),
         trajectory_points=max(64, config.diagnostic_points),
         r_collision=config.r_collision,
         r_escape=config.r_escape,
         max_acceleration=config.max_acceleration,
         residual_scale=(0.03, 0.08, 0.12, 0.12, 0.08),
-        acceptance=(8.0e-6, 1.2e-5, 1.2e-5, 1.2e-5, 1.2e-5),
+        acceptance=(1.0e-5, 1.5e-5, 1.5e-5, 1.5e-5, 1.5e-5),
         launch_bound_margin=0.25,
     )
 
@@ -2331,52 +2526,14 @@ def _correct_target_from_explicit_seed(
 ) -> tuple[Optional[FloatArray], int]:
     seed = np.concatenate((seed_launch[2:6], [math.log(seed_launch[6])]))
     lo, hi = bounds
-    seed = np.clip(seed, lo + 1.0e-10, hi - 1.0e-10)
-    target5 = target[2:7]
-    cache_x: Optional[FloatArray] = None
-    cache_value = None
-
-    def evaluate(x):
-        nonlocal cache_x, cache_value
-        x = np.asarray(x, dtype=float)
-        if cache_x is None or not np.array_equal(x, cache_x):
-            cache_x = x.copy()
-            cache_value = ExtremalAtlas._shooting_residual_and_jacobian(
-                x, float(target[0]), float(target[1]), target5, query_config
-            )
-        return cache_value
-
-    result = least_squares(
-        lambda x: evaluate(x)[0],
-        seed,
-        bounds=(lo, hi),
-        method="trf",
-        jac=lambda x: evaluate(x)[1],
-        x_scale="jac",
-        max_nfev=query_config.max_nfev,
-        ftol=1.0e-11,
-        xtol=1.0e-11,
-        gtol=1.0e-11,
+    corrected, nfev, _reason = _correct_one_seed(
+        seed, lo, hi, float(target[0]), float(target[1]), target[2:7], query_config,
+        deadline=time.monotonic() + max(query_config.wall_time_seconds, 1.0e-3),
     )
-    _scaled, _jac, yf, normal_constant, status, launch = evaluate(result.x)
-    if yf is None or status != "ok" or normal_constant <= 0.0:
-        return None, int(result.nfev)
-    radius, theta, ur, ut, kappa = _endpoint_from_state(yf)
-    raw = np.array(
-        [
-            math.log(radius) - target5[0],
-            theta - target5[1],
-            ur - target5[2],
-            ut - target5[3],
-            math.log(kappa) - target5[4],
-        ],
-        dtype=float,
-    )
-    if np.any(np.abs(raw) > np.asarray(query_config.acceptance, dtype=float)):
-        return None, int(result.nfev)
-    launch = launch.copy()
-    launch[0:2] = target[0:2]
-    return launch, int(result.nfev)
+    if corrected is not None:
+        corrected = corrected.copy()
+        corrected[0:2] = target[0:2]
+    return corrected, int(nfev)
 
 
 def _continuation_correct_target(
@@ -2503,6 +2660,8 @@ def _evaluate_circular_targets(
         success[probe_index] = launch is not None
 
     failed = np.flatnonzero(~success)
+    if not query_config.allow_continuation:
+        continuation_limit = 0
     if continuation_limit is None:
         continuation_limit = len(failed)
     continuation_limit = max(0, min(int(continuation_limit), len(failed)))
@@ -2725,14 +2884,31 @@ def _atomic_save_npz(
     return target
 
 
-def _checkpoint_config_matches(saved: dict, current: AtlasConfig) -> bool:
-    """Require an exact generation configuration match for safe resume."""
-    left = json.dumps(saved, sort_keys=True, separators=(",", ":"))
-    right = json.dumps(asdict(current), sort_keys=True, separators=(",", ":"))
+def _checkpoint_config_matches(
+    saved: dict, current: AtlasConfig, *, allow_policy_change: bool = False
+) -> bool:
+    """Compare resume configuration.
+
+    With ``allow_policy_change`` only the adaptive coverage/query policy may
+    differ; the physical launch distribution, integration guards, feature
+    scaling, seed, and Sobol budget must remain identical. This is useful when
+    upgrading the production query method without discarding an expensive
+    forward cloud.
+    """
+    current_dict = asdict(current)
+    saved_dict = dict(saved)
+    if allow_policy_change:
+        saved_dict.pop("coverage", None)
+        current_dict.pop("coverage", None)
+    left = json.dumps(saved_dict, sort_keys=True, separators=(",", ":"))
+    right = json.dumps(current_dict, sort_keys=True, separators=(",", ":"))
     return left == right
 
 
-def generate_atlas(path: str | Path, config: AtlasConfig, *, resume: bool = False) -> Path:
+def generate_atlas(
+    path: str | Path, config: AtlasConfig, *, resume: bool = False,
+    allow_policy_change: bool = False,
+) -> Path:
     """Generate an adaptive convergence-cell atlas.
 
     Point selection is driven by a cumulative feasible validation reservoir,
@@ -2896,7 +3072,10 @@ def generate_atlas(path: str | Path, config: AtlasConfig, *, resume: bool = Fals
     if resume and path.exists():
         with np.load(path, allow_pickle=False) as data:
             saved_metadata = json.loads(str(data["metadata_json"].item()))
-            if not _checkpoint_config_matches(saved_metadata.get("config", {}), config):
+            if not _checkpoint_config_matches(
+                saved_metadata.get("config", {}), config,
+                allow_policy_change=allow_policy_change,
+            ):
                 raise ValueError(
                     "Checkpoint configuration does not match the requested configuration. "
                     "Resume with the original JSON or choose a new output path."
@@ -3119,6 +3298,14 @@ def generate_atlas(path: str | Path, config: AtlasConfig, *, resume: bool = Fals
 
     query_config = _coverage_query_config(config)
     circular_query_config = _coverage_query_config(config, circular=True)
+    print(
+        "Coverage query policy: "
+        f"method={query_config.method}, seeds={query_config.max_seed_attempts}, "
+        f"iterations={query_config.max_iterations}, "
+        f"wall={query_config.wall_time_seconds:.3g}s, "
+        f"robust_fallback={query_config.robust_fallback}, "
+        f"continuation={query_config.allow_continuation}"
+    )
     correction_bounds = _combined_correction_bounds(config, atlas_launch, 0.25)
 
     def coverage_cell_arrays() -> tuple[FloatArray, NDArray[np.int32], NDArray[np.int32]]:
@@ -3651,21 +3838,32 @@ def generate_atlas(path: str | Path, config: AtlasConfig, *, resume: bool = Fals
                 len(reservoir_success) >= coverage.minimum_validation_rows
                 and reservoir_tested_fraction >= 0.99
                 and reservoir_metrics["success_rate"] >= coverage.target_success
-                and reservoir_metrics["p95_distance"] <= coverage.maximum_p95_distance
-                and reservoir_metrics["p99_distance"] <= coverage.maximum_p99_distance
+                and (
+                    not coverage.distance_criteria_enabled
+                    or (
+                        reservoir_metrics["p95_distance"] <= coverage.maximum_p95_distance
+                        and reservoir_metrics["p99_distance"] <= coverage.maximum_p99_distance
+                    )
+                )
                 and strata["passing_fraction"] >= coverage.minimum_strata_fraction
             )
             fresh_ok = (
                 fresh_metrics["success_rate"] >= coverage.fresh_target_success
-                and fresh_metrics["p95_distance"] <= coverage.fresh_maximum_p95_distance
+                and (
+                    not coverage.distance_criteria_enabled
+                    or fresh_metrics["p95_distance"] <= coverage.fresh_maximum_p95_distance
+                )
             )
             circular_ok = (
                 not coverage.circular_enabled
                 or (
                     circular_all_tested
                     and circular_metrics["success_rate"] >= coverage.circular_target_success
-                    and circular_metrics["p95_distance"]
-                    <= coverage.circular_maximum_p95_distance
+                    and (
+                        not coverage.circular_distance_criteria_enabled
+                        or circular_metrics["p95_distance"]
+                        <= coverage.circular_maximum_p95_distance
+                    )
                 )
             )
             budget_ok = launch_fraction >= coverage.minimum_launch_fraction_before_stop
@@ -3878,22 +4076,33 @@ def generate_atlas(path: str | Path, config: AtlasConfig, *, resume: bool = Fals
     final_reservoir_ok = (
         len(reservoir_success) >= coverage.minimum_validation_rows
         and final_reservoir_metrics["success_rate"] >= coverage.target_success
-        and final_reservoir_metrics["p95_distance"] <= coverage.maximum_p95_distance
-        and final_reservoir_metrics["p99_distance"] <= coverage.maximum_p99_distance
+        and (
+            not coverage.distance_criteria_enabled
+            or (
+                final_reservoir_metrics["p95_distance"] <= coverage.maximum_p95_distance
+                and final_reservoir_metrics["p99_distance"] <= coverage.maximum_p99_distance
+            )
+        )
         and final_strata["passing_fraction"] >= coverage.minimum_strata_fraction
     )
     final_fresh_ok = (
         len(last_fresh_success) > 0
         and final_fresh_metrics["success_rate"] >= coverage.fresh_target_success
-        and final_fresh_metrics["p95_distance"] <= coverage.fresh_maximum_p95_distance
+        and (
+            not coverage.distance_criteria_enabled
+            or final_fresh_metrics["p95_distance"] <= coverage.fresh_maximum_p95_distance
+        )
     )
     final_circular_ok = (
         not coverage.circular_enabled
         or (
             len(circular_success_state) > 0
             and final_circular_metrics["success_rate"] >= coverage.circular_target_success
-            and final_circular_metrics["p95_distance"]
-            <= coverage.circular_maximum_p95_distance
+            and (
+                not coverage.circular_distance_criteria_enabled
+                or final_circular_metrics["p95_distance"]
+                <= coverage.circular_maximum_p95_distance
+            )
         )
     )
     final_budget_ok = launch_fraction >= coverage.minimum_launch_fraction_before_stop
@@ -4254,6 +4463,7 @@ class ExtremalAtlas:
         w0: float,
         target5: FloatArray,
         config: QueryConfig,
+        deadline: Optional[float] = None,
     ) -> tuple[FloatArray, FloatArray, Optional[FloatArray], float, str, FloatArray]:
         ar0, at0, jr0, ell, log_tau = map(float, x)
         tau = math.exp(log_tau)
@@ -4266,6 +4476,7 @@ class ExtremalAtlas:
             r_collision=config.r_collision,
             r_escape=config.r_escape,
             max_acceleration=config.max_acceleration,
+            deadline=deadline,
         )
         if yf is None or sens is None:
             penalty = np.full(5, 1.0e3, dtype=float)
@@ -4301,6 +4512,7 @@ class ExtremalAtlas:
         target5: FloatArray,
         config: QueryConfig,
         return_details: bool = False,
+        deadline: Optional[float] = None,
     ):
         ar0, at0, jr0, ell, log_tau = map(float, x)
         tau = math.exp(log_tau)
@@ -4313,6 +4525,7 @@ class ExtremalAtlas:
             r_collision=config.r_collision,
             r_escape=config.r_escape,
             max_acceleration=config.max_acceleration,
+            deadline=deadline,
         )
         if sol is None:
             penalty = np.full(5, 1.0e3, dtype=float)
@@ -4396,70 +4609,42 @@ class ExtremalAtlas:
         target5 = target[2:7]
         solutions: list[ShootingSolution] = []
 
+        deadline = time.monotonic() + max(cfg.wall_time_seconds, 1.0e-3)
+        unique_seeds: list[FloatArray] = []
         for seed in seed_vectors:
-            seed = np.clip(np.asarray(seed, dtype=float), lo + 1.0e-10, hi - 1.0e-10)
-            cache_x = None
-            cache_value = None
+            seed = np.asarray(seed, dtype=float)
+            if not any(np.linalg.norm(seed - old) < 1.0e-10 for old in unique_seeds):
+                unique_seeds.append(seed)
+            if len(unique_seeds) >= cfg.max_seed_attempts:
+                break
 
-            def evaluate(x):
-                nonlocal cache_x, cache_value
-                x = np.asarray(x, dtype=float)
-                if cache_x is None or not np.array_equal(x, cache_x):
-                    cache_x = x.copy()
-                    cache_value = self._shooting_residual_and_jacobian(
-                        x, target[0], target[1], target5, cfg
-                    )
-                return cache_value
-
-            def fun(x):
-                return evaluate(x)[0]
-
-            def jac(x):
-                return evaluate(x)[1]
-
-            initial_scaled, _initial_jac, initial_yf, initial_normal, initial_status, initial_launch = evaluate(seed)
-            use_initial = False
-            if initial_yf is not None and initial_status == "ok" and initial_normal > 0.0:
-                ir, itheta, iur, iut, ikappa = _endpoint_from_state(initial_yf)
-                initial_raw = np.array(
-                    [
-                        math.log(ir) - target5[0],
-                        itheta - target5[1],
-                        iur - target5[2],
-                        iut - target5[3],
-                        math.log(ikappa) - target5[4],
-                    ],
-                    dtype=float,
-                )
-                use_initial = bool(
-                    np.all(np.abs(initial_raw) <= np.asarray(cfg.acceptance, dtype=float))
-                )
-            if use_initial:
-                scaled, _jac, yf, normal_constant, status, launch = (
-                    initial_scaled,
-                    _initial_jac,
-                    initial_yf,
-                    initial_normal,
-                    initial_status,
-                    initial_launch,
-                )
-            else:
-                result = least_squares(
-                    fun,
-                    seed,
-                    bounds=(lo, hi),
-                    method="trf",
-                    jac=jac,
-                    x_scale="jac",
-                    max_nfev=cfg.max_nfev,
-                    ftol=1.0e-12,
-                    xtol=1.0e-12,
-                    gtol=1.0e-12,
-                )
-                scaled, _jac, yf, normal_constant, status, launch = evaluate(result.x)
-            if yf is None or status != "ok" or normal_constant <= 0.0:
+        for seed in unique_seeds:
+            if time.monotonic() >= deadline:
+                break
+            corrected_launch, _nfev, _reason = _correct_one_seed(
+                seed, lo, hi, float(target[0]), float(target[1]), target5, cfg,
+                deadline=deadline,
+            )
+            if corrected_launch is None:
                 continue
-            radius, theta, ur, ut, kappa = _endpoint_from_state(yf)
+
+            # Reintegrate only after convergence. This is the first dense output
+            # calculation, so failed pixels/probes remain cheap.
+            t_eval = np.linspace(0.0, corrected_launch[6], cfg.trajectory_points)
+            dense_sol, normal_constant, status = _integrate_launch(
+                corrected_launch,
+                rtol=cfg.rtol,
+                atol=cfg.atol,
+                max_step=cfg.max_step,
+                r_collision=cfg.r_collision,
+                r_escape=cfg.r_escape,
+                max_acceleration=cfg.max_acceleration,
+                t_eval=t_eval,
+                deadline=deadline,
+            )
+            if dense_sol is None or status != "ok" or normal_constant <= 0.0:
+                continue
+            radius, theta, ur, ut, kappa = _endpoint_from_state(dense_sol.y[:, -1])
             raw = np.array([
                 math.log(radius) - target5[0],
                 theta - target5[1],
@@ -4469,26 +4654,12 @@ class ExtremalAtlas:
             ], dtype=float)
             if np.any(np.abs(raw) > np.asarray(cfg.acceptance, dtype=float)):
                 continue
-
-            # Reintegrate densely for the returned trajectory and diagnostics.
-            t_eval = np.linspace(0.0, launch[6], cfg.trajectory_points)
-            dense_sol, normal_constant, status = _integrate_launch(
-                launch,
-                rtol=cfg.rtol,
-                atol=cfg.atol,
-                max_step=cfg.max_step,
-                r_collision=cfg.r_collision,
-                r_escape=cfg.r_escape,
-                max_acceleration=cfg.max_acceleration,
-                t_eval=t_eval,
-            )
-            if dense_sol is None or status != "ok":
-                continue
+            scaled = raw / np.asarray(cfg.residual_scale, dtype=float)
             trajectory = _dimensional_trajectory(dense_sol.t, dense_sol.y, boundary, capability)
             radii = np.linalg.norm(dense_sol.y[0:2, :], axis=0)
             acc = np.linalg.norm(dense_sol.y[4:6, :], axis=0)
             solution = ShootingSolution(
-                launch=launch,
+                launch=corrected_launch,
                 residual=raw,
                 residual_norm=float(np.linalg.norm(scaled)),
                 normal_constant=float(normal_constant),
@@ -4498,7 +4669,6 @@ class ExtremalAtlas:
                 trajectory=trajectory,
             )
 
-            # Deduplicate in launch/time space.
             duplicate = False
             for old in solutions:
                 scale = np.array([1, 1, 1, 1, 1, 1, max(1.0, old.launch[6])], dtype=float)
@@ -4510,6 +4680,8 @@ class ExtremalAtlas:
                     break
             if not duplicate:
                 solutions.append(solution)
+            if not return_all:
+                break
 
         if not solutions:
             certificate = self.coverage_certificate(
@@ -4602,6 +4774,12 @@ def validate_atlas_coverage(
     validation_rows: int = 512,
     seed: Optional[int] = None,
     workers: Optional[int] = None,
+    query_method: Optional[str] = None,
+    query_seconds: Optional[float] = None,
+    query_iterations: Optional[int] = None,
+    query_seeds: Optional[int] = None,
+    robust_fallback: Optional[bool] = None,
+    allow_continuation: Optional[bool] = None,
 ) -> dict:
     """Audit an atlas with fresh feasible probes and exact circular targets."""
     atlas = ExtremalAtlas(atlas_path)
@@ -4611,6 +4789,18 @@ def validate_atlas_coverage(
     config.seed = int(seed if seed is not None else config.seed + 1_000_003)
     if workers is not None:
         config.workers = int(workers)
+    if query_method is not None:
+        config.coverage.query_method = query_method
+    if query_seconds is not None:
+        config.coverage.query_wall_seconds = float(query_seconds)
+    if query_iterations is not None:
+        config.coverage.query_max_iterations = int(query_iterations)
+    if query_seeds is not None:
+        config.coverage.query_max_seed_attempts = int(query_seeds)
+    if robust_fallback is not None:
+        config.coverage.query_robust_fallback = bool(robust_fallback)
+    if allow_continuation is not None:
+        config.coverage.query_allow_continuation = bool(allow_continuation)
     config.coverage.enabled = False
     launches = _sample_launches(config)
     probe_launch, probe_endpoint, probe_diag = _generate_rows_from_launches(launches, config)
@@ -4686,8 +4876,13 @@ def validate_atlas_coverage(
     general_ok = bool(
         len(success) >= config.coverage.minimum_validation_rows
         and general_rate >= config.coverage.target_success
-        and p95 <= config.coverage.maximum_p95_distance
-        and p99 <= config.coverage.maximum_p99_distance
+        and (
+            not config.coverage.distance_criteria_enabled
+            or (
+                p95 <= config.coverage.maximum_p95_distance
+                and p99 <= config.coverage.maximum_p99_distance
+            )
+        )
         and strata["passing_fraction"] >= config.coverage.minimum_strata_fraction
     )
     circular_ok = bool(
@@ -4695,7 +4890,10 @@ def validate_atlas_coverage(
         or (
             len(circular_success) > 0
             and circular_rate >= config.coverage.circular_target_success
-            and circular_p95 <= config.coverage.circular_maximum_p95_distance
+            and (
+                not config.coverage.circular_distance_criteria_enabled
+                or circular_p95 <= config.coverage.circular_maximum_p95_distance
+            )
         )
     )
 
@@ -4720,6 +4918,14 @@ def validate_atlas_coverage(
         "all_criteria_passed": bool(general_ok and circular_ok),
         "correction_nfev": int(total_nfev + circular_nfev),
         "seed": int(config.seed),
+        "query_policy": {
+            "method": query_config.method,
+            "wall_time_seconds": query_config.wall_time_seconds,
+            "max_iterations": query_config.max_iterations,
+            "max_seed_attempts": query_config.max_seed_attempts,
+            "robust_fallback": query_config.robust_fallback,
+            "allow_continuation": query_config.allow_continuation,
+        },
     }
 
 
@@ -4777,6 +4983,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         action="store_true",
         help="resume an incomplete atomic checkpoint at the output path",
     )
+    make.add_argument(
+        "--resume-policy-change",
+        action="store_true",
+        help=(
+            "resume while allowing coverage/query-policy changes; physical launch "
+            "and integration configuration must still match"
+        ),
+    )
 
     inspect = sub.add_parser("inspect", help="show atlas metadata")
     inspect.add_argument("atlas")
@@ -4787,6 +5001,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     validate.add_argument("--rows", type=int, default=512)
     validate.add_argument("--seed", type=int)
     validate.add_argument("--workers", type=int)
+    validate.add_argument(
+        "--query-method", choices=("fast_newton", "robust_least_squares")
+    )
+    validate.add_argument("--query-seconds", type=float)
+    validate.add_argument("--query-iterations", type=int)
+    validate.add_argument("--query-seeds", type=int)
+    validate.add_argument("--robust-fallback", action="store_true", default=None)
+    validate.add_argument("--allow-continuation", action="store_true", default=None)
 
     args = parser.parse_args(argv)
     if args.command == "generate":
@@ -4796,7 +5018,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.workers is not None:
             cfg.workers = args.workers
         try:
-            output = generate_atlas(args.output, cfg, resume=args.resume)
+            output = generate_atlas(
+                args.output, cfg, resume=args.resume,
+                allow_policy_change=args.resume_policy_change,
+            )
         except KeyboardInterrupt:
             marked = _mark_checkpoint_interrupted(
                 args.output, "keyboard interrupt outside adaptive coverage loop"
@@ -4822,6 +5047,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             validation_rows=args.rows,
             seed=args.seed,
             workers=args.workers,
+            query_method=args.query_method,
+            query_seconds=args.query_seconds,
+            query_iterations=args.query_iterations,
+            query_seeds=args.query_seeds,
+            robust_fallback=args.robust_fallback,
+            allow_continuation=args.allow_continuation,
         )
         print(json.dumps(report, indent=2))
         return 0

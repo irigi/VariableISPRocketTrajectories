@@ -20,8 +20,9 @@ Replay modes
 ------------
 ``corrected`` (default)
     Solve the exact clicked circular boundary.  The viewer tries nearby raw
-    rows explicitly, the atlas local-regression/nearest-neighbour solver, and a
-    gradual endpoint homotopy fallback.
+    rows explicitly and the atlas local-regression/nearest-neighbour solver.
+    By default the bounded fast Newton method fails quickly; optional robust
+    fallback/continuation must be requested explicitly.
 
 ``raw``
     Reintegrate a stored approximately circular row.  Raw mode is available
@@ -48,7 +49,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import LogNorm, Normalize
 from numpy.typing import NDArray
-from scipy.optimize import least_squares
 from scipy.spatial import cKDTree
 
 
@@ -123,6 +123,18 @@ class CircularTolerances:
         )
         if not all(math.isfinite(v) and v > 0.0 for v in values):
             raise ViewerError("All circularity tolerances must be finite and positive")
+
+
+@dataclass(slots=True)
+class QueryOptions:
+    method: str = "fast_newton"
+    max_iterations: int = 6
+    max_seed_attempts: int = 3
+    wall_time_seconds: float = 3.0
+    line_search_steps: int = 3
+    step_limit: float = 0.30
+    robust_fallback: bool = False
+    allow_continuation: bool = False
 
 
 @dataclass(slots=True)
@@ -583,20 +595,37 @@ def cell_index(edges: FloatArray, value: float) -> Optional[int]:
 # ---------------------------------------------------------------------------
 
 
-def query_config_from_metadata(solver: ModuleType, atlas: ForwardAtlas, samples: int):
+def query_config_from_metadata(
+    solver: ModuleType,
+    atlas: ForwardAtlas,
+    samples: int,
+    options: QueryOptions,
+):
     fields = getattr(solver.QueryConfig, "__dataclass_fields__", {})
     source = atlas.metadata.get("config", {})
+    coverage = source.get("coverage", {}) if isinstance(source, dict) else {}
     kwargs = {}
     for name in ("rtol", "atol", "max_step", "r_collision", "r_escape", "max_acceleration"):
         if name in fields and name in source:
             kwargs[name] = source[name]
-    kwargs.update(
-        trajectory_points=max(32, int(samples)),
-        neighbours=64,
-        direct_seeds=12,
-        regression_neighbours=32,
-        max_nfev=120,
-    )
+    mapped = {
+        "method": options.method,
+        "max_iterations": options.max_iterations,
+        "max_seed_attempts": options.max_seed_attempts,
+        "wall_time_seconds": options.wall_time_seconds,
+        "line_search_steps": options.line_search_steps,
+        "step_limit": options.step_limit,
+        "robust_fallback": options.robust_fallback,
+        "allow_continuation": options.allow_continuation,
+        "neighbours": int(coverage.get("neighbours", 24)),
+        "direct_seeds": int(coverage.get("direct_seeds", 4)),
+        "regression_neighbours": int(coverage.get("regression_neighbours", 16)),
+        "max_nfev": int(coverage.get("max_nfev", 35)),
+        "trajectory_points": max(32, int(samples)),
+    }
+    for name, value in mapped.items():
+        if name in fields:
+            kwargs[name] = value
     return solver.QueryConfig(**kwargs)
 
 
@@ -617,60 +646,26 @@ def _explicit_corrected_replay(
     kappa: float,
     samples: int,
     label: str,
+    query_options: QueryOptions,
 ) -> Optional[Replay]:
-    """Correct one exact circular transfer using a specific atlas row as seed."""
-    config = query_config_from_metadata(solver, atlas, samples)
-    circular_speed = rho ** -0.5
-    target5 = np.array([math.log(rho), theta, 0.0, circular_speed, math.log(kappa)], dtype=float)
-    seed_launch = np.asarray(atlas.launch[seed_row], dtype=float)
-    seed = np.concatenate((seed_launch[2:6], [math.log(seed_launch[6])]))
-    lo, hi = solver_atlas._bounds_for_correction(config)
-    seed = np.clip(seed, lo + 1.0e-10, hi - 1.0e-10)
-
-    cache_x = None
-    cache_value = None
-
-    def evaluate(x):
-        nonlocal cache_x, cache_value
-        x = np.asarray(x, dtype=float)
-        if cache_x is None or not np.array_equal(x, cache_x):
-            cache_x = x.copy()
-            cache_value = solver_atlas._shooting_residual_and_jacobian(
-                x, 0.0, 1.0, target5, config
-            )
-        return cache_value
-
-    result = least_squares(
-        lambda x: evaluate(x)[0],
-        seed,
-        jac=lambda x: evaluate(x)[1],
-        bounds=(lo, hi),
-        method="trf",
-        x_scale="jac",
-        max_nfev=config.max_nfev,
-        ftol=1.0e-12,
-        xtol=1.0e-12,
-        gtol=1.0e-12,
-    )
-    scaled, _jac, yf, normal_constant, status, launch = evaluate(result.x)
-    if yf is None or status != "ok" or normal_constant <= 0.0:
-        return None
-    radius, theta_end, ur, ut, resource = solver._endpoint_from_state(yf)
-    raw = np.array(
-        [
-            math.log(radius) - math.log(rho),
-            theta_end - theta,
-            ur,
-            ut - circular_speed,
-            math.log(resource) - math.log(kappa),
-        ],
+    """Correct one exact circular transfer using the production fast solver."""
+    config = query_config_from_metadata(solver, atlas, samples, query_options)
+    target = np.array(
+        [0.0, 1.0, math.log(rho), theta, 0.0, rho ** -0.5, math.log(kappa)],
         dtype=float,
     )
-    if np.any(np.abs(raw) > np.asarray(config.acceptance, dtype=float)):
+    seed_launch = np.asarray(atlas.launch[seed_row], dtype=float)
+    bounds = solver_atlas._bounds_for_correction(config)
+    if hasattr(solver, "_correct_target_from_explicit_seed"):
+        launch, _nfev = solver._correct_target_from_explicit_seed(
+            target, seed_launch, config, bounds
+        )
+    else:
+        launch = None
+    if launch is None:
         return None
-
     t_eval = np.linspace(0.0, float(launch[6]), max(32, int(samples)))
-    dense, normal_constant, dense_status = solver._integrate_launch(
+    dense, normal_constant, status = solver._integrate_launch(
         launch,
         rtol=config.rtol,
         atol=config.atol,
@@ -680,9 +675,16 @@ def _explicit_corrected_replay(
         max_acceleration=config.max_acceleration,
         t_eval=t_eval,
     )
-    if dense is None or dense_status != "ok":
+    if dense is None or status != "ok" or normal_constant <= 0.0:
         return None
     y = np.asarray(dense.y, dtype=float)
+    radius, theta_end, ur, ut, resource = solver._endpoint_from_state(y[:, -1])
+    raw = np.array(
+        [math.log(radius) - math.log(rho), theta_end - theta, ur,
+         ut - rho ** -0.5, math.log(resource) - math.log(kappa)], dtype=float
+    )
+    if np.any(np.abs(raw) > np.asarray(config.acceptance, dtype=float)):
+        return None
     return Replay(
         label=label,
         tau_f=float(launch[6]),
@@ -691,7 +693,7 @@ def _explicit_corrected_replay(
         velocity=y[2:4, :].T,
         acceleration=y[4:6, :].T,
         resource_fraction=np.asarray(y[8, :] / kappa, dtype=float),
-        residual_text=f"||scaled residual||={np.linalg.norm(scaled):.2e}",
+        residual_text=f"fast residual={np.linalg.norm(raw):.2e}",
         launch=np.asarray(launch, dtype=float),
     )
 
@@ -732,6 +734,7 @@ def corrected_replays_target(
     samples: int,
     all_branches: bool,
     max_branches: int,
+    query_options: QueryOptions,
 ) -> list[Replay]:
     """Solve an exact circular query at an arbitrary clicked target."""
     if not (rho > 0.0 and kappa > 0.0):
@@ -751,6 +754,7 @@ def corrected_replays_target(
             kappa=kappa,
             samples=samples,
             label=f"corrected seed row {int(seed_row)}",
+            query_options=query_options,
         )
         if replay is None:
             continue
@@ -781,7 +785,7 @@ def corrected_replays_target(
             dry_mass=1.0,
             mu=1.0,
         )
-        config = query_config_from_metadata(solver, atlas, samples)
+        config = query_config_from_metadata(solver, atlas, samples, query_options)
         try:
             result = solver_atlas.solve(
                 initial,
@@ -823,12 +827,16 @@ def corrected_replays_target(
     # Final fallback: continue gradually from nearby endpoint/launch pairs to
     # the exact clicked circular target.  This is more expensive than one
     # Newton solve but substantially enlarges the practical convergence basin.
-    if not replays and hasattr(solver, "_continuation_correct_target"):
+    if (
+        not replays
+        and query_options.allow_continuation
+        and hasattr(solver, "_continuation_correct_target")
+    ):
         target = np.array(
             [0.0, 1.0, math.log(rho), theta, 0.0, rho ** -0.5, math.log(kappa)],
             dtype=float,
         )
-        config = query_config_from_metadata(solver, atlas, samples)
+        config = query_config_from_metadata(solver, atlas, samples, query_options)
         try:
             bounds = solver._launch_correction_bounds(
                 atlas.launch, config.launch_bound_margin
@@ -1064,6 +1072,7 @@ def make_catalogue(
     figsize: tuple[float, float],
     replay_mode: str,
     max_replay_branches: int,
+    query_options: QueryOptions,
 ):
     values = projection_metric(atlas, projection, metric)
     theta_indices = infer_theta_panels(projection, nrows * ncols)
@@ -1123,6 +1132,16 @@ def make_catalogue(
         fontsize=9,
     )
 
+    query_cache: dict[tuple[int, int, int, bool], object] = {}
+
+    def mark_cell(ax, x: float, y: float, *, success: bool) -> None:
+        ax.scatter(
+            [x], [y], marker=("o" if success else "x"), s=(52 if success else 72),
+            linewidths=1.8, facecolors="none" if success else None,
+            edgecolors="black" if success else None,
+            color=None if success else "crimson", zorder=20,
+        )
+
     def on_click(event) -> None:
         ax = event.inaxes
         if ax is None or not hasattr(ax, "_pmp_theta_index"):
@@ -1155,6 +1174,23 @@ def make_catalogue(
         )
         seed_rows = np.unique(np.concatenate((cell_candidates, nearest))).astype(np.int64)
         all_requested = event.button == 3
+        cache_key = (i, j, k, bool(all_requested))
+        cached = query_cache.get(cache_key)
+        if cached is not None:
+            if isinstance(cached, str):
+                status.set_text(cached + " (cached)")
+                mark_cell(ax, rho, kappa, success=False)
+                fig.canvas.draw_idle()
+                return
+            replays = cached
+            status.set_text(
+                f"Using cached solution for cell ({i},{j},{k}); "
+                f"rho={rho:.6g}, theta={math.degrees(theta):.2f}°, kappa={kappa:.6g}"
+            )
+            mark_cell(ax, rho, kappa, success=True)
+            fig.canvas.draw_idle()
+            plot_replays(replays, rho=rho, theta=theta, kappa=kappa)
+            return
 
         raw_note = "occupied raw bin" if row >= 0 else "empty raw bin"
         status.set_text(
@@ -1177,6 +1213,7 @@ def make_catalogue(
                     samples=samples,
                     all_branches=all_requested,
                     max_branches=max_replay_branches,
+                    query_options=query_options,
                 )
             else:
                 if row < 0:
@@ -1191,10 +1228,15 @@ def make_catalogue(
                 ]
         except Exception as exc:
             message = f"Replay failed for cell ({i},{j},{k}): {exc}"
+            query_cache[cache_key] = message
             status.set_text(message)
             print(message)
+            mark_cell(ax, rho, kappa, success=False)
             fig.canvas.draw_idle()
             return
+        query_cache[cache_key] = replays
+        mark_cell(ax, rho, kappa, success=True)
+        fig.canvas.draw_idle()
         plot_replays(replays, rho=rho, theta=theta, kappa=kappa)
 
     fig.canvas.mpl_connect("button_press_event", on_click)
@@ -1258,6 +1300,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--samples", type=int, default=1200)
     parser.add_argument("--max-cell-candidates", type=int, default=12)
     parser.add_argument("--max-replay-branches", type=int, default=6)
+    parser.add_argument(
+        "--query-method", choices=("fast_newton", "robust_least_squares"),
+        default="fast_newton", help="Numerical corrector used for each clicked pixel",
+    )
+    parser.add_argument("--query-seconds", type=float, default=3.0)
+    parser.add_argument("--query-iterations", type=int, default=6)
+    parser.add_argument("--query-seeds", type=int, default=3)
+    parser.add_argument("--query-line-search", type=int, default=3)
+    parser.add_argument("--query-step-limit", type=float, default=0.30)
+    parser.add_argument("--robust-fallback", action="store_true")
+    parser.add_argument("--allow-continuation", action="store_true")
     parser.add_argument("--figsize", type=parse_figsize, default=(16.0, 10.0))
     parser.add_argument("--save-catalogue", type=Path, default=None)
     parser.add_argument("--no-show", action="store_true", help="Build/save without opening GUI")
@@ -1362,6 +1415,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("Median selected deviations: no raw approximately circular rows")
     print(f"Occupied projection bins: {np.count_nonzero(projection.selected_row >= 0):,}")
 
+    query_options = QueryOptions(
+        method=args.query_method,
+        max_iterations=args.query_iterations,
+        max_seed_attempts=args.query_seeds,
+        wall_time_seconds=args.query_seconds,
+        line_search_steps=args.query_line_search,
+        step_limit=args.query_step_limit,
+        robust_fallback=args.robust_fallback,
+        allow_continuation=args.allow_continuation,
+    )
+    print(
+        "Pixel solver: "
+        f"{query_options.method}, {query_options.max_seed_attempts} seeds, "
+        f"{query_options.max_iterations} iterations, "
+        f"{query_options.wall_time_seconds:.3g}s budget; "
+        f"fallback={query_options.robust_fallback}, "
+        f"continuation={query_options.allow_continuation}"
+    )
+
     fig = make_catalogue(
         atlas,
         solver,
@@ -1374,6 +1446,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         figsize=args.figsize,
         replay_mode=args.replay_mode,
         max_replay_branches=args.max_replay_branches,
+        query_options=query_options,
     )
     if args.save_catalogue is not None:
         output = args.save_catalogue.expanduser().resolve()
