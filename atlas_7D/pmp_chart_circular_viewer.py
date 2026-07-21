@@ -30,6 +30,12 @@ import numpy as np
 from numpy.typing import NDArray
 
 FloatArray = NDArray[np.float64]
+CORRECTOR_PROFILE_NAMES = (
+    "newton_balanced",
+    "newton_aggressive",
+    "newton_damped",
+    "trf_fast",
+)
 
 
 def load_module(path: str | Path, name_prefix: str) -> ModuleType:
@@ -176,9 +182,12 @@ def plot_canonical_trajectory(atlas, launch: FloatArray, target: FloatArray, cha
     axes[2].set_ylabel("|A|")
     axes[2].set_title("Acceleration history")
 
+    method_index = int(atlas.bank.solver_method[chart_index]) if len(atlas.bank.solver_method) else 0
+    profiles = CORRECTOR_PROFILE_NAMES
+    method_name = profiles[method_index] if 0 <= method_index < len(profiles) else "unknown"
     fig.suptitle(
-        f"chart={chart_index}, trust ratio={ratio:.3g}, tau={launch[6]:.5g}, "
-        f"normal={normal_constant:.5g}"
+        f"chart={chart_index}, trust ratio={ratio:.3g}, method={method_name}, "
+        f"tau={launch[6]:.5g}, normal={normal_constant:.5g}"
     )
     fig.tight_layout()
     fig.show()
@@ -276,7 +285,9 @@ def make_viewer(
             query_marks[key] = mark
             plot_canonical_trajectory(atlas, corrected, target, chart_idx, ratio)
         else:
-            marker = "x" if reason == "correction-failed" else "+"
+            marker = "x" if reason in {
+                "correction-failed", "timeout-or-budget", "invalid-chart-prediction"
+            } else "+"
             mark = event.inaxes.plot(rho_q, kappa_q, marker=marker, markersize=8, markeredgewidth=2.0)[0]
             query_marks[key] = mark
         fig.canvas.draw_idle()
