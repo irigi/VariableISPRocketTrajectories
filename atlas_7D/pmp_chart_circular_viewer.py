@@ -6,8 +6,9 @@ Every pixel is an exact circular-to-circular canonical query
     [u0,w0,log(rho),theta,ur_f,ut_f,log(kappa)]
     = [0,1,log(rho),theta,0,rho**(-1/2),log(kappa)].
 
-The background is the minimum validated chart trust ratio.  Values <= 1 are
-inside at least one empirical chart trust region.  Clicking a pixel runs the
+The background is the minimum validated chart trust ratio evaluated in each
+chart's analytical center-rotated Cartesian output basis.  Values <= 1 are
+inside at least one empirical transformed-space trust ellipsoid.  Clicking a pixel runs the
 same bounded exact corrector used by generator validation.  Successes and
 failures are marked and cached for the session.
 """
@@ -185,8 +186,16 @@ def plot_canonical_trajectory(atlas, launch: FloatArray, target: FloatArray, cha
     method_index = int(atlas.bank.solver_method[chart_index]) if len(atlas.bank.solver_method) else 0
     profiles = CORRECTOR_PROFILE_NAMES
     method_name = profiles[method_index] if 0 <= method_index < len(profiles) else "unknown"
+    type_names = {0: "quadratic", 1: "affine", 2: "micro"}
+    chart_type = type_names.get(int(atlas.bank.chart_type[chart_index]), "unknown")
+    patch_scale = float(atlas.bank.patch_scale[chart_index])
+    transform_name = (
+        atlas.bank.transform_name(chart_index)
+        if hasattr(atlas.bank, "transform_name") else "raw"
+    )
     fig.suptitle(
-        f"chart={chart_index}, trust ratio={ratio:.3g}, method={method_name}, "
+        f"chart={chart_index}, type={chart_type}, transform={transform_name}, "
+        f"patch scale={patch_scale:.3g}, trust ratio={ratio:.3g}, method={method_name}, "
         f"tau={launch[6]:.5g}, normal={normal_constant:.5g}"
     )
     fig.tight_layout()
@@ -214,6 +223,7 @@ def make_viewer(
         constrained_layout=True,
     )
     axes = axes_array.ravel()
+    transform_label = getattr(atlas.config.chart, "output_transform", "raw")
     panel_by_axis = {}
     query_marks: dict[tuple[int, int, int], object] = {}
 
@@ -242,10 +252,10 @@ def make_viewer(
         ax.set_visible(False)
     if image is not None:
         cbar = fig.colorbar(image, ax=axes[:n].tolist(), shrink=0.85)
-        cbar.set_label(r"$\log_{10}$(best chart trust ratio); covered when $\leq0$")
+        cbar.set_label(r"$\log_{10}$(best transformed-space trust ratio); covered when $\leq0$")
     fig.suptitle(
         f"Validated local-inverse chart coverage — {atlas_path.name}\n"
-        "Click any pixel to run the bounded exact correction"
+        f"basis={transform_label}; click any pixel to run the bounded exact correction"
     )
 
     rho_center = centers(rho_edges)
