@@ -26,10 +26,13 @@ Modes
     allocation and all requested transfer topologies.
 
 ``ticket``
-    Minimize total project budget per passenger.  The passenger count is fixed,
-    so this is equivalent to minimizing total budget.  After the minimum feasible
-    budget is found, the ship is re-optimized for minimum self-consistent transfer
-    time at that budget.
+    Legacy compatibility mode. Minimize one-time project budget per passenger.
+
+``fare``
+    Minimize ticket cost after amortizing reusable ship capital over its lifetime.
+    It supports the literal SHIP_PRICE / lifetime_trips / passengers formula and
+    a fuller lifecycle mode that adds recurring payload, propellant, operations,
+    occupancy, turnaround, utilization, and markup.
 
 The decision variables contain the three transfer shooting variables, engine
 fraction, self-consistent journey time, and (in ticket mode) total budget.  Four
@@ -37,8 +40,9 @@ constraints enforce final distance, final velocity, final mass, and equality of
 assumed and dynamically calculated journey time.
 
 The result is a candidate optimum over the ordinary topologies implemented by the
-base solver.  Ticket cost here means project budget divided by passengers; finance,
-operations, profit, insurance, and return-trip costs are outside this model.
+base solver.  The CLI exposes the primitive Excel engineering and cost inputs;
+``beta``, weighted engine/radiator cost, and effective fuel cost are derived using
+the same formulas as the workbook.
 """
 
 from __future__ import annotations
@@ -56,11 +60,14 @@ from time_optimal_transfer_solver import (
     AU_M,
     BudgetModel,
     DAY_S,
+    SpreadsheetEngineeringEconomics,
     Topology,
     TransferProblem,
     TransferSolution,
     _integrate_forced_topology,
     _solution_from_trajectory,
+    add_engineering_economics_arguments,
+    engineering_economics_from_args,
     solve_topology,
 )
 
@@ -90,6 +97,223 @@ class LinearPassengerPayload:
             + self.per_passenger_day_kg * passengers * transfer_days
         )
 
+    def components_kg(self, passengers: int, transfer_days: float) -> Dict[str, float]:
+        """Return the four additive mass components separately."""
+
+        self.mass_kg(passengers, transfer_days)  # validates all inputs
+        return {
+            "constant": self.constant_kg,
+            "per_passenger": self.per_passenger_kg * passengers,
+            "per_day": self.per_day_kg * transfer_days,
+            "per_passenger_day": (
+                self.per_passenger_day_kg * passengers * transfer_days
+            ),
+        }
+
+
+@dataclass(frozen=True)
+class LifecycleTicketEconomics:
+    """Amortization and operating assumptions for a passenger ticket.
+
+    With utilization=1, cycle_time_multiplier=1, turnaround=0, load_factor=1,
+    no recurring costs, and no markup, this reduces exactly to
+
+        SHIP_PRICE / (SHIP_LIFETIME / TRIP_DURATION) / PASSENGERS.
+
+    The reusable fractions classify the four payload-model terms.  Defaults
+    treat constant and per-passenger equipment as reusable ship hardware and
+    the time-dependent terms as recurring trip consumables.
+    """
+
+    ship_lifetime_days: float
+    accounting_mode: str = "lifecycle"
+    utilization_fraction: float = 1.0
+    cycle_time_multiplier: float = 1.0
+    turnaround_days: float = 0.0
+    load_factor: float = 1.0
+    operations_cost_per_trip_usd: float = 0.0
+    operations_cost_per_day_usd: float = 0.0
+    ticket_markup_fraction: float = 0.0
+    reusable_constant_fraction: float = 1.0
+    reusable_per_passenger_fraction: float = 1.0
+    reusable_per_day_fraction: float = 0.0
+    reusable_per_passenger_day_fraction: float = 0.0
+
+    def validate(self) -> None:
+        if not math.isfinite(self.ship_lifetime_days) or self.ship_lifetime_days <= 0.0:
+            raise ValueError("ship_lifetime_days must be finite and positive.")
+        if self.accounting_mode not in ("lifecycle", "simple"):
+            raise ValueError("accounting_mode must be 'lifecycle' or 'simple'.")
+        if not math.isfinite(self.utilization_fraction) or not 0.0 < self.utilization_fraction <= 1.0:
+            raise ValueError("utilization_fraction must satisfy 0 < value <= 1.")
+        if not math.isfinite(self.cycle_time_multiplier) or self.cycle_time_multiplier <= 0.0:
+            raise ValueError("cycle_time_multiplier must be finite and positive.")
+        if not math.isfinite(self.turnaround_days) or self.turnaround_days < 0.0:
+            raise ValueError("turnaround_days must be finite and nonnegative.")
+        if not math.isfinite(self.load_factor) or not 0.0 < self.load_factor <= 1.0:
+            raise ValueError("load_factor must satisfy 0 < value <= 1.")
+        for name in (
+            "operations_cost_per_trip_usd",
+            "operations_cost_per_day_usd",
+            "ticket_markup_fraction",
+        ):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(f"{name} must be finite and nonnegative.")
+        for name in (
+            "reusable_constant_fraction",
+            "reusable_per_passenger_fraction",
+            "reusable_per_day_fraction",
+            "reusable_per_passenger_day_fraction",
+        ):
+            value = getattr(self, name)
+            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must satisfy 0 <= value <= 1.")
+
+    def cycle_time_days(self, transfer_days: float) -> float:
+        self.validate()
+        if not math.isfinite(transfer_days) or transfer_days <= 0.0:
+            raise ValueError("transfer_days must be finite and positive.")
+        return self.cycle_time_multiplier * transfer_days + self.turnaround_days
+
+    def lifetime_trips(self, transfer_days: float) -> float:
+        return (
+            self.ship_lifetime_days * self.utilization_fraction
+            / self.cycle_time_days(transfer_days)
+        )
+
+
+@dataclass(frozen=True)
+class TicketCostBreakdown:
+    accounting_mode: str
+    ship_capital_cost_usd: float
+    recurring_cost_per_trip_usd: float
+    physical_ship_capital_cost_usd: float
+    physical_recurring_cost_per_trip_usd: float
+    operations_cost_per_trip_usd: float
+    cycle_time_days: float
+    lifetime_trips: float
+    capital_cost_per_trip_usd: float
+    paying_passengers_per_trip: float
+    ticket_cost_before_markup_usd: float
+    ticket_cost_usd_per_passenger: float
+    reusable_payload_mass_kg: float
+    recurring_payload_mass_kg: float
+    fuel_mass_kg: float
+    engine_radiator_capital_cost_usd: float
+    tank_capital_cost_usd: float
+    propellant_recurring_cost_usd: float
+
+
+def calculate_lifecycle_ticket_cost(
+    payload: LinearPassengerPayload,
+    passengers: int,
+    transfer_days: float,
+    total_budget_musd: float,
+    engine_fraction: float,
+    engineering: SpreadsheetEngineeringEconomics,
+    lifecycle: LifecycleTicketEconomics,
+) -> TicketCostBreakdown:
+    """Split the Excel budget into reusable capital and per-trip costs."""
+
+    engineering.validate()
+    lifecycle.validate()
+    if passengers <= 0:
+        raise ValueError("passengers must be positive.")
+    if not 0.0 < engine_fraction < 1.0:
+        raise ValueError("engine_fraction must lie strictly between 0 and 1.")
+
+    components = payload.components_kg(passengers, transfer_days)
+    reusable_fractions = {
+        "constant": lifecycle.reusable_constant_fraction,
+        "per_passenger": lifecycle.reusable_per_passenger_fraction,
+        "per_day": lifecycle.reusable_per_day_fraction,
+        "per_passenger_day": lifecycle.reusable_per_passenger_day_fraction,
+    }
+    reusable_payload_mass = sum(
+        components[name] * reusable_fractions[name] for name in components
+    )
+    total_payload_mass = sum(components.values())
+    recurring_payload_mass = total_payload_mass - reusable_payload_mass
+
+    total_budget_usd = total_budget_musd * 1.0e6
+    payload_cost_usd = total_payload_mass * engineering.payload_cost_usd_per_kg
+    propulsion_budget_usd = total_budget_usd - payload_cost_usd
+    if propulsion_budget_usd <= 0.0:
+        raise ValueError("Budget does not cover payload cost.")
+
+    engine_radiator_capital = engine_fraction * propulsion_budget_usd
+    fuel_budget_usd = (1.0 - engine_fraction) * propulsion_budget_usd
+    fuel_mass_kg = fuel_budget_usd / engineering.effective_fuel_cost_usd_per_kg
+    tank_capital = (
+        engineering.tank_mass_fraction
+        * fuel_mass_kg
+        * engineering.tank_cost_usd_per_kg
+    )
+    propellant_recurring = (
+        fuel_mass_kg * engineering.propellant_cost_usd_per_kg
+    )
+
+    reusable_payload_cost = (
+        reusable_payload_mass * engineering.payload_cost_usd_per_kg
+    )
+    recurring_payload_cost = (
+        recurring_payload_mass * engineering.payload_cost_usd_per_kg
+    )
+    physical_ship_capital_cost = (
+        reusable_payload_cost + engine_radiator_capital + tank_capital
+    )
+    physical_recurring_cost = recurring_payload_cost + propellant_recurring
+
+    # This identity is a useful accounting check: the Excel total budget buys
+    # reusable hardware plus one trip's recurring payload and propellant.
+    if abs(
+        (physical_ship_capital_cost + physical_recurring_cost) - total_budget_usd
+    ) > max(
+        1.0, 1.0e-9 * total_budget_usd
+    ):
+        raise ArithmeticError("Capital/recurring cost split does not close.")
+
+    if lifecycle.accounting_mode == "simple":
+        # Literal user formula: total design budget is SHIP_PRICE and is fully
+        # amortized; no separately recurring trip cost is added.
+        ship_capital_cost = total_budget_usd
+        recurring_cost = 0.0
+    else:
+        ship_capital_cost = physical_ship_capital_cost
+        recurring_cost = physical_recurring_cost
+
+    cycle_days = lifecycle.cycle_time_days(transfer_days)
+    lifetime_trips = lifecycle.lifetime_trips(transfer_days)
+    capital_per_trip = ship_capital_cost / lifetime_trips
+    operations = (
+        lifecycle.operations_cost_per_trip_usd
+        + lifecycle.operations_cost_per_day_usd * cycle_days
+    )
+    paying_passengers = passengers * lifecycle.load_factor
+    before_markup = (capital_per_trip + recurring_cost + operations) / paying_passengers
+    fare = before_markup * (1.0 + lifecycle.ticket_markup_fraction)
+    return TicketCostBreakdown(
+        accounting_mode=lifecycle.accounting_mode,
+        ship_capital_cost_usd=ship_capital_cost,
+        recurring_cost_per_trip_usd=recurring_cost,
+        physical_ship_capital_cost_usd=physical_ship_capital_cost,
+        physical_recurring_cost_per_trip_usd=physical_recurring_cost,
+        operations_cost_per_trip_usd=operations,
+        cycle_time_days=cycle_days,
+        lifetime_trips=lifetime_trips,
+        capital_cost_per_trip_usd=capital_per_trip,
+        paying_passengers_per_trip=paying_passengers,
+        ticket_cost_before_markup_usd=before_markup,
+        ticket_cost_usd_per_passenger=fare,
+        reusable_payload_mass_kg=reusable_payload_mass,
+        recurring_payload_mass_kg=recurring_payload_mass,
+        fuel_mass_kg=fuel_mass_kg,
+        engine_radiator_capital_cost_usd=engine_radiator_capital,
+        tank_capital_cost_usd=tank_capital,
+        propellant_recurring_cost_usd=propellant_recurring,
+    )
+
 
 @dataclass
 class PassengerShipResult:
@@ -105,6 +329,8 @@ class PassengerShipResult:
     constraint_residuals: List[float]
     optimizer_success: bool
     optimizer_message: str
+    ticket_cost_mode: str = "legacy_project_budget_per_passenger"
+    ticket_cost_breakdown: Optional[TicketCostBreakdown] = None
 
     @property
     def topology(self) -> Topology:
@@ -124,6 +350,12 @@ class PassengerShipResult:
             "constraint_residuals": self.constraint_residuals,
             "optimizer_success": self.optimizer_success,
             "optimizer_message": self.optimizer_message,
+            "ticket_cost_mode": self.ticket_cost_mode,
+            "ticket_cost_breakdown": (
+                asdict(self.ticket_cost_breakdown)
+                if self.ticket_cost_breakdown is not None
+                else None
+            ),
         }
 
 
@@ -200,6 +432,8 @@ class _Context:
     topology: Topology
     fixed_budget_musd: Optional[float]
     budget_scale_musd: float
+    engineering: Optional[SpreadsheetEngineeringEconomics] = None
+    lifecycle: Optional[LifecycleTicketEconomics] = None
 
 
 def _decode(z: Sequence[float], context: _Context) -> Tuple[np.ndarray, float, float, float]:
@@ -319,10 +553,28 @@ def _result_from_z(
         _, budget_musd, x, _ = _decode(z, context)
     except (ArithmeticError, OverflowError, ValueError):
         return None
+    breakdown: Optional[TicketCostBreakdown] = None
+    ticket_mode = "legacy_project_budget_per_passenger"
+    ticket_cost = budget_musd * 1.0e6 / context.passengers
+    if context.engineering is not None and context.lifecycle is not None:
+        try:
+            breakdown = calculate_lifecycle_ticket_cost(
+                context.payload,
+                context.passengers,
+                assumed_days,
+                budget_musd,
+                x,
+                context.engineering,
+                context.lifecycle,
+            )
+        except (ArithmeticError, OverflowError, ValueError):
+            return None
+        ticket_mode = "lifecycle_amortized"
+        ticket_cost = breakdown.ticket_cost_usd_per_passenger
     return PassengerShipResult(
         passengers=context.passengers,
         total_budget_musd=budget_musd,
-        ticket_cost_usd_per_passenger=budget_musd * 1.0e6 / context.passengers,
+        ticket_cost_usd_per_passenger=ticket_cost,
         engine_fraction=x,
         payload_mass_kg=payload_mass,
         assumed_transfer_days=assumed_days,
@@ -332,6 +584,8 @@ def _result_from_z(
         constraint_residuals=[float(value) for value in residuals],
         optimizer_success=optimizer_success,
         optimizer_message=optimizer_message,
+        ticket_cost_mode=ticket_mode,
+        ticket_cost_breakdown=breakdown,
     )
 
 
@@ -529,6 +783,92 @@ def _ticket_topology(
     )
 
 
+def _fare_topology(
+    payload: LinearPassengerPayload,
+    passengers: int,
+    budget_model: BudgetModel,
+    engineering: SpreadsheetEngineeringEconomics,
+    lifecycle: LifecycleTicketEconomics,
+    distance_m: float,
+    ve_max_m_s: float,
+    topology: Topology,
+    initials: Sequence[PassengerShipResult],
+    *,
+    budget_bounds_musd: Tuple[float, float],
+    engine_fraction_bounds: Tuple[float, float],
+    time_bounds_days: Tuple[float, float],
+    maxiter: int,
+) -> Optional[PassengerShipResult]:
+    """Optimize amortized lifecycle fare for one topology."""
+
+    bmin, bmax = budget_bounds_musd
+    context = _Context(
+        payload,
+        passengers,
+        budget_model,
+        distance_m,
+        ve_max_m_s,
+        topology,
+        None,
+        max(initial.total_budget_musd for initial in initials),
+        engineering,
+        lifecycle,
+    )
+    bounds = (
+        _shooting_bounds(topology)
+        + [(math.log(bmin), math.log(bmax))]
+        + [engine_fraction_bounds, (math.log(time_bounds_days[0]), math.log(time_bounds_days[1]))]
+    )
+
+    def objective(z: Sequence[float]) -> float:
+        try:
+            _, budget_musd, x, assumed_days = _decode(z, context)
+            breakdown = calculate_lifecycle_ticket_cost(
+                payload,
+                passengers,
+                assumed_days,
+                budget_musd,
+                x,
+                engineering,
+                lifecycle,
+            )
+            return breakdown.ticket_cost_usd_per_passenger / 1.0e6
+        except (ArithmeticError, OverflowError, ValueError):
+            return 1.0e30
+
+    candidates: List[PassengerShipResult] = []
+    for initial in initials:
+        seed = np.concatenate(
+            [
+                _log_shooting(initial.transfer),
+                [
+                    math.log(initial.total_budget_musd),
+                    initial.engine_fraction,
+                    math.log(initial.assumed_transfer_days),
+                ],
+            ]
+        )
+        result = minimize(
+            objective,
+            seed,
+            method="SLSQP",
+            bounds=bounds,
+            constraints={"type": "eq", "fun": lambda z: _constraints(z, context)},
+            options={"ftol": 1.0e-11, "maxiter": maxiter, "disp": False},
+        )
+        candidate = _result_from_z(
+            result.x,
+            context,
+            optimizer_success=bool(result.success),
+            optimizer_message=str(result.message),
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: item.ticket_cost_usd_per_passenger)
+
+
 def optimize_ticket_cost(
     payload: LinearPassengerPayload,
     passengers: int,
@@ -624,6 +964,97 @@ def optimize_ticket_cost(
         )
 
 
+def optimize_lifecycle_ticket_cost(
+    payload: LinearPassengerPayload,
+    passengers: int,
+    engineering: SpreadsheetEngineeringEconomics,
+    lifecycle: LifecycleTicketEconomics,
+    distance_m: float,
+    ve_max_m_s: float,
+    *,
+    budget_bounds_musd: Tuple[float, float],
+    topologies: Optional[Iterable[Topology]] = None,
+    engine_fraction_bounds: Tuple[float, float] = (0.02, 0.98),
+    time_bounds_days: Tuple[float, float] = (0.05, 50_000.0),
+    engine_seed_points: int = 5,
+    maxiter: int = 800,
+    max_nfev: int = 5_000,
+    max_starts: int = 30,
+) -> PassengerOptimizationResult:
+    """Minimize amortized lifecycle fare per paying passenger.
+
+    The objective includes reusable ship-capital amortization, recurring payload
+    and propellant costs, optional operations, occupancy, cycle time, and markup.
+    The transfer and nonlinear payload fixed point are solved simultaneously.
+    """
+
+    engineering.validate()
+    lifecycle.validate()
+    bmin, bmax = budget_bounds_musd
+    if not 0.0 < bmin < bmax:
+        raise ValueError("Invalid budget_bounds_musd.")
+    selected = tuple(topologies) if topologies is not None else tuple(Topology)
+    budget_model = engineering.budget_model(payload_mass_kg=1.0)
+
+    # Generate feasible continuation seeds at several budgets.  The upper bound
+    # is attempted first, then lower budgets reuse its converged trajectories.
+    seed_budgets = [bmax, math.sqrt(bmin * bmax), 0.5 * (bmin + bmax)]
+    seed_results: Dict[Topology, List[PassengerShipResult]] = {
+        topology: [] for topology in selected
+    }
+    previous: Optional[Mapping[Topology, PassengerShipResult]] = None
+    for budget in seed_budgets:
+        try:
+            optimized = optimize_passenger_ship(
+                payload,
+                passengers,
+                budget_model,
+                budget,
+                distance_m,
+                ve_max_m_s,
+                topologies=selected,
+                engine_fraction_bounds=engine_fraction_bounds,
+                time_bounds_days=time_bounds_days,
+                engine_seed_points=engine_seed_points,
+                maxiter=maxiter,
+                max_nfev=max_nfev,
+                max_starts=max_starts,
+                extra_seeds=previous,
+            )
+        except RuntimeError:
+            continue
+        previous = optimized.topology_results
+        for topology, result in optimized.topology_results.items():
+            seed_results[topology].append(result)
+
+    candidates: Dict[Topology, PassengerShipResult] = {}
+    for topology in selected:
+        initials = seed_results.get(topology, [])
+        if not initials:
+            continue
+        candidate = _fare_topology(
+            payload,
+            passengers,
+            budget_model,
+            engineering,
+            lifecycle,
+            distance_m,
+            ve_max_m_s,
+            topology,
+            initials,
+            budget_bounds_musd=budget_bounds_musd,
+            engine_fraction_bounds=engine_fraction_bounds,
+            time_bounds_days=time_bounds_days,
+            maxiter=maxiter,
+        )
+        if candidate is not None:
+            candidates[topology] = candidate
+    if not candidates:
+        raise RuntimeError("Lifecycle fare optimization produced no feasible candidate.")
+    best = min(candidates.values(), key=lambda item: item.ticket_cost_usd_per_passenger)
+    return PassengerOptimizationResult(best=best, topology_results=candidates, mode="fare")
+
+
 def run_regressions() -> dict:
     """Check old-solver compatibility and nonlinear fixed-point closure."""
 
@@ -699,6 +1130,35 @@ def _add_payload_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--engine-seed-points", type=int, default=5)
     parser.add_argument("--maxiter", type=int, default=800)
     parser.add_argument("--max-starts", type=int, default=30)
+    add_engineering_economics_arguments(parser, include_payload_mass=False)
+
+
+def _add_lifecycle_arguments(parser: argparse.ArgumentParser) -> None:
+    lifetime = parser.add_mutually_exclusive_group(required=True)
+    lifetime.add_argument("--ship-lifetime-days", type=float)
+    lifetime.add_argument("--ship-lifetime-years", type=float)
+    parser.add_argument(
+        "--fare-accounting",
+        choices=("simple", "lifecycle"),
+        default="lifecycle",
+        help=(
+            "simple uses total budget as SHIP_PRICE in the literal amortization "
+            "formula; lifecycle separates reusable capital from recurring trip costs."
+        ),
+    )
+    parser.add_argument("--utilization-fraction", type=float, default=1.0)
+    parser.add_argument("--cycle-time-multiplier", type=float, default=1.0)
+    parser.add_argument("--turnaround-days", type=float, default=0.0)
+    parser.add_argument("--load-factor", type=float, default=1.0)
+    parser.add_argument("--operations-cost-per-trip-usd", type=float, default=0.0)
+    parser.add_argument("--operations-cost-per-day-usd", type=float, default=0.0)
+    parser.add_argument("--ticket-markup-fraction", type=float, default=0.0)
+    parser.add_argument("--reusable-constant-fraction", type=float, default=1.0)
+    parser.add_argument("--reusable-per-passenger-fraction", type=float, default=1.0)
+    parser.add_argument("--reusable-per-day-fraction", type=float, default=0.0)
+    parser.add_argument(
+        "--reusable-per-passenger-day-fraction", type=float, default=0.0
+    )
 
 
 def _payload_from_args(args: argparse.Namespace) -> LinearPassengerPayload:
@@ -710,6 +1170,31 @@ def _payload_from_args(args: argparse.Namespace) -> LinearPassengerPayload:
     )
 
 
+def _lifecycle_from_args(args: argparse.Namespace) -> LifecycleTicketEconomics:
+    lifetime_days = (
+        args.ship_lifetime_days
+        if args.ship_lifetime_days is not None
+        else args.ship_lifetime_years * 365.25
+    )
+    return LifecycleTicketEconomics(
+        ship_lifetime_days=lifetime_days,
+        accounting_mode=args.fare_accounting,
+        utilization_fraction=args.utilization_fraction,
+        cycle_time_multiplier=args.cycle_time_multiplier,
+        turnaround_days=args.turnaround_days,
+        load_factor=args.load_factor,
+        operations_cost_per_trip_usd=args.operations_cost_per_trip_usd,
+        operations_cost_per_day_usd=args.operations_cost_per_day_usd,
+        ticket_markup_fraction=args.ticket_markup_fraction,
+        reusable_constant_fraction=args.reusable_constant_fraction,
+        reusable_per_passenger_fraction=args.reusable_per_passenger_fraction,
+        reusable_per_day_fraction=args.reusable_per_day_fraction,
+        reusable_per_passenger_day_fraction=(
+            args.reusable_per_passenger_day_fraction
+        ),
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -718,10 +1203,22 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_payload_arguments(ship)
     ship.add_argument("--budget-musd", type=float, required=True)
 
-    ticket = sub.add_parser("ticket", help="Minimize project budget per passenger.")
+    ticket = sub.add_parser(
+        "ticket",
+        help="Legacy mode: minimize one-time project budget per passenger.",
+    )
     _add_payload_arguments(ticket)
     ticket.add_argument("--budget-min-musd", type=float, required=True)
     ticket.add_argument("--budget-max-musd", type=float, required=True)
+
+    fare = sub.add_parser(
+        "fare",
+        help="Minimize lifecycle-amortized ticket cost per paying passenger.",
+    )
+    _add_payload_arguments(fare)
+    _add_lifecycle_arguments(fare)
+    fare.add_argument("--budget-min-musd", type=float, required=True)
+    fare.add_argument("--budget-max-musd", type=float, required=True)
 
     sub.add_parser("regressions", help="Run compatibility and nonlinear checks.")
     return parser
@@ -738,6 +1235,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     payload = _payload_from_args(args)
+    engineering = engineering_economics_from_args(args)
+    budget_model = engineering.budget_model(payload_mass_kg=1.0)
     common = dict(
         engine_fraction_bounds=(args.xmin, args.xmax),
         time_bounds_days=(args.time_min_days, args.time_max_days),
@@ -749,17 +1248,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         result = optimize_passenger_ship(
             payload,
             args.passengers,
-            BudgetModel(),
+            budget_model,
             args.budget_musd,
             args.distance_au * AU_M,
             args.ve_km_s * 1000.0,
             **common,
         )
-    else:
+    elif args.command == "ticket":
         result = optimize_ticket_cost(
             payload,
             args.passengers,
-            BudgetModel(),
+            budget_model,
+            args.distance_au * AU_M,
+            args.ve_km_s * 1000.0,
+            budget_bounds_musd=(args.budget_min_musd, args.budget_max_musd),
+            **common,
+        )
+    else:
+        result = optimize_lifecycle_ticket_cost(
+            payload,
+            args.passengers,
+            engineering,
+            _lifecycle_from_args(args),
             args.distance_au * AU_M,
             args.ve_km_s * 1000.0,
             budget_bounds_musd=(args.budget_min_musd, args.budget_max_musd),

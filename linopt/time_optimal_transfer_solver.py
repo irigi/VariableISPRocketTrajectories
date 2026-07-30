@@ -210,6 +210,128 @@ class BudgetModel:
         )
 
 
+@dataclass(frozen=True)
+class SpreadsheetEngineeringEconomics:
+    """Primitive engineering/economic inputs used by the Excel workbook.
+
+    ``phi`` is P_heat / P_total. Jet power is therefore
+    P_jet = (1 - phi) P_total.
+
+    The workbook derives the aggregate propulsion-hardware specific mass
+    ``beta`` and the weighted engine/radiator hardware cost from these values.
+    This class performs the same reduction and creates a backward-compatible
+    :class:`BudgetModel`.
+    """
+
+    alpha_eng_w_per_kg: float = 10_000.0
+    phi_heat_to_total: float = 0.30
+    rho_rad_w_per_kg: float = 4_000.0
+    payload_cost_usd_per_kg: float = 1_500.0
+    propellant_cost_usd_per_kg: float = 20.0
+    engine_core_cost_usd_per_kg: float = 10_000.0
+    radiator_cost_usd_per_kg: float = 1_500.0
+    tank_mass_fraction: float = 0.05
+    tank_cost_usd_per_kg: float = 300.0
+
+    def validate(self) -> None:
+        nonnegative = {
+            "alpha_eng_w_per_kg": self.alpha_eng_w_per_kg,
+            "rho_rad_w_per_kg": self.rho_rad_w_per_kg,
+            "payload_cost_usd_per_kg": self.payload_cost_usd_per_kg,
+            "propellant_cost_usd_per_kg": self.propellant_cost_usd_per_kg,
+            "engine_core_cost_usd_per_kg": self.engine_core_cost_usd_per_kg,
+            "radiator_cost_usd_per_kg": self.radiator_cost_usd_per_kg,
+            "tank_cost_usd_per_kg": self.tank_cost_usd_per_kg,
+        }
+        for name, value in nonnegative.items():
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(f"{name} must be finite and nonnegative.")
+        if self.alpha_eng_w_per_kg <= 0.0 or self.rho_rad_w_per_kg <= 0.0:
+            raise ValueError("alpha_eng_w_per_kg and rho_rad_w_per_kg must be positive.")
+        if not math.isfinite(self.phi_heat_to_total) or not 0.0 <= self.phi_heat_to_total < 1.0:
+            raise ValueError("phi_heat_to_total must satisfy 0 <= phi < 1.")
+        if not math.isfinite(self.tank_mass_fraction) or self.tank_mass_fraction < 0.0:
+            raise ValueError("tank_mass_fraction must be finite and nonnegative.")
+        if self.effective_fuel_cost_usd_per_kg <= 0.0:
+            raise ValueError(
+                "Propellant plus tank cost must be positive so fuel mass can be purchased."
+            )
+
+    @property
+    def jet_power_fraction(self) -> float:
+        return 1.0 - self.phi_heat_to_total
+
+    @property
+    def engine_specific_mass_kg_per_jet_w(self) -> float:
+        return 1.0 / (self.jet_power_fraction * self.alpha_eng_w_per_kg)
+
+    @property
+    def radiator_specific_mass_kg_per_jet_w(self) -> float:
+        return self.phi_heat_to_total / (
+            self.jet_power_fraction * self.rho_rad_w_per_kg
+        )
+
+    @property
+    def beta_kg_per_jet_w(self) -> float:
+        """Total engine plus radiator mass per watt of useful jet power."""
+
+        return (
+            self.engine_specific_mass_kg_per_jet_w
+            + self.radiator_specific_mass_kg_per_jet_w
+        )
+
+    @property
+    def engine_mass_fraction_of_hardware(self) -> float:
+        return self.engine_specific_mass_kg_per_jet_w / self.beta_kg_per_jet_w
+
+    @property
+    def radiator_mass_fraction_of_hardware(self) -> float:
+        return self.radiator_specific_mass_kg_per_jet_w / self.beta_kg_per_jet_w
+
+    @property
+    def engine_radiator_cost_usd_per_kg(self) -> float:
+        """Mass-weighted hardware cost, identical to Excel cell B41."""
+
+        return (
+            self.engine_core_cost_usd_per_kg * self.engine_mass_fraction_of_hardware
+            + self.radiator_cost_usd_per_kg
+            * self.radiator_mass_fraction_of_hardware
+        )
+
+    @property
+    def effective_fuel_cost_usd_per_kg(self) -> float:
+        """Propellant plus associated tank cost, identical to Excel cell B48."""
+
+        return (
+            self.propellant_cost_usd_per_kg
+            + self.tank_mass_fraction * self.tank_cost_usd_per_kg
+        )
+
+    def budget_model(self, payload_mass_kg: float = 500_000.0) -> BudgetModel:
+        self.validate()
+        return BudgetModel(
+            payload_mass_kg=payload_mass_kg,
+            payload_cost_per_kg=self.payload_cost_usd_per_kg,
+            engine_radiator_cost_per_kg=self.engine_radiator_cost_usd_per_kg,
+            system_specific_mass_kg_per_w=self.beta_kg_per_jet_w,
+            effective_fuel_cost_per_kg=self.effective_fuel_cost_usd_per_kg,
+            tank_mass_fraction=self.tank_mass_fraction,
+        )
+
+    def as_dict(self) -> dict:
+        return {
+            **asdict(self),
+            "jet_power_fraction": self.jet_power_fraction,
+            "engine_specific_mass_kg_per_jet_w": self.engine_specific_mass_kg_per_jet_w,
+            "radiator_specific_mass_kg_per_jet_w": self.radiator_specific_mass_kg_per_jet_w,
+            "beta_kg_per_jet_w": self.beta_kg_per_jet_w,
+            "engine_mass_fraction_of_hardware": self.engine_mass_fraction_of_hardware,
+            "radiator_mass_fraction_of_hardware": self.radiator_mass_fraction_of_hardware,
+            "engine_radiator_cost_usd_per_kg": self.engine_radiator_cost_usd_per_kg,
+            "effective_fuel_cost_usd_per_kg": self.effective_fuel_cost_usd_per_kg,
+        }
+
+
 @dataclass
 class BudgetOptimizationResult:
     engine_fraction: float
@@ -925,6 +1047,42 @@ def _print_json(data: object) -> None:
     print(json.dumps(data, indent=2, sort_keys=False))
 
 
+def add_engineering_economics_arguments(
+    parser: argparse.ArgumentParser,
+    *,
+    include_payload_mass: bool = True,
+) -> None:
+    """Add the primitive Excel engineering/economic inputs to a CLI parser."""
+
+    if include_payload_mass:
+        parser.add_argument("--payload-mass-kg", type=float, default=500_000.0)
+    parser.add_argument("--alpha-eng-w-per-kg", type=float, default=10_000.0)
+    parser.add_argument("--phi-heat-to-total", type=float, default=0.30)
+    parser.add_argument("--rho-rad-w-per-kg", type=float, default=4_000.0)
+    parser.add_argument("--payload-cost-usd-per-kg", type=float, default=1_500.0)
+    parser.add_argument("--propellant-cost-usd-per-kg", type=float, default=20.0)
+    parser.add_argument("--engine-core-cost-usd-per-kg", type=float, default=10_000.0)
+    parser.add_argument("--radiator-cost-usd-per-kg", type=float, default=1_500.0)
+    parser.add_argument("--tank-mass-fraction", type=float, default=0.05)
+    parser.add_argument("--tank-cost-usd-per-kg", type=float, default=300.0)
+
+
+def engineering_economics_from_args(
+    args: argparse.Namespace,
+) -> SpreadsheetEngineeringEconomics:
+    return SpreadsheetEngineeringEconomics(
+        alpha_eng_w_per_kg=args.alpha_eng_w_per_kg,
+        phi_heat_to_total=args.phi_heat_to_total,
+        rho_rad_w_per_kg=args.rho_rad_w_per_kg,
+        payload_cost_usd_per_kg=args.payload_cost_usd_per_kg,
+        propellant_cost_usd_per_kg=args.propellant_cost_usd_per_kg,
+        engine_core_cost_usd_per_kg=args.engine_core_cost_usd_per_kg,
+        radiator_cost_usd_per_kg=args.radiator_cost_usd_per_kg,
+        tank_mass_fraction=args.tank_mass_fraction,
+        tank_cost_usd_per_kg=args.tank_cost_usd_per_kg,
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -942,6 +1100,13 @@ def _build_parser() -> argparse.ArgumentParser:
     budget.add_argument("--ve-km-s", type=float, required=True)
     budget.add_argument("--xmin", type=float, default=0.001)
     budget.add_argument("--xmax", type=float, default=0.999)
+    add_engineering_economics_arguments(budget, include_payload_mass=True)
+
+    economics = sub.add_parser(
+        "economics",
+        help="Print the aggregate beta and costs derived from Excel-style inputs.",
+    )
+    add_engineering_economics_arguments(economics, include_payload_mass=True)
 
     regression = sub.add_parser("regressions", help="Run known-case checks.")
     regression.add_argument(
@@ -975,8 +1140,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     if args.command == "budget":
+        economics = engineering_economics_from_args(args)
+        budget_model = economics.budget_model(args.payload_mass_kg)
         best, candidates = optimize_budget_all_topologies(
-            BudgetModel(),
+            budget_model,
             args.budget_musd,
             args.distance_au * AU_M,
             args.ve_km_s * 1000.0,
@@ -984,11 +1151,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         _print_json(
             {
+                "engineering_economics": economics.as_dict(),
                 "best": best.as_dict(),
                 "candidates": {
                     topology.value: result.as_dict()
                     for topology, result in candidates.items()
                 },
+            }
+        )
+        return 0
+
+    if args.command == "economics":
+        economics = engineering_economics_from_args(args)
+        _print_json(
+            {
+                "engineering_economics": economics.as_dict(),
+                "budget_model": asdict(economics.budget_model(args.payload_mass_kg)),
             }
         )
         return 0

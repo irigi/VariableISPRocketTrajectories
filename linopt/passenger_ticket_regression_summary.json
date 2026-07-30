@@ -1,28 +1,299 @@
 {
-  "fixed_payload_compatibility": {
-    "computed_days": 328.01271944287794,
-    "expected_days": 328.0127194439226,
-    "engine_fraction": 0.8282526218447706,
-    "expected_engine_fraction": 0.8282524326,
-    "topology": "U+B+C+B-U",
-    "max_constraint_residual": 3.4375163118487637e-12
+  "excel_derived_aggregates": {
+    "alpha_eng_w_per_kg": 10000.0,
+    "phi_heat_to_total": 0.3,
+    "rho_rad_w_per_kg": 4000.0,
+    "payload_cost_usd_per_kg": 1500.0,
+    "propellant_cost_usd_per_kg": 20.0,
+    "engine_core_cost_usd_per_kg": 10000.0,
+    "radiator_cost_usd_per_kg": 1500.0,
+    "tank_mass_fraction": 0.05,
+    "tank_cost_usd_per_kg": 300.0,
+    "jet_power_fraction": 0.7,
+    "engine_specific_mass_kg_per_jet_w": 0.00014285714285714287,
+    "radiator_specific_mass_kg_per_jet_w": 0.00010714285714285714,
+    "beta_kg_per_jet_w": 0.00025,
+    "engine_mass_fraction_of_hardware": 0.5714285714285715,
+    "radiator_mass_fraction_of_hardware": 0.42857142857142855,
+    "engine_radiator_cost_usd_per_kg": 6357.142857142858,
+    "effective_fuel_cost_usd_per_kg": 35.0
   },
-  "nonlinear_payload_case": {
-    "transfer_days": 233.90035250461634,
-    "payload_mass_kg": 455037.66486089746,
-    "payload_formula_mass_kg": 455037.6648608494,
-    "engine_fraction": 0.9000982426554066,
-    "topology": "U+B+C+B-U",
-    "fixed_point_residual_days": -2.6133761821256485e-10,
-    "max_constraint_residual": 1.3646861418701736e-12
+  "simple_formula_example": {
+    "accounting_mode": "simple",
+    "ship_capital_cost_usd": 400000000.0,
+    "recurring_cost_per_trip_usd": 0.0,
+    "physical_ship_capital_cost_usd": 358814285.71428573,
+    "physical_recurring_cost_per_trip_usd": 41185714.28571429,
+    "operations_cost_per_trip_usd": 0.0,
+    "cycle_time_days": 300.0,
+    "lifetime_trips": 24.35,
+    "capital_cost_per_trip_usd": 16427104.722792607,
+    "paying_passengers_per_trip": 50.0,
+    "ticket_cost_before_markup_usd": 328542.0944558521,
+    "ticket_cost_usd_per_passenger": 328542.0944558521,
+    "reusable_payload_mass_kg": 150000.0,
+    "recurring_payload_mass_kg": 9000.0,
+    "fuel_mass_kg": 1384285.7142857146,
+    "engine_radiator_capital_cost_usd": 113050000.0,
+    "tank_capital_cost_usd": 20764285.714285716,
+    "propellant_recurring_cost_usd": 27685714.28571429
   },
-  "ticket_cost_case": {
-    "minimum_budget_musd": 247.25709714842117,
-    "ticket_cost_usd_per_passenger": 4945141.9429684235,
-    "transfer_days": 318.55312678941624,
-    "payload_mass_kg": 159556.5938036825,
-    "engine_fraction": 0.6181444862503152,
-    "topology": "U+B+C+B-U",
-    "max_constraint_residual": 1.9984014443252837e-15
-  }
+  "lifecycle_fare_optimization_example": {
+    "mode": "fare",
+    "best": {
+      "passengers": 50,
+      "total_budget_musd": 332.9526732844391,
+      "ticket_cost_usd_per_passenger": 322461.05595378584,
+      "engine_fraction": 0.95,
+      "payload_mass_kg": 153282.65284806737,
+      "assumed_transfer_days": 109.42176160224558,
+      "fixed_point_residual_days": 1.4918555280019064e-10,
+      "problem": {
+        "power_w": 61585691.25231889,
+        "initial_mass_kg": 323222.1166796543,
+        "final_mass_kg": 176038.26809059983,
+        "distance_m": 149597870700.0,
+        "ve_max_m_s": 250000.0
+      },
+      "transfer": {
+        "topology": "U+B+C+B-U",
+        "total_time_days": 109.42176160239478,
+        "phase_times_days": {
+          "variable_acceleration": 42.974084395513124,
+          "max_ve_acceleration": 5.844170808837041,
+          "coast": 11.79084769516287,
+          "max_ve_braking": 5.9480494735974805,
+          "variable_deceleration": 42.86460922928425
+        },
+        "maximum_acceleration_m_s2": 0.010030458191486267,
+        "average_absolute_acceleration_m_s2": 0.0050149786374244585,
+        "position_residual_fraction": -1.5962459420455189e-12,
+        "velocity_residual_over_ve": 2.7755575615628914e-17,
+        "mass_residual_log": -7.621681064054604e-13,
+        "shooting_y0": 6.5803960749504755,
+        "shooting_minus_yf": 6.57972298557073,
+        "shooting_kappa": 228.3040653286228,
+        "arcs": [
+          {
+            "name": "U+",
+            "y_start": 6.5803960749504755,
+            "y_end": 1.4119171647237014,
+            "dimensionless_time": 0.02263857589564698,
+            "mass_ratio_start": 1.0,
+            "mass_ratio_end": 0.7082568474870087,
+            "velocity_over_ve_start": 0.0,
+            "velocity_over_ve_end": 0.09046729492907402,
+            "dimensionless_position_start": 0.0,
+            "dimensionless_position_end": 0.001244764685894473
+          },
+          {
+            "name": "B+",
+            "y_start": 1.4119171647237014,
+            "y_end": 0.7090406753669924,
+            "dimensionless_time": 0.0030786858234214207,
+            "mass_ratio_start": 0.7082568474870087,
+            "mass_ratio_end": 0.7051781616635873,
+            "velocity_over_ve_start": 0.09046729492907402,
+            "velocity_over_ve_end": 0.09482361930524648,
+            "dimensionless_position_start": 0.001244764685894473,
+            "dimensionless_position_end": 0.0015299860724977028
+          },
+          {
+            "name": "C",
+            "y_start": 0.7090406753669924,
+            "y_end": -0.7090406753669867,
+            "dimensionless_time": 0.006211371438755507,
+            "mass_ratio_start": 0.7051781616635873,
+            "mass_ratio_end": 0.7051781616635873,
+            "velocity_over_ve_start": 0.09482361930524648,
+            "velocity_over_ve_end": 0.09482361930524648,
+            "dimensionless_position_start": 0.0015299860724977028,
+            "dimensionless_position_end": 0.002118970793169736
+          },
+          {
+            "name": "B-",
+            "y_start": -0.7090406753669867,
+            "y_end": -1.4244106173612323,
+            "dimensionless_time": 0.003133408688822672,
+            "mass_ratio_start": 0.7051781616635873,
+            "mass_ratio_end": 0.7020447529747645,
+            "velocity_over_ve_start": 0.09482361930524648,
+            "velocity_over_ve_end": 0.09037028950973985,
+            "dimensionless_position_start": 0.002118970793169736,
+            "dimensionless_position_end": 0.002409120073185344
+          },
+          {
+            "name": "U-",
+            "y_start": -1.4244106173612323,
+            "y_end": -6.57972298557073,
+            "dimensionless_time": 0.022580904815640918,
+            "mass_ratio_start": 0.7020447529747645,
+            "mass_ratio_end": 0.5446355896027293,
+            "velocity_over_ve_start": 0.09037028950973985,
+            "velocity_over_ve_end": 2.7755575615628914e-17,
+            "dimensionless_position_start": 0.002409120073185344,
+            "dimensionless_position_end": 0.003648498164543972
+          }
+        ]
+      },
+      "constraint_residuals": [
+        -1.5962459420455189e-12,
+        2.7755575615628914e-17,
+        -7.621681064054604e-13,
+        1.3633538742387629e-12
+      ],
+      "optimizer_success": true,
+      "optimizer_message": "Optimization terminated successfully",
+      "ticket_cost_mode": "lifecycle_amortized",
+      "ticket_cost_breakdown": {
+        "accounting_mode": "lifecycle",
+        "ship_capital_cost_usd": 325085017.0405569,
+        "recurring_cost_per_trip_usd": 7867656.2438821485,
+        "physical_ship_capital_cost_usd": 325085017.0405569,
+        "physical_recurring_cost_per_trip_usd": 7867656.2438821485,
+        "operations_cost_per_trip_usd": 0.0,
+        "cycle_time_days": 119.42176160224558,
+        "lifetime_trips": 48.93580467741242,
+        "capital_cost_per_trip_usd": 6643091.274038215,
+        "paying_passengers_per_trip": 45.0,
+        "ticket_cost_before_markup_usd": 322461.05595378584,
+        "ticket_cost_usd_per_passenger": 322461.05595378584,
+        "reusable_payload_mass_kg": 150000.0,
+        "recurring_payload_mass_kg": 3282.6528480673733,
+        "fuel_mass_kg": 147183.84858905445,
+        "engine_radiator_capital_cost_usd": 97877259.3117211,
+        "tank_capital_cost_usd": 2207757.728835817,
+        "propellant_recurring_cost_usd": 2943676.971781089
+      }
+    },
+    "topology_results": {
+      "U+B+C+B-U": {
+        "passengers": 50,
+        "total_budget_musd": 332.9526732844391,
+        "ticket_cost_usd_per_passenger": 322461.05595378584,
+        "engine_fraction": 0.95,
+        "payload_mass_kg": 153282.65284806737,
+        "assumed_transfer_days": 109.42176160224558,
+        "fixed_point_residual_days": 1.4918555280019064e-10,
+        "problem": {
+          "power_w": 61585691.25231889,
+          "initial_mass_kg": 323222.1166796543,
+          "final_mass_kg": 176038.26809059983,
+          "distance_m": 149597870700.0,
+          "ve_max_m_s": 250000.0
+        },
+        "transfer": {
+          "topology": "U+B+C+B-U",
+          "total_time_days": 109.42176160239478,
+          "phase_times_days": {
+            "variable_acceleration": 42.974084395513124,
+            "max_ve_acceleration": 5.844170808837041,
+            "coast": 11.79084769516287,
+            "max_ve_braking": 5.9480494735974805,
+            "variable_deceleration": 42.86460922928425
+          },
+          "maximum_acceleration_m_s2": 0.010030458191486267,
+          "average_absolute_acceleration_m_s2": 0.0050149786374244585,
+          "position_residual_fraction": -1.5962459420455189e-12,
+          "velocity_residual_over_ve": 2.7755575615628914e-17,
+          "mass_residual_log": -7.621681064054604e-13,
+          "shooting_y0": 6.5803960749504755,
+          "shooting_minus_yf": 6.57972298557073,
+          "shooting_kappa": 228.3040653286228,
+          "arcs": [
+            {
+              "name": "U+",
+              "y_start": 6.5803960749504755,
+              "y_end": 1.4119171647237014,
+              "dimensionless_time": 0.02263857589564698,
+              "mass_ratio_start": 1.0,
+              "mass_ratio_end": 0.7082568474870087,
+              "velocity_over_ve_start": 0.0,
+              "velocity_over_ve_end": 0.09046729492907402,
+              "dimensionless_position_start": 0.0,
+              "dimensionless_position_end": 0.001244764685894473
+            },
+            {
+              "name": "B+",
+              "y_start": 1.4119171647237014,
+              "y_end": 0.7090406753669924,
+              "dimensionless_time": 0.0030786858234214207,
+              "mass_ratio_start": 0.7082568474870087,
+              "mass_ratio_end": 0.7051781616635873,
+              "velocity_over_ve_start": 0.09046729492907402,
+              "velocity_over_ve_end": 0.09482361930524648,
+              "dimensionless_position_start": 0.001244764685894473,
+              "dimensionless_position_end": 0.0015299860724977028
+            },
+            {
+              "name": "C",
+              "y_start": 0.7090406753669924,
+              "y_end": -0.7090406753669867,
+              "dimensionless_time": 0.006211371438755507,
+              "mass_ratio_start": 0.7051781616635873,
+              "mass_ratio_end": 0.7051781616635873,
+              "velocity_over_ve_start": 0.09482361930524648,
+              "velocity_over_ve_end": 0.09482361930524648,
+              "dimensionless_position_start": 0.0015299860724977028,
+              "dimensionless_position_end": 0.002118970793169736
+            },
+            {
+              "name": "B-",
+              "y_start": -0.7090406753669867,
+              "y_end": -1.4244106173612323,
+              "dimensionless_time": 0.003133408688822672,
+              "mass_ratio_start": 0.7051781616635873,
+              "mass_ratio_end": 0.7020447529747645,
+              "velocity_over_ve_start": 0.09482361930524648,
+              "velocity_over_ve_end": 0.09037028950973985,
+              "dimensionless_position_start": 0.002118970793169736,
+              "dimensionless_position_end": 0.002409120073185344
+            },
+            {
+              "name": "U-",
+              "y_start": -1.4244106173612323,
+              "y_end": -6.57972298557073,
+              "dimensionless_time": 0.022580904815640918,
+              "mass_ratio_start": 0.7020447529747645,
+              "mass_ratio_end": 0.5446355896027293,
+              "velocity_over_ve_start": 0.09037028950973985,
+              "velocity_over_ve_end": 2.7755575615628914e-17,
+              "dimensionless_position_start": 0.002409120073185344,
+              "dimensionless_position_end": 0.003648498164543972
+            }
+          ]
+        },
+        "constraint_residuals": [
+          -1.5962459420455189e-12,
+          2.7755575615628914e-17,
+          -7.621681064054604e-13,
+          1.3633538742387629e-12
+        ],
+        "optimizer_success": true,
+        "optimizer_message": "Optimization terminated successfully",
+        "ticket_cost_mode": "lifecycle_amortized",
+        "ticket_cost_breakdown": {
+          "accounting_mode": "lifecycle",
+          "ship_capital_cost_usd": 325085017.0405569,
+          "recurring_cost_per_trip_usd": 7867656.2438821485,
+          "physical_ship_capital_cost_usd": 325085017.0405569,
+          "physical_recurring_cost_per_trip_usd": 7867656.2438821485,
+          "operations_cost_per_trip_usd": 0.0,
+          "cycle_time_days": 119.42176160224558,
+          "lifetime_trips": 48.93580467741242,
+          "capital_cost_per_trip_usd": 6643091.274038215,
+          "paying_passengers_per_trip": 45.0,
+          "ticket_cost_before_markup_usd": 322461.05595378584,
+          "ticket_cost_usd_per_passenger": 322461.05595378584,
+          "reusable_payload_mass_kg": 150000.0,
+          "recurring_payload_mass_kg": 3282.6528480673733,
+          "fuel_mass_kg": 147183.84858905445,
+          "engine_radiator_capital_cost_usd": 97877259.3117211,
+          "tank_capital_cost_usd": 2207757.728835817,
+          "propellant_recurring_cost_usd": 2943676.971781089
+        }
+      }
+    }
+  },
+  "test_status": "12 passed"
 }

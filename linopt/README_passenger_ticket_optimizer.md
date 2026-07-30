@@ -1,10 +1,12 @@
-# Passenger payload and ticket-cost optimizer
+# Passenger ship and lifecycle ticket optimizer
 
-`passenger_ticket_optimizer.py` is a companion to `time_optimal_transfer_solver.py`. The original transfer solver is unchanged.
+`passenger_ticket_optimizer.py` is a companion to `time_optimal_transfer_solver.py`.
+The original trajectory API remains available. The passenger script adds a nonlinear
+payload model and two ticket-cost modes.
 
-## Payload model
+## 1. Payload model
 
-For `N` passengers and a journey lasting `T` days:
+For `N` passengers and transfer time `T` in days:
 
 ```text
 payload_kg = constant_kg
@@ -13,45 +15,85 @@ payload_kg = constant_kg
            + per_passenger_day_kg * N * T
 ```
 
-All four coefficients are nonnegative and use kilograms, days, and passengers as shown.
-
-The time-dependent terms make the design nonlinear: payload changes the dry and initial masses, which changes transfer time, which changes payload again. The new solver handles this with a direct constrained nonlinear program. Its variables include the three transfer shooting parameters, engine/fuel budget fraction, self-consistent transfer time, and—only in ticket mode—total project budget.
-
-Four equality constraints enforce:
-
-1. final distance;
-2. zero final velocity;
-3. prescribed final mass;
-4. equality between assumed journey time and the transfer time calculated by the trajectory solver.
-
-The ordinary topologies are inherited from the base solver and are all attempted by default.
-
-## Meaning of ticket cost
-
-The reported ticket cost is:
+Set the coefficients with:
 
 ```text
-total project budget / number of passengers
+--payload-constant-kg
+--payload-per-passenger-kg
+--payload-per-day-kg
+--payload-per-passenger-day-kg
 ```
 
-The total project budget already includes payload, engine/radiator hardware, tank mass, and propellant under the base `BudgetModel`. Financing, profit, operations, insurance, launch, return-trip costs, and occupancy risk are not included.
+The solver enforces the fixed point between payload and trip time as a nonlinear
+constraint; it does not use a fixed number of Excel-style Newton columns.
 
-## Dependencies
+## 2. Excel engineering inputs
+
+The following command-line arguments map directly to the workbook inputs:
+
+| Excel quantity | Python argument | Units |
+|---|---|---|
+| `alpha_eng` | `--alpha-eng-w-per-kg` | W/kg |
+| `phi = P_heat/P_total` | `--phi-heat-to-total` | fraction |
+| `rho_rad` | `--rho-rad-w-per-kg` | W/kg |
+| Payload Cost | `--payload-cost-usd-per-kg` | USD/kg |
+| Propellant Cost | `--propellant-cost-usd-per-kg` | USD/kg |
+| Engine Core Cost | `--engine-core-cost-usd-per-kg` | USD/kg |
+| Radiator Cost | `--radiator-cost-usd-per-kg` | USD/kg |
+| Tank Mass Fraction | `--tank-mass-fraction` | kg tank/kg propellant |
+| Tank Cost | `--tank-cost-usd-per-kg` | USD/kg tank |
+
+`beta` is derived, as in the Excel workbook:
+
+```text
+beta = 1 / ((1 - phi) * alpha_eng)
+     + phi / ((1 - phi) * rho_rad)
+```
+
+The engine/radiator hardware cost per kg is the mass-weighted average:
+
+```text
+engine_specific_mass   = 1 / ((1 - phi) * alpha_eng)
+radiator_specific_mass = phi / ((1 - phi) * rho_rad)
+
+engine_radiator_cost_per_kg =
+    (engine_core_cost * engine_specific_mass
+   + radiator_cost * radiator_specific_mass) / beta
+```
+
+The effective cost of one kilogram of propellant allocation is:
+
+```text
+effective_fuel_cost = propellant_cost
+                    + tank_mass_fraction * tank_cost
+```
+
+With the spreadsheet defaults, the Python model reproduces:
+
+```text
+beta                              = 0.00025 kg/W
+engine_radiator_cost_per_kg       = 6357.142857142858 USD/kg
+effective_fuel_cost_per_kg        = 35 USD/kg
+```
+
+Print the derived values without running a trajectory:
 
 ```bash
-python -m pip install numpy scipy
+python time_optimal_transfer_solver.py economics \
+  --alpha-eng-w-per-kg 10000 \
+  --phi-heat-to-total 0.3 \
+  --rho-rad-w-per-kg 4000 \
+  --payload-cost-usd-per-kg 1500 \
+  --propellant-cost-usd-per-kg 20 \
+  --engine-core-cost-usd-per-kg 10000 \
+  --radiator-cost-usd-per-kg 1500 \
+  --tank-mass-fraction 0.05 \
+  --tank-cost-usd-per-kg 300
 ```
 
-Keep these files in the same directory:
+## 3. Ship optimization
 
-```text
-time_optimal_transfer_solver.py
-passenger_ticket_optimizer.py
-```
-
-## Fixed-budget passenger ship
-
-This mode minimizes self-consistent journey time for a specified total budget:
+This mode minimizes self-consistent transfer time at a fixed total budget:
 
 ```bash
 python passenger_ticket_optimizer.py ship \
@@ -62,17 +104,56 @@ python passenger_ticket_optimizer.py ship \
   --payload-per-day-kg 40 \
   --payload-per-passenger-day-kg 1.2 \
   --distance-au 5 \
-  --ve-km-s 250
+  --ve-km-s 250 \
+  --alpha-eng-w-per-kg 10000 \
+  --phi-heat-to-total 0.3 \
+  --rho-rad-w-per-kg 4000
 ```
 
-## Minimum ticket cost
+All unspecified engineering and cost arguments use the Excel defaults shown above.
 
-This mode minimizes project budget per passenger and then re-optimizes the ship for shortest self-consistent journey time at that budget:
+## 4. Legacy `ticket` mode
+
+The legacy mode is retained for compatibility:
+
+```text
+ticket_cost = total_project_budget / passengers
+```
+
+It finds the minimum feasible one-time project budget. It does **not** amortize the
+ship over multiple trips.
+
+## 5. Lifecycle `fare` mode
+
+### Simple accounting
+
+`--fare-accounting simple` implements the literal formula:
+
+```text
+lifetime_trips = ship_lifetime_days * utilization_fraction
+               / (cycle_time_multiplier * trip_duration_days + turnaround_days)
+
+paying_passengers = passengers * load_factor
+
+ticket_cost = total_project_budget / lifetime_trips / paying_passengers
+            * (1 + ticket_markup_fraction)
+```
+
+With `utilization_fraction=1`, `cycle_time_multiplier=1`, `turnaround_days=0`,
+`load_factor=1`, and zero markup, this is exactly:
+
+```text
+SHIP_PRICE / (LIFETIME_OF_THE_SHIP / TRIP_DURATION) / NUMBER_OF_PASSENGERS
+```
+
+Example:
 
 ```bash
-python passenger_ticket_optimizer.py ticket \
+python passenger_ticket_optimizer.py fare \
+  --fare-accounting simple \
+  --ship-lifetime-years 20 \
   --budget-min-musd 150 \
-  --budget-max-musd 800 \
+  --budget-max-musd 1000 \
   --passengers 50 \
   --payload-constant-kg 100000 \
   --payload-per-passenger-kg 1000 \
@@ -82,17 +163,70 @@ python passenger_ticket_optimizer.py ticket \
   --ve-km-s 250
 ```
 
-The budget bounds are search bounds. If the optimum lands on either bound, widen the range before interpreting it as an unconstrained optimum.
+### Lifecycle accounting
 
-## Python API
+`--fare-accounting lifecycle` is the more physical default. It separates the
+one-time Excel budget into reusable ship capital and recurring trip cost:
+
+```text
+ship_capital = reusable_payload_cost
+             + engine_and_radiator_cost
+             + tank_cost
+
+recurring_trip_cost = recurring_payload_cost
+                    + propellant_cost
+
+fare = (ship_capital / lifetime_trips
+      + recurring_trip_cost
+      + operations_cost_per_trip)
+      / paying_passengers
+      * (1 + markup)
+```
+
+By default:
+
+- constant payload mass is reusable;
+- per-passenger payload mass is reusable;
+- per-day payload mass is recurring;
+- per-passenger-day payload mass is recurring.
+
+Override those assumptions with:
+
+```text
+--reusable-constant-fraction
+--reusable-per-passenger-fraction
+--reusable-per-day-fraction
+--reusable-per-passenger-day-fraction
+```
+
+Each is between 0 and 1. For example, `0.25` means 25% of that payload term is
+reusable capital and 75% is repurchased each trip.
+
+Additional lifecycle parameters:
+
+```text
+--ship-lifetime-days or --ship-lifetime-years
+--utilization-fraction
+--cycle-time-multiplier
+--turnaround-days
+--load-factor
+--operations-cost-per-trip-usd
+--operations-cost-per-day-usd
+--ticket-markup-fraction
+```
+
+Set `--cycle-time-multiplier 2` if one revenue cycle requires an outbound and a
+similar-duration return transfer. Add servicing time with `--turnaround-days`.
+
+## 6. Python API
 
 ```python
 from passenger_ticket_optimizer import (
+    LifecycleTicketEconomics,
     LinearPassengerPayload,
-    optimize_passenger_ship,
-    optimize_ticket_cost,
+    optimize_lifecycle_ticket_cost,
 )
-from time_optimal_transfer_solver import AU_M, BudgetModel
+from time_optimal_transfer_solver import AU_M, SpreadsheetEngineeringEconomics
 
 payload = LinearPassengerPayload(
     constant_kg=100_000,
@@ -101,31 +235,49 @@ payload = LinearPassengerPayload(
     per_passenger_day_kg=0.2,
 )
 
-result = optimize_ticket_cost(
+engineering = SpreadsheetEngineeringEconomics(
+    alpha_eng_w_per_kg=10_000,
+    phi_heat_to_total=0.30,
+    rho_rad_w_per_kg=4_000,
+    payload_cost_usd_per_kg=1_500,
+    propellant_cost_usd_per_kg=20,
+    engine_core_cost_usd_per_kg=10_000,
+    radiator_cost_usd_per_kg=1_500,
+    tank_mass_fraction=0.05,
+    tank_cost_usd_per_kg=300,
+)
+
+lifecycle = LifecycleTicketEconomics(
+    ship_lifetime_days=20 * 365.25,
+    accounting_mode="lifecycle",  # or "simple"
+    utilization_fraction=0.8,
+    cycle_time_multiplier=2.0,
+    turnaround_days=10,
+    load_factor=0.9,
+)
+
+result = optimize_lifecycle_ticket_cost(
     payload,
     passengers=50,
-    budget_model=BudgetModel(),
+    engineering=engineering,
+    lifecycle=lifecycle,
     distance_m=1 * AU_M,
     ve_max_m_s=250_000,
-    budget_bounds_musd=(150, 800),
+    budget_bounds_musd=(150, 1000),
 )
 
 print(result.best.ticket_cost_usd_per_passenger)
-print(result.best.transfer.total_time_days)
+print(result.best.ticket_cost_breakdown)
 ```
 
-## Verification
-
-Run the new checks:
+## 7. Verification
 
 ```bash
-pytest -q test_passenger_ticket_optimizer.py
+pytest -q test_time_optimal_transfer_solver.py \
+          test_passenger_ticket_optimizer.py \
+          test_economics_and_fare.py
 ```
 
-Run the unchanged base-solver checks:
-
-```bash
-pytest -q test_time_optimal_transfer_solver.py
-```
-
-The new regression suite verifies that zero time-dependent payload terms reproduce the known 5 AU result, a nonlinear payload closes both the mass and time equations, and a synthetic ticket case produces an interior minimum budget.
+The current suite has 12 tests covering the original transfer regressions,
+nonlinear payload closure, Excel aggregate formulas, literal fare amortization,
+lifecycle cost closure, and a lifecycle fare optimization.
