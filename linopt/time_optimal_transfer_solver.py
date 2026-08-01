@@ -1051,6 +1051,7 @@ def add_engineering_economics_arguments(
     parser: argparse.ArgumentParser,
     *,
     include_payload_mass: bool = True,
+    include_payload_cost: bool = True,
 ) -> None:
     """Add the primitive Excel engineering/economic inputs to a CLI parser."""
 
@@ -1059,7 +1060,8 @@ def add_engineering_economics_arguments(
     parser.add_argument("--alpha-eng-w-per-kg", type=float, default=10_000.0)
     parser.add_argument("--phi-heat-to-total", type=float, default=0.30)
     parser.add_argument("--rho-rad-w-per-kg", type=float, default=4_000.0)
-    parser.add_argument("--payload-cost-usd-per-kg", type=float, default=1_500.0)
+    if include_payload_cost:
+        parser.add_argument("--payload-cost-usd-per-kg", type=float, default=1_500.0)
     parser.add_argument("--propellant-cost-usd-per-kg", type=float, default=20.0)
     parser.add_argument("--engine-core-cost-usd-per-kg", type=float, default=10_000.0)
     parser.add_argument("--radiator-cost-usd-per-kg", type=float, default=1_500.0)
@@ -1074,7 +1076,7 @@ def engineering_economics_from_args(
         alpha_eng_w_per_kg=args.alpha_eng_w_per_kg,
         phi_heat_to_total=args.phi_heat_to_total,
         rho_rad_w_per_kg=args.rho_rad_w_per_kg,
-        payload_cost_usd_per_kg=args.payload_cost_usd_per_kg,
+        payload_cost_usd_per_kg=getattr(args, "payload_cost_usd_per_kg", 1_500.0),
         propellant_cost_usd_per_kg=args.propellant_cost_usd_per_kg,
         engine_core_cost_usd_per_kg=args.engine_core_cost_usd_per_kg,
         radiator_cost_usd_per_kg=args.radiator_cost_usd_per_kg,

@@ -87,6 +87,57 @@ class LinearPassengerPayload:
 
 
 @dataclass(frozen=True)
+class LinearPassengerPayloadCosts:
+    """Per-kilogram prices for the four payload-model components.
+
+    The defaults distinguish reusable spacecraft hardware from inexpensive
+    trip consumables such as food, water make-up, hygiene supplies, and
+    packaging.
+    """
+
+    constant_usd_per_kg: float = 1_500.0
+    per_passenger_usd_per_kg: float = 1_000.0
+    per_day_usd_per_kg: float = 100.0
+    per_passenger_day_usd_per_kg: float = 15.0
+
+    def validate(self) -> None:
+        for name, value in asdict(self).items():
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(f"{name} must be finite and nonnegative.")
+
+    @classmethod
+    def uniform(cls, value: float) -> "LinearPassengerPayloadCosts":
+        return cls(value, value, value, value)
+
+    def prices_usd_per_kg(self) -> Dict[str, float]:
+        self.validate()
+        return {
+            "constant": self.constant_usd_per_kg,
+            "per_passenger": self.per_passenger_usd_per_kg,
+            "per_day": self.per_day_usd_per_kg,
+            "per_passenger_day": self.per_passenger_day_usd_per_kg,
+        }
+
+    def component_costs_usd(
+        self,
+        payload: LinearPassengerPayload,
+        passengers: int,
+        transfer_days: float,
+    ) -> Dict[str, float]:
+        components = payload.components_kg(passengers, transfer_days)
+        prices = self.prices_usd_per_kg()
+        return {name: components[name] * prices[name] for name in components}
+
+    def total_cost_usd(
+        self,
+        payload: LinearPassengerPayload,
+        passengers: int,
+        transfer_days: float,
+    ) -> float:
+        return sum(self.component_costs_usd(payload, passengers, transfer_days).values())
+
+
+@dataclass(frozen=True)
 class LifecycleTicketEconomics:
     """Amortization and operating assumptions for a passenger ticket.
 
@@ -170,6 +221,9 @@ class TicketCostBreakdown:
     ticket_cost_usd_per_passenger: float
     reusable_payload_mass_kg: float
     recurring_payload_mass_kg: float
+    reusable_payload_cost_usd: float
+    recurring_payload_cost_usd: float
+    payload_component_costs_usd: Dict[str, float]
     fuel_mass_kg: float
     engine_radiator_capital_cost_usd: float
     tank_capital_cost_usd: float
@@ -184,17 +238,27 @@ def calculate_lifecycle_ticket_cost(
     engine_fraction: float,
     engineering: SpreadsheetEngineeringEconomics,
     lifecycle: LifecycleTicketEconomics,
+    payload_costs: Optional[LinearPassengerPayloadCosts] = None,
 ) -> TicketCostBreakdown:
     """Split the Excel budget into reusable capital and per-trip costs."""
 
     engineering.validate()
     lifecycle.validate()
+    resolved_payload_costs = (
+        payload_costs
+        if payload_costs is not None
+        else LinearPassengerPayloadCosts.uniform(engineering.payload_cost_usd_per_kg)
+    )
+    resolved_payload_costs.validate()
     if passengers <= 0:
         raise ValueError("passengers must be positive.")
     if not 0.0 < engine_fraction < 1.0:
         raise ValueError("engine_fraction must lie strictly between 0 and 1.")
 
     components = payload.components_kg(passengers, transfer_days)
+    component_costs = resolved_payload_costs.component_costs_usd(
+        payload, passengers, transfer_days
+    )
     reusable_fractions = {
         "constant": lifecycle.reusable_constant_fraction,
         "per_passenger": lifecycle.reusable_per_passenger_fraction,
@@ -208,7 +272,7 @@ def calculate_lifecycle_ticket_cost(
     recurring_payload_mass = total_payload_mass - reusable_payload_mass
 
     total_budget_usd = total_budget_musd * 1.0e6
-    payload_cost_usd = total_payload_mass * engineering.payload_cost_usd_per_kg
+    payload_cost_usd = sum(component_costs.values())
     propulsion_budget_usd = total_budget_usd - payload_cost_usd
     if propulsion_budget_usd <= 0.0:
         raise ValueError("Budget does not cover payload cost.")
@@ -225,11 +289,12 @@ def calculate_lifecycle_ticket_cost(
         fuel_mass_kg * engineering.propellant_cost_usd_per_kg
     )
 
-    reusable_payload_cost = (
-        reusable_payload_mass * engineering.payload_cost_usd_per_kg
+    reusable_payload_cost = sum(
+        component_costs[name] * reusable_fractions[name] for name in components
     )
-    recurring_payload_cost = (
-        recurring_payload_mass * engineering.payload_cost_usd_per_kg
+    recurring_payload_cost = sum(
+        component_costs[name] * (1.0 - reusable_fractions[name])
+        for name in components
     )
     physical_ship_capital_cost = (
         reusable_payload_cost + engine_radiator_capital + tank_capital
@@ -272,6 +337,9 @@ def calculate_lifecycle_ticket_cost(
         ticket_cost_usd_per_passenger=fare,
         reusable_payload_mass_kg=reusable_payload_mass,
         recurring_payload_mass_kg=recurring_payload_mass,
+        reusable_payload_cost_usd=reusable_payload_cost,
+        recurring_payload_cost_usd=recurring_payload_cost,
+        payload_component_costs_usd=component_costs,
         fuel_mass_kg=fuel_mass_kg,
         engine_radiator_capital_cost_usd=engine_radiator_capital,
         tank_capital_cost_usd=tank_capital,
@@ -353,24 +421,41 @@ def _log_shooting(solution: TransferSolution) -> np.ndarray:
 def _budget_problem(
     budget_model: BudgetModel,
     payload_mass_kg: float,
+    payload_cost_usd: float,
     total_budget_musd: float,
     engine_fraction: float,
     distance_m: float,
     ve_max_m_s: float,
 ) -> TransferProblem:
-    dynamic_model = BudgetModel(
-        payload_mass_kg=payload_mass_kg,
-        payload_cost_per_kg=budget_model.payload_cost_per_kg,
-        engine_radiator_cost_per_kg=budget_model.engine_radiator_cost_per_kg,
-        system_specific_mass_kg_per_w=budget_model.system_specific_mass_kg_per_w,
-        effective_fuel_cost_per_kg=budget_model.effective_fuel_cost_per_kg,
-        tank_mass_fraction=budget_model.tank_mass_fraction,
+    if not 0.0 < engine_fraction < 1.0:
+        raise ValueError("engine_fraction must lie strictly between 0 and 1.")
+    total_budget_usd = total_budget_musd * 1.0e6
+    propulsion_budget_usd = total_budget_usd - payload_cost_usd
+    if propulsion_budget_usd <= 0.0:
+        raise ValueError("The total budget does not cover the payload cost.")
+
+    hardware_mass = (
+        engine_fraction
+        * propulsion_budget_usd
+        / budget_model.engine_radiator_cost_per_kg
     )
-    return dynamic_model.with_trajectory(
-        total_budget_musd,
-        engine_fraction,
-        distance_m,
-        ve_max_m_s,
+    fuel_mass = (
+        (1.0 - engine_fraction)
+        * propulsion_budget_usd
+        / budget_model.effective_fuel_cost_per_kg
+    )
+    power = hardware_mass / budget_model.system_specific_mass_kg_per_w
+    dry_mass = (
+        payload_mass_kg
+        + hardware_mass
+        + budget_model.tank_mass_fraction * fuel_mass
+    )
+    return TransferProblem(
+        power_w=power,
+        initial_mass_kg=dry_mass + fuel_mass,
+        final_mass_kg=dry_mass,
+        distance_m=distance_m,
+        ve_max_m_s=ve_max_m_s,
     )
 
 
@@ -391,6 +476,7 @@ class _Context:
     payload: LinearPassengerPayload
     passengers: int
     budget_model: BudgetModel
+    payload_costs: LinearPassengerPayloadCosts
     distance_m: float
     ve_max_m_s: float
     topology: Topology
@@ -418,9 +504,13 @@ def _evaluate_state(
 ) -> Tuple[TransferProblem, object, float, float, float]:
     shooting, budget_musd, x, assumed_days = _decode(z, context)
     payload_mass = context.payload.mass_kg(context.passengers, assumed_days)
+    payload_cost_usd = context.payload_costs.total_cost_usd(
+        context.payload, context.passengers, assumed_days
+    )
     problem = _budget_problem(
         context.budget_model,
         payload_mass,
+        payload_cost_usd,
         budget_musd,
         x,
         context.distance_m,
@@ -452,6 +542,7 @@ def _seed_shooting(
     payload: LinearPassengerPayload,
     passengers: int,
     budget_model: BudgetModel,
+    payload_costs: LinearPassengerPayloadCosts,
     total_budget_musd: float,
     engine_fraction: float,
     distance_m: float,
@@ -470,9 +561,11 @@ def _seed_shooting(
     for iteration in range(6):
         try:
             payload_mass = payload.mass_kg(passengers, days)
+            payload_cost_usd = payload_costs.total_cost_usd(payload, passengers, days)
             problem = _budget_problem(
                 budget_model,
                 payload_mass,
+                payload_cost_usd,
                 total_budget_musd,
                 engine_fraction,
                 distance_m,
@@ -530,6 +623,7 @@ def _result_from_z(
                 x,
                 context.engineering,
                 context.lifecycle,
+                context.payload_costs,
             )
         except (ArithmeticError, OverflowError, ValueError):
             return None
@@ -557,6 +651,7 @@ def _fixed_budget_topology(
     payload: LinearPassengerPayload,
     passengers: int,
     budget_model: BudgetModel,
+    payload_costs: LinearPassengerPayloadCosts,
     total_budget_musd: float,
     distance_m: float,
     ve_max_m_s: float,
@@ -574,6 +669,7 @@ def _fixed_budget_topology(
         payload,
         passengers,
         budget_model,
+        payload_costs,
         distance_m,
         ve_max_m_s,
         topology,
@@ -604,6 +700,7 @@ def _fixed_budget_topology(
             payload,
             passengers,
             budget_model,
+            payload_costs,
             total_budget_musd,
             float(x),
             distance_m,
@@ -649,6 +746,7 @@ def optimize_passenger_ship(
     distance_m: float,
     ve_max_m_s: float,
     *,
+    payload_costs: Optional[LinearPassengerPayloadCosts] = None,
     topologies: Optional[Iterable[Topology]] = None,
     engine_fraction_bounds: Tuple[float, float] = (0.02, 0.98),
     time_bounds_days: Tuple[float, float] = (0.05, 50_000.0),
@@ -661,6 +759,12 @@ def optimize_passenger_ship(
     """Minimize self-consistent journey time at a fixed total budget."""
 
     payload.validate()
+    resolved_payload_costs = (
+        payload_costs
+        if payload_costs is not None
+        else LinearPassengerPayloadCosts.uniform(budget_model.payload_cost_per_kg)
+    )
+    resolved_payload_costs.validate()
     selected = tuple(topologies) if topologies is not None else tuple(Topology)
     results: Dict[Topology, PassengerShipResult] = {}
     for topology in selected:
@@ -671,6 +775,7 @@ def optimize_passenger_ship(
             payload,
             passengers,
             budget_model,
+            resolved_payload_costs,
             total_budget_musd,
             distance_m,
             ve_max_m_s,
@@ -695,6 +800,7 @@ def _fare_topology(
     payload: LinearPassengerPayload,
     passengers: int,
     budget_model: BudgetModel,
+    payload_costs: LinearPassengerPayloadCosts,
     engineering: SpreadsheetEngineeringEconomics,
     lifecycle: LifecycleTicketEconomics,
     distance_m: float,
@@ -714,6 +820,7 @@ def _fare_topology(
         payload,
         passengers,
         budget_model,
+        payload_costs,
         distance_m,
         ve_max_m_s,
         topology,
@@ -739,6 +846,7 @@ def _fare_topology(
                 x,
                 engineering,
                 lifecycle,
+                payload_costs,
             )
             return breakdown.ticket_cost_usd_per_passenger / 1.0e6
         except (ArithmeticError, OverflowError, ValueError):
@@ -785,6 +893,7 @@ def optimize_lifecycle_ticket_cost(
     distance_m: float,
     ve_max_m_s: float,
     *,
+    payload_costs: Optional[LinearPassengerPayloadCosts] = None,
     budget_bounds_musd: Tuple[float, float],
     topologies: Optional[Iterable[Topology]] = None,
     engine_fraction_bounds: Tuple[float, float] = (0.02, 0.98),
@@ -805,6 +914,12 @@ def optimize_lifecycle_ticket_cost(
 
     engineering.validate()
     lifecycle.validate()
+    resolved_payload_costs = (
+        payload_costs
+        if payload_costs is not None
+        else LinearPassengerPayloadCosts.uniform(engineering.payload_cost_usd_per_kg)
+    )
+    resolved_payload_costs.validate()
     bmin, bmax = budget_bounds_musd
     if not 0.0 < bmin < bmax:
         raise ValueError("Invalid budget_bounds_musd.")
@@ -835,6 +950,7 @@ def optimize_lifecycle_ticket_cost(
                 budget,
                 distance_m,
                 ve_max_m_s,
+                payload_costs=resolved_payload_costs,
                 topologies=selected,
                 engine_fraction_bounds=engine_fraction_bounds,
                 time_bounds_days=time_bounds_days,
@@ -859,6 +975,7 @@ def optimize_lifecycle_ticket_cost(
             payload,
             passengers,
             budget_model,
+            resolved_payload_costs,
             engineering,
             lifecycle,
             distance_m,
@@ -946,7 +1063,7 @@ DEFAULT_FARE_VALUES = {
     "load_factor": 1.0,
     "ticket_markup_fraction": 0.0,
     "budget_min_musd": 150.0,
-    "budget_max_musd": 80000.0,
+    "budget_max_musd": 8000.0,
     "passengers": 600,
     "payload_constant_kg": 300_000.0,
     "payload_per_passenger_kg": 2_500.0,
@@ -957,7 +1074,10 @@ DEFAULT_FARE_VALUES = {
     "alpha_eng_w_per_kg": 20_000.0,
     "phi_heat_to_total": 0.15,
     "rho_rad_w_per_kg": 10_000.0,
-    "payload_cost_usd_per_kg": 1_500.0,
+    "payload_constant_cost_usd_per_kg": 1_500.0,
+    "payload_per_passenger_cost_usd_per_kg": 1_000.0,
+    "payload_per_day_cost_usd_per_kg": 100.0,
+    "payload_per_passenger_day_cost_usd_per_kg": 15.0,
     "propellant_cost_usd_per_kg": 20.0,
     "engine_core_cost_usd_per_kg": 10_000.0,
     "radiator_cost_usd_per_kg": 1_500.0,
@@ -974,6 +1094,10 @@ def add_fare_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--payload-per-passenger-kg", type=float, default=DEFAULT_FARE_VALUES["payload_per_passenger_kg"])
     parser.add_argument("--payload-per-day-kg", type=float, default=DEFAULT_FARE_VALUES["payload_per_day_kg"])
     parser.add_argument("--payload-per-passenger-day-kg", type=float, default=DEFAULT_FARE_VALUES["payload_per_passenger_day_kg"])
+    parser.add_argument("--payload-constant-cost-usd-per-kg", type=float, default=DEFAULT_FARE_VALUES["payload_constant_cost_usd_per_kg"])
+    parser.add_argument("--payload-per-passenger-cost-usd-per-kg", type=float, default=DEFAULT_FARE_VALUES["payload_per_passenger_cost_usd_per_kg"])
+    parser.add_argument("--payload-per-day-cost-usd-per-kg", type=float, default=DEFAULT_FARE_VALUES["payload_per_day_cost_usd_per_kg"])
+    parser.add_argument("--payload-per-passenger-day-cost-usd-per-kg", type=float, default=DEFAULT_FARE_VALUES["payload_per_passenger_day_cost_usd_per_kg"])
     parser.add_argument("--distance-au", type=float, default=DEFAULT_FARE_VALUES["distance_au"])
     parser.add_argument("--ve-km-s", type=float, default=DEFAULT_FARE_VALUES["ve_km_s"])
     parser.add_argument("--budget-min-musd", type=float, default=DEFAULT_FARE_VALUES["budget_min_musd"])
@@ -994,20 +1118,19 @@ def add_fare_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--reusable-per-day-fraction", type=float, default=0.0)
     parser.add_argument("--reusable-per-passenger-day-fraction", type=float, default=0.0)
 
-    parser.add_argument("--xmin", type=float, default=0.01)
-    parser.add_argument("--xmax", type=float, default=0.99)
+    parser.add_argument("--xmin", type=float, default=0.02)
+    parser.add_argument("--xmax", type=float, default=0.98)
     parser.add_argument("--time-min-days", type=float, default=0.05)
     parser.add_argument("--time-max-days", type=float, default=50_000.0)
     parser.add_argument("--engine-seed-points", type=int, default=5)
     parser.add_argument("--maxiter", type=int, default=800)
     parser.add_argument("--max-starts", type=int, default=30)
 
-    add_engineering_economics_arguments(parser, include_payload_mass=False)
+    add_engineering_economics_arguments(parser, include_payload_mass=False, include_payload_cost=False)
     parser.set_defaults(
         alpha_eng_w_per_kg=DEFAULT_FARE_VALUES["alpha_eng_w_per_kg"],
         phi_heat_to_total=DEFAULT_FARE_VALUES["phi_heat_to_total"],
         rho_rad_w_per_kg=DEFAULT_FARE_VALUES["rho_rad_w_per_kg"],
-        payload_cost_usd_per_kg=DEFAULT_FARE_VALUES["payload_cost_usd_per_kg"],
         propellant_cost_usd_per_kg=DEFAULT_FARE_VALUES["propellant_cost_usd_per_kg"],
         engine_core_cost_usd_per_kg=DEFAULT_FARE_VALUES["engine_core_cost_usd_per_kg"],
         radiator_cost_usd_per_kg=DEFAULT_FARE_VALUES["radiator_cost_usd_per_kg"],
@@ -1022,6 +1145,15 @@ def payload_from_args(args: argparse.Namespace) -> LinearPassengerPayload:
         args.payload_per_passenger_kg,
         args.payload_per_day_kg,
         args.payload_per_passenger_day_kg,
+    )
+
+
+def payload_costs_from_args(args: argparse.Namespace) -> LinearPassengerPayloadCosts:
+    return LinearPassengerPayloadCosts(
+        constant_usd_per_kg=args.payload_constant_cost_usd_per_kg,
+        per_passenger_usd_per_kg=args.payload_per_passenger_cost_usd_per_kg,
+        per_day_usd_per_kg=args.payload_per_day_cost_usd_per_kg,
+        per_passenger_day_usd_per_kg=args.payload_per_passenger_day_cost_usd_per_kg,
     )
 
 
@@ -1062,6 +1194,7 @@ def optimize_fare_from_args(
         lifecycle_from_args(args),
         args.distance_au * AU_M,
         args.ve_km_s * 1000.0,
+        payload_costs=payload_costs_from_args(args),
         budget_bounds_musd=(args.budget_min_musd, args.budget_max_musd),
         engine_fraction_bounds=(args.xmin, args.xmax),
         time_bounds_days=(args.time_min_days, args.time_max_days),
