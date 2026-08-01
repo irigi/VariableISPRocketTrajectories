@@ -1,9 +1,10 @@
 import math
 
 from passenger_ticket_optimizer import (
+    DEFAULT_FARE_VALUES,
     LinearPassengerPayload,
+    _build_parser,
     optimize_passenger_ship,
-    optimize_ticket_cost,
 )
 from time_optimal_transfer_solver import AU_M, BudgetModel, Topology
 
@@ -59,21 +60,14 @@ def test_nonlinear_payload_closes_time_and_mass():
     assert max(abs(value) for value in result.best.constraint_residuals) < 1.0e-8
 
 
-def test_ticket_optimizer_finds_interior_minimum_budget():
-    payload = LinearPassengerPayload(100_000.0, 1_000.0, 20.0, 0.2)
-    result = optimize_ticket_cost(
-        payload,
-        passengers=50,
-        budget_model=BudgetModel(),
-        distance_m=1.0 * AU_M,
-        ve_max_m_s=250_000.0,
-        budget_bounds_musd=(150.0, 800.0),
-        engine_fraction_bounds=(0.55, 0.95),
-        time_bounds_days=(20.0, 1000.0),
-        engine_seed_points=3,
-        max_starts=20,
-    )
-    assert 150.0 < result.best.total_budget_musd < 800.0
-    assert abs(result.best.total_budget_musd - 247.25709715) < 0.02
-    assert abs(result.best.ticket_cost_usd_per_passenger - 4_945_141.943) < 500.0
-    assert max(abs(value) for value in result.best.constraint_residuals) < 1.0e-8
+def test_public_cli_only_exposes_fare_and_uses_requested_defaults():
+    args = _build_parser().parse_args(["fare"])
+    for key, expected in DEFAULT_FARE_VALUES.items():
+        assert getattr(args, key) == expected
+
+
+def test_ticket_subcommand_is_removed():
+    import pytest
+
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["ticket"])

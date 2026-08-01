@@ -30,27 +30,6 @@ def test_excel_primitive_inputs_reproduce_aggregate_cells():
     )
 
 
-def test_simple_fare_mode_matches_literal_user_formula():
-    payload = LinearPassengerPayload(1_000.0, 100.0, 0.0, 0.0)
-    lifecycle = LifecycleTicketEconomics(
-        ship_lifetime_days=10.0 * 365.25,
-        accounting_mode="simple",
-    )
-    result = calculate_lifecycle_ticket_cost(
-        payload=payload,
-        passengers=10,
-        transfer_days=100.0,
-        total_budget_musd=100.0,
-        engine_fraction=0.5,
-        engineering=SpreadsheetEngineeringEconomics(),
-        lifecycle=lifecycle,
-    )
-    expected = 100.0e6 / ((10.0 * 365.25) / 100.0) / 10.0
-    assert math.isclose(result.ticket_cost_usd_per_passenger, expected, rel_tol=1e-12)
-    assert result.recurring_cost_per_trip_usd == 0.0
-    assert result.ship_capital_cost_usd == 100.0e6
-
-
 def test_lifecycle_accounting_closes_to_excel_total_budget():
     payload = LinearPassengerPayload(100_000.0, 1_000.0, 20.0, 0.2)
     result = calculate_lifecycle_ticket_cost(

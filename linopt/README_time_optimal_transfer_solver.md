@@ -57,13 +57,7 @@ python time_optimal_transfer_solver.py budget \
   --ve-km-s 50
 ```
 
-The budget command now accepts the primitive Excel engineering and cost inputs directly. `beta`, the weighted engine/radiator hardware cost, and the effective fuel cost are derived from them.
-
-```bash
-python time_optimal_transfer_solver.py economics
-```
-
-prints the default derivation. Important arguments include `--alpha-eng-w-per-kg`, `--phi-heat-to-total`, `--rho-rad-w-per-kg`, all four cost-per-kg inputs, `--tank-mass-fraction`, and `--tank-cost-usd-per-kg`. See `README_passenger_ticket_optimizer.md` for the formulas and full mapping.
+The default budget model matches the spreadsheet constants: payload mass and cost, engine/radiator cost, system specific mass, effective fuel cost, and tank mass fraction.
 
 ## Python API
 
@@ -71,7 +65,6 @@ prints the default derivation. Important arguments include `--alpha-eng-w-per-kg
 from time_optimal_transfer_solver import (
     AU_M,
     BudgetModel,
-    SpreadsheetEngineeringEconomics,
     TransferProblem,
     solve_all_topologies,
     optimize_budget_all_topologies,
@@ -88,10 +81,8 @@ problem = TransferProblem(
 best, candidates = solve_all_topologies(problem)
 print(best.topology, best.total_time_days)
 
-engineering = SpreadsheetEngineeringEconomics()
-
 optimized, topology_results = optimize_budget_all_topologies(
-    engineering.budget_model(payload_mass_kg=500_000),
+    BudgetModel(),
     total_budget_musd=3000,
     distance_m=50 * AU_M,
     ve_max_m_s=50_000,
