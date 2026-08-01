@@ -1,0 +1,13 @@
+{
+  "status": "passed",
+  "tests_passed": 11,
+  "features": [
+    "terminal baseline fare breakdown",
+    "payload component amortized/recurring split",
+    "engine/radiator capital split",
+    "tank amortization",
+    "propellant and operations recurring cost",
+    "markup and final-fare closure",
+    "ticket_price_breakdown.csv output"
+  ]
+}

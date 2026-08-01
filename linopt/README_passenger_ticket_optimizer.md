@@ -107,3 +107,18 @@ python fare_sensitivity_analysis.py
 ```
 
 It writes CSV, JSON and PNG outputs under `fare_analysis/` by default.
+
+## Baseline ticket-price breakdown
+
+`fare_sensitivity_analysis.py` prints a lifecycle fare table immediately after
+solving the baseline. It separates:
+
+- amortized constant and passenger-dependent payload hardware;
+- recurring per-day and passenger-day payload consumables;
+- engine-core, radiator, and propellant-tank amortization;
+- recurring propellant and operations costs;
+- markup and the final fare per paying passenger.
+
+The same component rows are saved to `ticket_price_breakdown.csv` and included
+in `analysis_summary.json`. The component contributions are checked to sum to
+the fare before markup, and the markup line closes to the final ticket price.

@@ -224,8 +224,12 @@ class TicketCostBreakdown:
     reusable_payload_cost_usd: float
     recurring_payload_cost_usd: float
     payload_component_costs_usd: Dict[str, float]
+    payload_component_reusable_costs_usd: Dict[str, float]
+    payload_component_recurring_costs_usd: Dict[str, float]
     fuel_mass_kg: float
     engine_radiator_capital_cost_usd: float
+    engine_capital_cost_usd: float
+    radiator_capital_cost_usd: float
     tank_capital_cost_usd: float
     propellant_recurring_cost_usd: float
 
@@ -289,15 +293,37 @@ def calculate_lifecycle_ticket_cost(
         fuel_mass_kg * engineering.propellant_cost_usd_per_kg
     )
 
-    reusable_payload_cost = sum(
-        component_costs[name] * reusable_fractions[name] for name in components
-    )
-    recurring_payload_cost = sum(
-        component_costs[name] * (1.0 - reusable_fractions[name])
+    payload_component_reusable_costs = {
+        name: component_costs[name] * reusable_fractions[name]
         for name in components
+    }
+    payload_component_recurring_costs = {
+        name: component_costs[name] * (1.0 - reusable_fractions[name])
+        for name in components
+    }
+    reusable_payload_cost = sum(payload_component_reusable_costs.values())
+    recurring_payload_cost = sum(payload_component_recurring_costs.values())
+
+    hardware_mass_kg = (
+        engine_radiator_capital / engineering.engine_radiator_cost_usd_per_kg
     )
+    engine_capital = (
+        hardware_mass_kg
+        * engineering.engine_mass_fraction_of_hardware
+        * engineering.engine_core_cost_usd_per_kg
+    )
+    radiator_capital = (
+        hardware_mass_kg
+        * engineering.radiator_mass_fraction_of_hardware
+        * engineering.radiator_cost_usd_per_kg
+    )
+    if abs((engine_capital + radiator_capital) - engine_radiator_capital) > max(
+        1.0, 1.0e-9 * engine_radiator_capital
+    ):
+        raise ArithmeticError("Engine/radiator capital split does not close.")
+
     physical_ship_capital_cost = (
-        reusable_payload_cost + engine_radiator_capital + tank_capital
+        reusable_payload_cost + engine_capital + radiator_capital + tank_capital
     )
     physical_recurring_cost = recurring_payload_cost + propellant_recurring
 
@@ -340,8 +366,12 @@ def calculate_lifecycle_ticket_cost(
         reusable_payload_cost_usd=reusable_payload_cost,
         recurring_payload_cost_usd=recurring_payload_cost,
         payload_component_costs_usd=component_costs,
+        payload_component_reusable_costs_usd=payload_component_reusable_costs,
+        payload_component_recurring_costs_usd=payload_component_recurring_costs,
         fuel_mass_kg=fuel_mass_kg,
         engine_radiator_capital_cost_usd=engine_radiator_capital,
+        engine_capital_cost_usd=engine_capital,
+        radiator_capital_cost_usd=radiator_capital,
         tank_capital_cost_usd=tank_capital,
         propellant_recurring_cost_usd=propellant_recurring,
     )

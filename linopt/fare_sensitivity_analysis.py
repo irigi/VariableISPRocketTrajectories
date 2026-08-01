@@ -32,6 +32,7 @@ import numpy as np
 
 from passenger_ticket_optimizer import (
     PassengerOptimizationResult,
+    TicketCostBreakdown,
     add_fare_arguments,
     optimize_fare_from_args,
 )
@@ -44,6 +45,143 @@ class SensitivitySpec:
     minimum: Optional[float] = 0.0
     maximum: Optional[float] = None
     integer: bool = False
+
+
+
+
+_PAYLOAD_COMPONENT_LABELS = {
+    "constant": "Constant payload",
+    "per_passenger": "Passenger-dependent payload",
+    "per_day": "Time-dependent shared payload",
+    "per_passenger_day": "Time- and passenger-dependent payload",
+}
+
+
+def ticket_price_breakdown_rows(
+    breakdown: TicketCostBreakdown,
+) -> List[Dict[str, object]]:
+    """Return fare components that sum exactly to the reported ticket price.
+
+    Reusable hardware is converted to a per-trip amortization using the computed
+    lifetime trip count. Recurring items are charged directly to each trip.
+    Component contributions are shown before markup; markup is a separate row.
+    """
+
+    if breakdown.lifetime_trips <= 0.0:
+        raise ValueError("lifetime_trips must be positive.")
+    if breakdown.paying_passengers_per_trip <= 0.0:
+        raise ValueError("paying_passengers_per_trip must be positive.")
+
+    trips = breakdown.lifetime_trips
+    passengers = breakdown.paying_passengers_per_trip
+    rows: List[Dict[str, object]] = []
+
+    def add_capital(label: str, purchase_cost: float, group: str) -> None:
+        per_trip = purchase_cost / trips
+        rows.append({
+            "group": group,
+            "item": label,
+            "accounting": "amortized capital",
+            "purchase_or_trip_cost_usd": purchase_cost,
+            "cost_per_trip_usd": per_trip,
+            "fare_contribution_usd_per_passenger": per_trip / passengers,
+        })
+
+    def add_recurring(label: str, per_trip: float, group: str) -> None:
+        rows.append({
+            "group": group,
+            "item": label,
+            "accounting": "recurring per trip",
+            "purchase_or_trip_cost_usd": per_trip,
+            "cost_per_trip_usd": per_trip,
+            "fare_contribution_usd_per_passenger": per_trip / passengers,
+        })
+
+    for key, label in _PAYLOAD_COMPONENT_LABELS.items():
+        reusable = breakdown.payload_component_reusable_costs_usd.get(key, 0.0)
+        recurring = breakdown.payload_component_recurring_costs_usd.get(key, 0.0)
+        if reusable != 0.0:
+            add_capital(f"{label} amortization", reusable, "payload")
+        if recurring != 0.0:
+            add_recurring(f"{label} recurring cost", recurring, "payload")
+
+    add_capital("Engine core amortization", breakdown.engine_capital_cost_usd, "propulsion capital")
+    add_capital("Radiator amortization", breakdown.radiator_capital_cost_usd, "propulsion capital")
+    add_capital("Propellant tank amortization", breakdown.tank_capital_cost_usd, "propulsion capital")
+    add_recurring("Propellant / reaction-mass cost", breakdown.propellant_recurring_cost_usd, "trip operating")
+    if breakdown.operations_cost_per_trip_usd != 0.0:
+        add_recurring("Other operations cost", breakdown.operations_cost_per_trip_usd, "trip operating")
+
+    component_before_markup = sum(
+        float(row["fare_contribution_usd_per_passenger"]) for row in rows
+    )
+    closure_tolerance = max(1.0e-6, 1.0e-9 * breakdown.ticket_cost_before_markup_usd)
+    if abs(component_before_markup - breakdown.ticket_cost_before_markup_usd) > closure_tolerance:
+        raise ArithmeticError("Printed fare components do not close before markup.")
+
+    markup = (
+        breakdown.ticket_cost_usd_per_passenger
+        - breakdown.ticket_cost_before_markup_usd
+    )
+    rows.append({
+        "group": "fare",
+        "item": "Ticket markup",
+        "accounting": "markup",
+        "purchase_or_trip_cost_usd": None,
+        "cost_per_trip_usd": markup * passengers,
+        "fare_contribution_usd_per_passenger": markup,
+    })
+    return rows
+
+
+def format_ticket_price_breakdown(
+    result: PassengerOptimizationResult,
+) -> str:
+    """Format the optimized baseline lifecycle fare as a terminal table."""
+
+    breakdown = result.best.ticket_cost_breakdown
+    if breakdown is None:
+        raise ValueError("The optimized result has no lifecycle ticket breakdown.")
+    rows = ticket_price_breakdown_rows(breakdown)
+
+    lines = [
+        "",
+        "BASELINE LIFECYCLE TICKET PRICE BREAKDOWN",
+        "=" * 108,
+        f"Transfer time: {result.best.transfer.total_time_days:,.4f} days",
+        f"Cycle time:    {breakdown.cycle_time_days:,.4f} days",
+        f"Lifetime trips: {breakdown.lifetime_trips:,.3f}",
+        f"Paying passengers/trip: {breakdown.paying_passengers_per_trip:,.3f}",
+        f"Optimized ship budget: ${result.best.total_budget_musd:,.3f} million",
+        "-" * 108,
+        f"{'Cost item':55s} {'Purchase / trip basis':>18s} {'Per trip':>14s} {'Per passenger':>14s}",
+        "-" * 108,
+    ]
+    for row in rows:
+        raw = row["purchase_or_trip_cost_usd"]
+        raw_text = "—" if raw is None else f"${float(raw):,.0f}"
+        lines.append(
+            f"{str(row['item']):55s} "
+            f"{raw_text:>18s} "
+            f"${float(row['cost_per_trip_usd']):>13,.0f} "
+            f"${float(row['fare_contribution_usd_per_passenger']):>13,.2f}"
+        )
+    capital_rows = [row for row in rows if row["accounting"] == "amortized capital"]
+    recurring_rows = [row for row in rows if row["accounting"] == "recurring per trip"]
+    capital_trip = sum(float(row["cost_per_trip_usd"]) for row in capital_rows)
+    recurring_trip = sum(float(row["cost_per_trip_usd"]) for row in recurring_rows)
+    capital_per_passenger = capital_trip / breakdown.paying_passengers_per_trip
+    recurring_per_passenger = recurring_trip / breakdown.paying_passengers_per_trip
+    lines.extend([
+        "-" * 108,
+        f"{'CAPITAL AMORTIZATION SUBTOTAL':55s} {'':18s} ${capital_trip:>13,.0f} ${capital_per_passenger:>13,.2f}",
+        f"{'RECURRING TRIP COST SUBTOTAL':55s} {'':18s} ${recurring_trip:>13,.0f} ${recurring_per_passenger:>13,.2f}",
+        "-" * 108,
+        f"{'Fare before markup':93s} ${breakdown.ticket_cost_before_markup_usd:>13,.2f}",
+        f"{'FINAL TICKET PRICE':93s} ${breakdown.ticket_cost_usd_per_passenger:>13,.2f}",
+        "=" * 108,
+    ])
+    return "\n".join(lines)
 
 
 SENSITIVITY_SPECS: Tuple[SensitivitySpec, ...] = (
@@ -269,6 +407,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     print("Solving baseline fare...", file=sys.stderr)
     baseline = optimize_fare_from_args(args)
+    if baseline.best.ticket_cost_breakdown is None:
+        raise RuntimeError("Baseline fare solution has no lifecycle cost breakdown.")
+    breakdown_rows = ticket_price_breakdown_rows(baseline.best.ticket_cost_breakdown)
+    print(format_ticket_price_breakdown(baseline))
     sensitivity = local_sensitivity(args, baseline, args.sensitivity_change_fraction)
 
     payload_min = (
@@ -305,6 +447,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         np.linspace(payload_min, payload_max, args.sweep_points),
     )
 
+    _write_csv(output_dir / "ticket_price_breakdown.csv", breakdown_rows)
     _write_csv(output_dir / "local_sensitivity.csv", sensitivity)
     _write_csv(output_dir / "distance_sweep.csv", distance_rows)
     _write_csv(output_dir / "passenger_sweep.csv", passenger_rows)
@@ -320,9 +463,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     summary = {
         "baseline": baseline.as_dict(),
+        "ticket_price_breakdown": breakdown_rows,
         "sensitivity_change_fraction": args.sensitivity_change_fraction,
         "local_sensitivity": sensitivity,
         "files": {
+            "ticket_price_breakdown_csv": "ticket_price_breakdown.csv",
             "local_sensitivity_csv": "local_sensitivity.csv",
             "distance_sweep_csv": "distance_sweep.csv",
             "passenger_sweep_csv": "passenger_sweep.csv",
