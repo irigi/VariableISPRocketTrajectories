@@ -1,0 +1,890 @@
+% Use the companion article's IEEE class where installed.
+% The portable fallback preserves an A4, Times, two-column journal layout.
+\IfFileExists{IEEEtran.cls}{%
+  \documentclass[journal,a4paper]{IEEEtran}
+}{%
+  \documentclass[10pt,twocolumn,a4paper]{article}
+  \usepackage[textwidth=181mm,textheight=257mm,top=19mm,columnsep=4.5mm]{geometry}
+  \usepackage{times}
+  \renewcommand{\thesection}{\Roman{section}}
+  \renewcommand{\thesubsection}{\Alph{subsection}}
+  \date{}
+}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs,graphicx,stfloats,placeins,url}
+\usepackage[hidelinks]{hyperref}
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+\newcommand{\R}{\mathbb R}
+\newcommand{\C}{\mathcal C}
+\newcommand{\U}{\mathcal U}
+\newcommand{\D}{\mathcal D}
+\newcommand{\HH}{\mathcal H}
+\newcommand{\norm}[1]{\left\|#1\right\|}
+\newcommand{\dd}{\mathrm d}
+\DeclareMathOperator*{\argmin}{arg\,min}
+\DeclareMathOperator*{\argmax}{arg\,max}
+
+\begin{document}
+\title{Pursuit and Evasion With Constant-Power, Variable-$I_{\!sp}$ Rockets: Feedback Values, Optimality Certificates, and Nonattainment}
+\author{Jan~Ol\v{s}ina\\[1ex] Independent Researcher, Prague, Czech Republic\\
+email: \texttt{jan.olsina@gmail.com}, ORCID: \texttt{0009-0003-9816-3958}.}
+\maketitle
+
+\begin{abstract}
+We extend the constant-useful-power, variable-exhaust-speed rocket model of the companion transfer article to a two-player pursuit--evasion game. Both pilots may change thrust direction and specific impulse at every instant. The pursuer must intercept against every admissible evader response, either in minimum guaranteed time or with minimum worst-case propellant consumption subject to a deadline. Both objectives are formulated in free space and in a Kepler field. An inverse-mass transformation converts each rocket's propellant constraint into an integral bound on squared acceleration. We derive the four Hamilton--Jacobi--Isaacs equations, their pointwise feedback selectors, the corresponding characteristic ordinary differential equations, and verification theorems proving global minimax optimality when their hypotheses hold. Free-space rotational symmetry reduces the value equations to five state variables in both two and three dimensions. A separate survival game implements the evader's preference for least-fuel escape. An explicit free-space counterexample proves that this escape preference need not admit an optimal trajectory, even when escape is possible. Consequently, a universal assertion that optimal trajectories exist for both ships would be false. The mathematical solution consists of feedback value and viability problems, exact analytic benchmarks, and carefully distinguished attained optima and infima. No numerical solver or numerical trajectory results are presented.
+\end{abstract}
+
+\section{Introduction}
+The companion article \cite{OlsinaCompanion} studies a single rocket transferring between specified endpoint states. Its constant-power propulsion law makes acceleration a particularly convenient control variable: propellant expenditure is quadratic in acceleration after transforming mass. In a chase, however, the destination is itself controlled by an opponent. A trajectory optimized against one predicted evader trajectory does not establish interception against a different response.
+
+The appropriate object is therefore a \emph{causal feedback strategy}. A strategy specifies the next control from the observed game state and history; a trajectory is an outcome of two interacting strategies. Dynamic programming and Hamilton--Jacobi--Isaacs (HJI) theory provide the corresponding value equations \cite{EvansSouganidis1984}. Target-hitting and survival games also require careful treatment of the target boundary and possible infinite capture times \cite{Soravia1993}.
+
+We address four problems:
+\begin{enumerate}
+\item[A1)] free-space interception in minimum guaranteed time;
+\item[A2)] free-space interception by time $T$ with minimum worst-case pursuer fuel;
+\item[B1)] the minimum-time game in a Kepler field;
+\item[B2)] the deadline-constrained minimum-fuel game in that field.
+\end{enumerate}
+When the evader can force the relevant survival objective, its secondary objective is to minimize its own worst-case fuel use. For A2 and B2, ``win'' means surviving through the deadline; for A1 and B1 it means avoiding capture forever. These are different objectives.
+
+There are no initial positions, velocities, engine powers, masses, or deadline values specified here. The answer is consequently a parameterized mathematical synthesis rather than a particular pair of flight paths. More fundamentally, some admissible instances have no exactly optimal escaping path. We prove this fact explicitly rather than assume away the difficulty.
+
+\section{Rocket Model and Rules of the Game}
+\label{sec:model}
+\subsection{From Propellant Mass to an Acceleration Budget}
+Use subscripts $P$ and $E$ for pursuer and evader. Let $P_i>0$ be useful jet power, $m_i$ instantaneous mass, $m_{i0}$ initial mass, $m_{id}$ dry mass, and $\mathbf a_i\in\R^d$ thrust acceleration. We consider $d=2$ or $3$, and occasionally a one-dimensional benchmark. The companion propulsion model is
+\begin{equation}
+ \dot m_i=-\frac{m_i^2\norm{\mathbf a_i}^2}{2P_i},
+ \qquad
+ v_{ei}=\frac{2P_i}{m_i\norm{\mathbf a_i}}.
+ \label{eq:mass}
+\end{equation}
+The exhaust-speed formula applies on powered arcs. At zero acceleration the engine is off, and exhaust speed need not be assigned. Specific impulse is $I_{\!sp,i}=v_{ei}/g_0$. Thrust, acceleration, and specific impulse are linked by \eqref{eq:mass}; they cannot be chosen independently at fixed useful power.
+
+Define the initial and remaining acceleration budgets by
+\begin{align}
+ B_i&=2P_i\left(\frac1{m_{id}}-\frac1{m_{i0}}\right),\label{eq:B}\\
+ b_i(t)&=2P_i\left(\frac1{m_{id}}-\frac1{m_i(t)}\right).
+ \label{eq:b}
+\end{align}
+Direct differentiation gives the exact reduction
+\begin{equation}
+ \boxed{\dot b_i=-\norm{\mathbf a_i}^2,\quad
+ b_i(0)=B_i,\quad b_i(t)\ge0.}
+ \label{eq:budget}
+\end{equation}
+Thus admissible ideal controls are measurable, locally square-integrable accelerations satisfying
+\begin{equation}
+ \int_0^t\norm{\mathbf a_i(s)}^2\,\dd s\le B_i
+ \quad\hbox{for every pre-termination }t.
+ \label{eq:L2}
+\end{equation}
+At $b_i=0$, only $\mathbf a_i=0$ is admissible. Propellant exhaustion does not remove the spacecraft: it subsequently follows a ballistic trajectory.
+
+The units of $b_i$ are $\mathrm{m^2\,s^{-3}}$, not joules. We use the term \emph{acceleration budget}, although this is often called an energy-type integral constraint in differential games. Actual mass and propellant expenditure are recovered exactly:
+\begin{align}
+ m_i(b_i)&=\left(\frac1{m_{id}}-\frac{b_i}{2P_i}\right)^{-1},\label{eq:recovermass}\\
+ \Phi_i(c)&=m_{i0}-\left(\frac1{m_{i0}}+\frac{c}{2P_i}\right)^{-1}.
+ \label{eq:propellant}
+\end{align}
+Here $c=\int\norm{\mathbf a_i}^2\dd t$. Since $\Phi_i$ is continuous and strictly increasing, minimizing worst-case $c$ is exactly equivalent to minimizing worst-case propellant mass. Powers and masses enter the \emph{ideal uncapped kinematic game} only through $B_P,B_E$; they are still needed to reconstruct mass and specific impulse.
+
+\subsection{Ideal and Bounded Engines}
+Unless stated otherwise, the primary model is the ideal uncapped model of the companion article: $\mathbf a_i\in\R^d$ while $b_i>0$. It permits arbitrarily small positive exhaust speed and arbitrarily large acceleration, subject to \eqref{eq:L2}; it also permits unbounded exhaust speed near a vanishing powered acceleration. Impulsive velocity jumps are not included, because an $L^2$ acceleration has vanishing impulse on intervals whose length tends to zero.
+
+For finite engineering limits, let
+\begin{equation}
+ 0<v_{ei,\min}\le v_{ei}\le v_{ei,\max}<\infty.
+\end{equation}
+At full power the admissible acceleration set is
+\begin{align}
+ \U_i(b_i)&=\{\mathbf0\}\cup
+ \{\mathbf a:a_{i,\min}(b_i)\le\norm{\mathbf a}
+                         \le a_{i,\max}(b_i)\},\label{eq:annulus}\\
+ a_{i,\min}(b)&=\frac{2P_i}{m_i(b)v_{ei,\max}},\qquad
+ a_{i,\max}(b)=\frac{2P_i}{m_i(b)v_{ei,\min}}.\nonumber
+\end{align}
+At $b=0$ this is replaced by $\{\mathbf0\}$. A ceiling on exhaust speed alone gives a \emph{minimum nonzero acceleration}, not a maximum acceleration. An artificial bound $\norm{\mathbf a_i}\le A_i$ is another useful regularization, but is a different model until a justified limit is taken. Section~\ref{sec:bounded} gives selectors for these sets.
+
+\subsection{Motion and Capture}
+In an inertial frame,
+\begin{subequations}\label{eq:fullstate}
+\begin{align}
+ \dot{\mathbf x}_i&=\mathbf v_i,\\
+ \dot{\mathbf v}_i&=\mathbf g(\mathbf x_i)+\mathbf a_i,\\
+ \dot b_i&=-\norm{\mathbf a_i}^2,
+\end{align}
+\end{subequations}
+where
+\begin{equation}
+ \mathbf g(\mathbf x)=
+ \begin{cases}
+ \mathbf0,&\text{A: free space},\\
+ -\mu\mathbf x/\norm{\mathbf x}^3,&\text{B: Kepler field}.
+ \end{cases}
+ \label{eq:gravity}
+\end{equation}
+Both spacecraft feel the same central body, but generally experience different gravitational accelerations.
+
+Take a prescribed capture radius $R\ge0$ and define
+\begin{align}
+ \C&=\{z:\norm{\mathbf x_E-\mathbf x_P}\le R\},\label{eq:target}\\
+ \tau&=\inf\{t\ge0:z(t)\in\C\},\qquad \inf\varnothing=+\infty.
+ \label{eq:tau}
+\end{align}
+The game stops at first capture. A positive $R$ describes interception within a specified range; $R=0$ describes exact point interception. Matching velocities is \emph{not} required. If rendezvous is intended, replace \eqref{eq:target} by a joint position-and-velocity target. The state equations and game operators remain valid, but the values and terminal conditions change.
+
+The Kepler field is singular at the central body. Results below apply to noncolliding admissible trajectories. A global numerical problem must prescribe a collision rule or a minimum central distance and the associated individual viability constraints. One consistent choice is to restrict each pilot to trajectories with $\norm{\mathbf x_i}\ge r_{\min}>0$, on the set of states from which that individual restriction is viable. Such constraints require their own state-constraint boundary treatment; a collision is not silently counted as successful evasion. No particular value of $r_{\min}$ is imposed here. Local equations are valid throughout the nonsingular domain, and global certificates must cover the entire region actually used.
+
+\subsection{Information and Objectives}
+Both pilots know the model, clock, positions, velocities, and remaining budgets exactly. They may change controls at every instant and use the observation history, but cannot anticipate future choices. A pursuer strategy $\alpha$ maps an admissible evader input history to a pursuer input history nonanticipatively; $\beta$ is the corresponding evader strategy. Admissibility includes the strategy's own budget against \emph{every} opposing input. Standard nonanticipative or compatible sampled-feedback formulations may be used, with their information convention fixed consistently \cite{EvansSouganidis1984}.
+
+Notation such as $\sup_{\mathbf a_E}$ below means the supremum over all admissible opposing input functions, including functions generated by causal state feedback. It does not mean a preannounced maneuver. Two unrestricted nonanticipative response maps should not simply be composed if doing so would create an ill-defined algebraic loop; the verification results use well-posed feedback dynamics.
+
+For minimum time, the pursuer's robust value is
+\begin{equation}
+ V(z)=\inf_\alpha\sup_{\mathbf a_E}
+             \tau[z;\alpha[\mathbf a_E],\mathbf a_E].
+ \label{eq:timevalue}
+\end{equation}
+The dual evader value is $\sup_\beta\inf_{\mathbf a_P}\tau$. We use a common value only where game determinacy or a verification certificate establishes equality.
+
+For a remaining horizon $s$, define the extended payoff
+\begin{equation}
+ J_s=
+ \begin{cases}
+ \displaystyle\int_0^\tau\norm{\mathbf a_P(t)}^2\dd t,
+                                      &\tau\le s,\\
+ +\infty,&\tau>s,
+ \end{cases}
+ \label{eq:Jfuel}
+\end{equation}
+and the robust fuel value
+\begin{equation}
+ W(s,z)=\inf_\alpha\sup_{\mathbf a_E}J_s.
+ \label{eq:fuelvalue}
+\end{equation}
+The dimensional propellant answer at the initial state is $\Phi_P(W(T,z_0))$ when the value is finite. There is no further preference for earlier capture in this second objective.
+
+The phrase ``least fuel'' in a game needs an aggregation rule because different responses produce different expenditures. We use worst-case expenditure. If the evader cannot win, it maximizes the pursuer's stated objective: capture time for A1/B1, or required pursuer fuel for A2/B2. If it can win, it instead minimizes its own worst-case fuel while retaining a guaranteed win. This last preference is solved separately in Section~\ref{sec:escape}. The pursuer's guarantee continues to quantify over all admissible responses, regardless of whether those responses are fuel-economical.
+
+\section{A Common Isaacs Operator}
+\label{sec:isaacs}
+Let the full state be
+\begin{equation}
+ z=(\mathbf x_P,\mathbf v_P,\mathbf x_E,\mathbf v_E,b_P,b_E).
+\end{equation}
+For a differentiable function $U$, define the uncontrolled drift
+\begin{equation}
+ \D_g U=\sum_{i=P,E}
+ \left[\mathbf v_i\cdot U_{\mathbf x_i}
+       +\mathbf g(\mathbf x_i)\cdot U_{\mathbf v_i}\right].
+ \label{eq:drift}
+\end{equation}
+Subscripts denote partial derivatives. For a running cost $\ell\norm{\mathbf a_P}^2$, with $\ell\in\{0,1\}$, the pursuer-minimizing operator is
+\begin{align}
+ \HH_\ell[U]={}&\D_g U\nonumber\\
+ &+\inf_{\mathbf a_P\in\U_P}
+ \left[U_{\mathbf v_P}\cdot\mathbf a_P
+             +(\ell-U_{b_P})\norm{\mathbf a_P}^2\right]\nonumber\\
+ &+\sup_{\mathbf a_E\in\U_E}
+ \left[U_{\mathbf v_E}\cdot\mathbf a_E
+                         -U_{b_E}\norm{\mathbf a_E}^2\right].
+ \label{eq:Hgeneral}
+\end{align}
+At a fixed state the two controls occur in separate summands. Therefore the pointwise infimum and supremum commute whenever the extrema are finite. This establishes the algebraic Isaacs condition; it does not by itself establish continuity at capture, existence of an optimal strategy, or uniqueness of a singular exit-time boundary problem.
+
+\subsection{Uncapped Interior Selectors}
+Suppose both budgets are positive and
+\begin{equation}
+ c_P=\ell-U_{b_P}>0,\qquad c_E=U_{b_E}>0.
+ \label{eq:coercivity}
+\end{equation}
+Completing squares gives
+\begin{align}
+ \boxed{\mathbf a_P^*=-\frac{U_{\mathbf v_P}}{2c_P},\qquad
+        \mathbf a_E^*= \frac{U_{\mathbf v_E}}{2c_E},}
+ \label{eq:feedbackfull}\\
+ \boxed{\HH_\ell[U]=\D_g U
+       -\frac{\norm{U_{\mathbf v_P}}^2}{4c_P}
+       +\frac{\norm{U_{\mathbf v_E}}^2}{4c_E}.}
+ \label{eq:Hquadratic}
+\end{align}
+For example,
+\begin{equation}
+ \mathbf h\cdot\mathbf a+c\norm{\mathbf a}^2
+ =c\norm{\mathbf a+\mathbf h/(2c)}^2
+  -\frac{\norm{\mathbf h}^2}{4c},\qquad c>0.
+\end{equation}
+Thus the selectors are global pointwise extrema, not merely stationary controls.
+
+Budget monotonicity implies $V_{b_P}\le0$, $V_{b_E}\ge0$ wherever these derivatives exist; the same inequalities hold for $W$ in the ideal model. The strict signs needed in \eqref{eq:coercivity} can nevertheless fail. If a quadratic coefficient vanishes while the associated linear coefficient is nonzero, the corresponding unbounded extremum is infinite. If both vanish the selector can be nonunique. Never divide by a zero budget derivative. Use \eqref{eq:Hgeneral}, a constrained face equation, or a specified bounded-engine model at such points.
+
+At $b_P=0$ or $b_E=0$, set the exhausted ship's acceleration to zero and omit its optimization term. This is a lower-dimensional game on a viable budget face, not an absorbing failure boundary.
+
+\subsection{Boundary and Regularity Scope}
+The value equations below are dynamic-programming characterizations. On smooth regions their classical form gives the feedbacks above. At shocks and competing trajectory branches, the appropriate generalized solutions are viscosity solutions selected by the game's dynamic programming principle, with target and state-constraint boundaries \cite{Soravia1993}. Smoothness is not presumed throughout the state space.
+
+With compact controls, a nonsingular locally Lipschitz drift, and appropriate boundary/comparison hypotheses, standard HJI theory supplies the value interpretation. These hypotheses must be checked for the selected constrained domain. The ideal $L^2$ model is unbounded, so compact-control theorems cannot simply be cited as an unconditional existence proof for it. In particular, formulas \eqref{eq:feedbackfull}--\eqref{eq:Hquadratic} are valid on its coercive interior branches, and the verification theorem below applies directly to any admissible solution satisfying its hypotheses. Elsewhere the exact strategy definitions remain authoritative. Simultaneously sending two acceleration bounds to infinity, or a capture radius to zero, requires a separate convergence and attainment argument.
+
+\section{Free Space: A1 and A2}
+\label{sec:free}
+\subsection{Relative-State Reduction}
+Set
+\begin{equation}
+ \mathbf r=\mathbf x_E-\mathbf x_P,\qquad
+ \mathbf w=\mathbf v_E-\mathbf v_P.
+\end{equation}
+Translations and Galilean boosts do not affect capture in free space. The complete reduced state is
+\begin{equation}
+ z_A=(\mathbf r,\mathbf w,b_P,b_E),
+\end{equation}
+with
+\begin{subequations}\label{eq:relative}
+\begin{align}
+ \dot{\mathbf r}&=\mathbf w,\\
+ \dot{\mathbf w}&=\mathbf a_E-\mathbf a_P,\\
+ \dot b_P&=-\norm{\mathbf a_P}^2,\qquad
+ \dot b_E=-\norm{\mathbf a_E}^2.
+\end{align}
+\end{subequations}
+Consequently $U_{\mathbf v_P}=-U_{\mathbf w}$ and $U_{\mathbf v_E}=U_{\mathbf w}$. The operator becomes
+\begin{align}
+ \HH^A_\ell[U]={}&\mathbf w\cdot U_{\mathbf r}\nonumber\\
+ &+\inf_{\mathbf a_P\in\U_P}
+ [-U_{\mathbf w}\cdot\mathbf a_P
+               +(\ell-U_{b_P})\norm{\mathbf a_P}^2]\nonumber\\
+ &+\sup_{\mathbf a_E\in\U_E}
+ [U_{\mathbf w}\cdot\mathbf a_E-U_{b_E}\norm{\mathbf a_E}^2].
+ \label{eq:HA}
+\end{align}
+
+\subsection{A1: Minimum Guaranteed Capture Time}
+The autonomous exit-time value solves, on its finite continuation region,
+\begin{equation}
+ \boxed{1+\HH^A_0[V_A]=0,\qquad V_A|_{\C}=0.}
+ \label{eq:A1}
+\end{equation}
+The relevant solution is the capture-time value \eqref{eq:timevalue}, with budget-face and outer-domain conditions; the target condition alone does not select a solution. On a regular uncapped branch, put $c_P=-V_{A,b_P}$ and $c_E=V_{A,b_E}$. Then
+\begin{equation}
+ 1+\mathbf w\cdot V_{A,\mathbf r}
+ -\frac{\norm{V_{A,\mathbf w}}^2}{4c_P}
+ +\frac{\norm{V_{A,\mathbf w}}^2}{4c_E}=0,
+ \label{eq:A1expanded}
+\end{equation}
+and the optimal feedback accelerations are
+\begin{equation}
+ \boxed{\mathbf a_P^*=\frac{V_{A,\mathbf w}}{2c_P},\qquad
+        \mathbf a_E^*=\frac{V_{A,\mathbf w}}{2c_E}.}
+ \label{eq:A1feedback}
+\end{equation}
+These are evaluated at the actual joint state throughout the chase. Both accelerations are parallel to the same relative-velocity gradient on this regular branch, but that direction is not generally the current line of sight.
+
+If the verification conditions in Section~\ref{sec:verification} hold, the pursuer catches by $V_A(z_{A0})$ against every admissible evader input, and the evader can prevent capture before that time against every pursuer input. This is a global minimax statement. It neither claims that distance decreases monotonically nor requires such a property. Monotone closing would be an additional constraint: initially $\dd\norm{\mathbf r}/\dd t=\mathbf r\cdot\mathbf w/\norm{\mathbf r}$, which cannot be made immediately negative by an $L^2$ acceleration if it is initially positive.
+
+\subsection{A2: Minimum Fuel With Capture by a Deadline}
+Let $s=T-t$ be remaining time. The value satisfies
+\begin{equation}
+ \boxed{\partial_s W_A=\HH^A_1[W_A].}
+ \label{eq:A2}
+\end{equation}
+Its stopping and terminal data are
+\begin{align}
+ W_A(s,z)&=0&&\text{for }z\in\C,\ s\ge0,\label{eq:Wbc}\\
+ W_A(0,z)&=+\infty&&\text{for }z\notin\C.\nonumber
+\end{align}
+The infinite condition enforces guaranteed capture rather than imposing a finite penalty for missing the deadline. The equation is solved on the feasible capture domain, or equivalently with a budgeted reachability construction as in Section~\ref{sec:numerical}.
+
+For $c_P=1-W_{A,b_P}>0$ and $c_E=W_{A,b_E}>0$,
+\begin{equation}
+ \partial_s W_A=\mathbf w\cdot W_{A,\mathbf r}
+  -\frac{\norm{W_{A,\mathbf w}}^2}{4c_P}
+  +\frac{\norm{W_{A,\mathbf w}}^2}{4c_E},
+ \label{eq:A2expanded}
+\end{equation}
+with
+\begin{equation}
+ \boxed{\mathbf a_P^*=\frac{W_{A,\mathbf w}}{2c_P},\qquad
+        \mathbf a_E^*=\frac{W_{A,\mathbf w}}{2c_E}.}
+ \label{eq:A2feedback}
+\end{equation}
+Capture ends fuel accounting at its first occurrence. There is no terminal requirement $\tau=T$: an earlier intercept may use less fuel, for example if the unforced paths already cross. Thus solving a fixed-terminal-time interception problem alone does not solve A2.
+
+\subsection{An Exact Five-State Symmetry Reduction}
+For isotropic thrust constraints and the distance target, the value is invariant under simultaneous orthogonal transformations of $\mathbf r,\mathbf w$. For $d=2$ and $3$ it can therefore be written as
+\begin{equation}
+\begin{gathered}
+ U=\widehat U(\rho,\xi,\omega,b_P,b_E),\\
+ \rho=\norm{\mathbf r}^2,\quad
+ \xi=\mathbf r\cdot\mathbf w,\quad
+ \omega=\norm{\mathbf w}^2.
+\end{gathered}
+ \label{eq:invariants}
+\end{equation}
+The Gram domain is $\rho\ge0$, $\omega\ge0$, $\xi^2\le\rho\omega$. The chain rule gives
+\begin{align}
+ \mathbf w\cdot U_{\mathbf r}
+     &=2\xi\widehat U_\rho+\omega\widehat U_\xi,\label{eq:gramdrift}\\
+ U_{\mathbf w}&=\widehat U_\xi\mathbf r+2\widehat U_\omega\mathbf w,\\
+ \norm{U_{\mathbf w}}^2
+     &=\rho\widehat U_\xi^2+4\xi\widehat U_\xi\widehat U_\omega
+                                +4\omega\widehat U_\omega^2.
+ \label{eq:gramnorm}
+\end{align}
+Substituting \eqref{eq:gramdrift} and \eqref{eq:gramnorm} into A1 or A2 produces a five-state PDE, plus the horizon variable in A2. The boundary $\xi^2=\rho\omega$ represents collinear geometry, not an artificial absorbing boundary; consistency with the original vector game supplies its treatment. This reduction changes neither the fuel constraints nor the adversarial quantifiers.
+
+\section{Kepler Field: B1 and B2}
+\label{sec:kepler}
+\subsection{Why the Free-Space Relative Game Is Insufficient}
+Relative acceleration is now
+\begin{equation}
+ \dot{\mathbf w}
+ =-\mu\frac{\mathbf x_E}{\norm{\mathbf x_E}^3}
+  +\mu\frac{\mathbf x_P}{\norm{\mathbf x_P}^3}
+  +\mathbf a_E-\mathbf a_P.
+ \label{eq:tidal}
+\end{equation}
+The first two terms cannot be inferred from $\mathbf r,\mathbf w$ alone. Either retain both inertial states or retain one full orbital state in addition to relative position and velocity. The full state has $4d+2$ components: ten in the plane and fourteen in space. A common rotation is a symmetry; in the planar isotropic problem it can remove one additional state variable. A common translation or velocity boost is not a symmetry of the central field.
+
+\subsection{B1: Minimum Guaranteed Capture Time}
+Use \eqref{eq:drift} with $\mathbf g=-\mu\mathbf x/\norm{\mathbf x}^3$. The value is characterized by
+\begin{equation}
+ \boxed{1+\HH^B_0[V_B]=0,\qquad V_B|_\C=0,}
+ \label{eq:B1}
+\end{equation}
+with the same capture-time interpretation and the specified gravitational-domain boundaries. On a regular uncapped branch,
+\begin{equation}
+ 1+\D_g V_B
+ -\frac{\norm{V_{B,\mathbf v_P}}^2}{4(-V_{B,b_P})}
+ +\frac{\norm{V_{B,\mathbf v_E}}^2}{4V_{B,b_E}}=0.
+ \label{eq:B1expanded}
+\end{equation}
+The feedback accelerations are
+\begin{equation}
+ \boxed{\mathbf a_P^*=-\frac{V_{B,\mathbf v_P}}{2(-V_{B,b_P})},\qquad
+        \mathbf a_E^*= \frac{V_{B,\mathbf v_E}}{2V_{B,b_E}}.}
+ \label{eq:B1feedback}
+\end{equation}
+The two velocity gradients are generally different, so the thrust directions need not be parallel. Gravity can reward maneuvers that temporarily increase separation. Neither constant bearing nor a fixed acceleration--braking sequence is a general optimum.
+
+\subsection{B2: Minimum Fuel With Capture by a Deadline}
+The fuel value solves
+\begin{equation}
+ \boxed{\partial_s W_B=\HH^B_1[W_B],}
+ \label{eq:B2}
+\end{equation}
+with the stopping and terminal conditions \eqref{eq:Wbc}, and the Kepler-domain state constraints. Its regular uncapped form is
+\begin{equation}
+ \partial_s W_B=\D_g W_B
+ -\frac{\norm{W_{B,\mathbf v_P}}^2}{4(1-W_{B,b_P})}
+ +\frac{\norm{W_{B,\mathbf v_E}}^2}{4W_{B,b_E}},
+ \label{eq:B2expanded}
+\end{equation}
+with
+\begin{equation}
+ \boxed{\mathbf a_P^*=-\frac{W_{B,\mathbf v_P}}{2(1-W_{B,b_P})},\qquad
+        \mathbf a_E^*= \frac{W_{B,\mathbf v_E}}{2W_{B,b_E}}.}
+ \label{eq:B2feedback}
+\end{equation}
+Equations \eqref{eq:fullstate} and \eqref{eq:B2feedback}, together with $\dot s=-1$, reconstruct the optimal feedback outcomes once the value has been obtained. The worst-case propellant infimum is $\Phi_P(W_B(T,z_0))$; it is attained when an optimal admissible selector exists. If $W_B=+\infty$, no admissible pursuer strategy meets the specified robust deadline.
+
+\begin{table}[t]
+\caption{The Four Pursuer Problems}
+\label{tab:four}
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+Case & Value equation & Initial answer\\
+\midrule
+A1 & $1+\HH^A_0[V_A]=0$ & $V_A(z_{A0})$\\
+A2 & $(W_A)_s=\HH^A_1[W_A]$ & $\Phi_P(W_A(T,z_{A0}))$\\
+B1 & $1+\HH^B_0[V_B]=0$ & $V_B(z_0)$\\
+B2 & $(W_B)_s=\HH^B_1[W_B]$ & $\Phi_P(W_B(T,z_0))$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Global Optimality Verification}
+\label{sec:verification}
+The distinction between an extremal and a sufficient certificate is essential. The following results prove optimality of \emph{feedback strategies against arbitrary opposing controls}. They do not assume the opponent follows its extremal trajectory.
+
+\begin{theorem}[Minimum-time verification]
+\label{thm:time}
+Let $\Omega$ be a region outside $\C$ on which a finite nonnegative function $V$ is continuously differentiable, satisfies $1+\HH_0[V]=0$, and extends continuously to $V=0$ on the capture boundary. Suppose $V>0$ outside capture and pointwise minimizing and maximizing selectors exist. Assume the selected feedbacks generate well-posed, admissible trajectories, and the differential inequalities below remain valid along all opposing responses up to capture. In particular, the pursuer selector cannot exit the certificate domain into an uncertified region. Then the pursuer guarantees $\tau\le V(z_0)$ and the evader guarantees $\tau\ge V(z_0)$. If both selectors are played in a well-posed joint trajectory, its capture time is exactly $V(z_0)$.
+\end{theorem}
+\begin{proof}
+For the pursuer selector and any admissible evader input, separability and pointwise optimality imply
+\begin{equation}
+ 1+DV\cdot f(z,\mathbf a_P^*,\mathbf a_E)\le0.
+\end{equation}
+Hence $V(z(t))\le V(z_0)-t$ before capture. Continuation beyond $V(z_0)$ would contradict nonnegativity; continuation exactly to that time outside the target contradicts $V>0$. Thus capture occurs by $V(z_0)$. The stated domain and boundary assumptions exclude loss of the inequality before that conclusion.
+
+Conversely, for the evader selector and every pursuer input,
+\begin{equation}
+ 1+DV\cdot f(z,\mathbf a_P,\mathbf a_E^*)\ge0.
+\end{equation}
+At any finite capture time this gives $0\ge V(z_0)-\tau$, or $\tau\ge V(z_0)$. If capture never occurs, the same lower bound holds trivially. Both inequalities together prove the saddle value and global minimax optimality.
+\end{proof}
+
+\begin{theorem}[Deadline-fuel verification]
+\label{thm:fuel}
+Let $W(s,z)$ be a finite continuously differentiable solution of $W_s=\HH_1[W]$ on a continuation domain with $W=0$ at capture. Suppose the pursuer selector is admissible and guarantees capture by $s_0$ against every opponent while remaining in that domain. Suppose a maximizing evader selector is also admissible and the inequalities below are valid until capture. Then the pursuer guarantees expenditure at most $W(s_0,z_0)$, and the evader forces expenditure at least $W(s_0,z_0)$ or failure to meet the deadline. Thus $W$ is the global minimax value there.
+\end{theorem}
+\begin{proof}
+Along a physical trajectory, $\dot s=-1$ and
+\begin{equation}
+ \frac{\dd}{\dd t}W(s(t),z(t))=-W_s+DW\cdot f.
+\end{equation}
+For the pursuer selector and arbitrary evader controls,
+\begin{equation}
+ \norm{\mathbf a_P^*}^2+\frac{\dd W}{\dd t}\le0.
+ \label{eq:Wupper}
+\end{equation}
+Integrating to its guaranteed capture gives
+\begin{equation}
+ \int_0^\tau\norm{\mathbf a_P^*}^2\dd t\le W(s_0,z_0).
+\end{equation}
+For the evader selector and arbitrary pursuer controls the inequality reverses. If the pursuer captures by the deadline, integration gives expenditure at least $W(s_0,z_0)$. Otherwise $J_{s_0}=+\infty$. These are the required opposing global bounds.
+\end{proof}
+
+The capture-feasibility hypothesis in Theorem~\ref{thm:fuel} is substantive. A smooth solution of an interior fuel PDE and its pointwise selectors do not prove that capture will occur. Feasibility must come from the correct terminal/viability construction or a separate reachability certificate. This prevents a spurious low-fuel strategy from winning on paper by never intercepting.
+
+For nonsmooth value functions, dynamic programming replaces ordinary derivatives by the appropriate viscosity and sub-/superoptimality statements. Compatible feedback approximations can provide $\varepsilon$-optimal guarantees under the relevant comparison and strategy-existence hypotheses. The existence of a value, the existence of $\varepsilon$-optimal strategies, and the existence of an exactly optimal classical feedback are separate claims. No unconditional existence of the last object is asserted here.
+
+\section{The Evader's Least-Fuel Winning Strategy}
+\label{sec:escape}
+\subsection{Finite-Deadline Survival}
+For a remaining horizon $s$, let
+\begin{equation}
+ \mathfrak E_s(z)=
+ \{\beta:\tau[z;\mathbf a_P,\beta[\mathbf a_P]]>s
+                  \text{ for every admissible }\mathbf a_P\}.
+ \label{eq:winningE}
+\end{equation}
+Strict inequality is necessary because capture at the deadline is a pursuer win. Define
+\begin{equation}
+ F(s,z)=\inf_{\beta\in\mathfrak E_s(z)}
+       \sup_{\mathbf a_P}\int_0^s\norm{\mathbf a_E(t)}^2\dd t.
+ \label{eq:Fdef}
+\end{equation}
+Set $F=+\infty$ when $\mathfrak E_s$ is empty. The actual evader's least worst-case propellant value is $\Phi_E(F(s,z))$ where finite. Exact attainment requires an additional check.
+
+In this auxiliary game the evader minimizes and the pursuer maximizes. A pursuer able to force capture gives the evader infinite loss, whatever the pursuer's own fuel cost. The operator is
+\begin{align}
+ \HH_E[F]={}&\D_g F\nonumber\\
+ &+\sup_{\mathbf a_P\in\U_P}
+  [F_{\mathbf v_P}\cdot\mathbf a_P-F_{b_P}\norm{\mathbf a_P}^2]\nonumber\\
+ &+\inf_{\mathbf a_E\in\U_E}
+  [F_{\mathbf v_E}\cdot\mathbf a_E+(1-F_{b_E})\norm{\mathbf a_E}^2].
+ \label{eq:HE}
+\end{align}
+The finite-horizon equation and data are
+\begin{align}
+ F_s&=\HH_E[F],\label{eq:FPDE}\\
+ F(0,z)&=0 &&(z\notin\C),\nonumber\\
+ F(s,z)&=+\infty &&(z\in\C,\ s\ge0).\label{eq:Fbc}
+\end{align}
+They are understood on the strict survival domain, with the strategy definition \eqref{eq:Fdef} resolving singular boundaries.
+
+For a regular ideal branch, $F_{b_P}>0$ and $1-F_{b_E}>0$ give
+\begin{align}
+ \HH_E[F]&=\D_g F
+  +\frac{\norm{F_{\mathbf v_P}}^2}{4F_{b_P}}
+  -\frac{\norm{F_{\mathbf v_E}}^2}{4(1-F_{b_E})},\label{eq:HEquad}\\
+ \mathbf a_P^{\dagger}&=\frac{F_{\mathbf v_P}}{2F_{b_P}},\qquad
+ \mathbf a_E^{\dagger}=-\frac{F_{\mathbf v_E}}{2(1-F_{b_E})}.
+ \label{eq:Efeedback}
+\end{align}
+Here $F_{b_P}\ge0$ and $F_{b_E}\le0$ express that a better-equipped pursuer makes survival more expensive, whereas additional evader reserve cannot make it harder. For free space, substitute $F_{\mathbf v_P}=-F_{\mathbf w}$ and $F_{\mathbf v_E}=F_{\mathbf w}$; the same five-state reduction applies.
+
+\begin{proposition}[Verification of least-fuel deadline survival]
+Suppose the minimizing selector in \eqref{eq:HE} stays strictly outside $\C$ through $s_0$ against every opposing input and remains admissible. Suppose a smooth certificate $F$ satisfies \eqref{eq:FPDE} with terminal value zero along those surviving trajectories. If a maximizing selector provides the reverse inequality for every winning evader strategy, then \eqref{eq:Efeedback}, or its constrained counterpart, attains \eqref{eq:Fdef}.
+\end{proposition}
+\begin{proof}
+For the minimizing evader selector,
+\begin{equation}
+ \norm{\mathbf a_E^{\dagger}}^2+\frac{\dd}{\dd t}F(s(t),z(t))\le0
+\end{equation}
+against every pursuer input. Integration through $s_0$ bounds its cost above by $F(s_0,z_0)$. The maximizing pursuer selector gives the reverse inequality against every surviving evader strategy. Non-survival is assigned infinite cost. The opposing bounds establish optimality among guaranteed winning strategies.
+\end{proof}
+
+This auxiliary selector need not maximize $W$ or $V$. Once the evader can win, its own fuel preference has replaced delay maximization. Simply adding a small fuel penalty to the pursuer's payoff does not in general reproduce this lexicographic rule.
+
+\subsection{Perpetual Escape}
+For A1/B1, define the stronger class
+\begin{equation}
+ \mathfrak E_\infty(z)=\{\beta:\tau=+\infty
+                             \text{ for every }\mathbf a_P\},
+\end{equation}
+and its cost
+\begin{equation}
+ F_\infty(z)=\inf_{\beta\in\mathfrak E_\infty(z)}
+        \sup_{\mathbf a_P}\int_0^\infty\norm{\mathbf a_E(t)}^2\dd t.
+ \label{eq:Finfty}
+\end{equation}
+An empty strategy class again gives $+\infty$. On a regular region a stationary candidate satisfies
+\begin{equation}
+ \HH_E[F_\infty]=0.
+ \label{eq:Fstationary}
+\end{equation}
+This equation requires a perpetual-survival viability condition and a condition at infinity. A sufficient verification framework requires the selected evader to remain safe forever and, for the upper bound, $F_\infty\ge0$; for a matching lower bound it also requires the residual certificate along the maximizing response to every competing finite-cost winning strategy to tend to zero. Integrating the preceding differential inequalities then proves equality of total infinite-horizon costs. Without such conditions a stationary solution can select a trajectory that is eventually captured.
+
+In particular, $V(z)=+\infty$ means that the pursuer has no finite \emph{uniform} bound on capture time. It does not alone prove the existence of one evader strategy that avoids capture forever. Nor does
+\begin{equation}
+ \text{for every }s\text{ there exists }\beta_s\in\mathfrak E_s(z)
+\end{equation}
+automatically imply $\mathfrak E_\infty(z)\ne\varnothing$. The infinite-horizon winning set must be established through the actual viability game. Under suitable compactness and closed-safety hypotheses, viability constructions can justify horizon limits; strict avoidance of a closed capture target needs additional care. We do not identify these logically different conditions without proof.
+
+\subsection{An Explicit Nonattainment Counterexample}
+\label{sec:nonattain}
+Nonattainment already occurs with unrestricted planar or spatial steering. Let the exhausted pursuer be at rest at the origin, and let the evader start from $(-L,R)$ with velocity $(u,0)$, where $L,u>0$. The unused third coordinate can be set to zero. Coasting grazes the closed capture ball at time $t_*=L/u$ and therefore loses. Fix $0<h<t_*$ and apply lateral acceleration $(0,\varepsilon)$ for $0\le t\le h$, then coast. The second coordinate is
+\begin{equation}
+ x_{E,2}(t)=R+
+ \begin{cases}
+ \varepsilon t^2/2,&0\le t\le h,\\
+ \varepsilon(ht-h^2/2),&t\ge h.
+ \end{cases}
+\end{equation}
+For every $\varepsilon>0$ it exceeds $R$ at every positive time, so the evader escapes forever. The total acceleration expenditure is $\varepsilon^2h$, tending to zero. Zero expenditure forces zero acceleration almost everywhere and hence the losing coasting path. Thus the escape-cost infimum is zero and is not attained, for every $R\ge0$, in both $d=2$ and $d=3$. The same argument applies to deadline survival for $T\ge t_*$. Any positive available evader budget permits a sufficiently small $\varepsilon$.
+
+This fully multidimensional example suffices to disprove universal existence of a least-fuel winning trajectory in the stated problem. With on/off engines and a fixed admissible positive lateral acceleration, arbitrarily short initial pulses give the same zero-cost limit, so nonattainment is not solely an artifact of an unbounded exhaust-speed ceiling. We next give a one-dimensional example with a positive, explicitly calculable infimum; its restriction to one-dimensional steering is intentional.
+
+Consider a one-dimensional free-space game. The pursuer has exhausted its fuel and is stationary at $x_P=0$. Let $x_E(0)=R+L$, $\dot x_E(0)=-u$, with $L,u>0$, and define clearance $y=x_E-R$. Capture occurs as soon as $y\le0$. Assume the evader's available acceleration budget exceeds
+\begin{equation}
+ C_* =\frac{4u^3}{9L}.
+ \label{eq:Cstar}
+\end{equation}
+This is an admissible boundary-state instance of the two-rocket model, and works also for a positive capture radius.
+
+\begin{theorem}[Winning escape need not have a least-fuel trajectory]
+\label{thm:nonattain}
+In this instance perpetual escape is possible. Its acceleration-expenditure infimum is $C_*$, but every escaping trajectory spends strictly more than $C_*$. Hence no least-propellant escaping trajectory exists. The same nonattainment holds for deadline survival whenever $T\ge3L/u$.
+\end{theorem}
+\begin{proof}
+Let $t_*=3L/u$. For any trajectory surviving through $t_*$,
+\begin{align}
+ 0<y(t_*)&=L-ut_*+\int_0^{t_*}(t_*-t)a_E(t)\dd t\\
+ &=-2L+\int_0^{t_*}(t_*-t)a_E(t)\dd t.\nonumber
+\end{align}
+Cauchy--Schwarz therefore gives
+\begin{equation}
+ 2L<\left(\frac{t_*^3}{3}\right)^{1/2}
+          \left(\int_0^{t_*}a_E(t)^2\dd t\right)^{1/2},
+\end{equation}
+so the expenditure is strictly greater than
+\begin{equation}
+ \frac{12L^2}{t_*^3}=\frac{4u^3}{9L}=C_*.
+\end{equation}
+
+For any $0<\delta<L$, set $t_\delta=3(L-\delta)/u$ and use
+\begin{align}
+ y_\delta(t)&=\delta+(L-\delta)(1-t/t_\delta)^3,
+                                      &&0\le t\le t_\delta,\label{eq:escapeprofile}\\
+ a_{E,\delta}(t)&=\frac{2u}{t_\delta}(1-t/t_\delta).
+\end{align}
+Thereafter coast at rest with $y_\delta=\delta$. This trajectory remains strictly outside capture forever and spends
+\begin{equation}
+ C_\delta=\frac{4u^2}{3t_\delta}
+         =\frac{4u^3}{9(L-\delta)}\longrightarrow C_*
+         \quad\text{as }\delta\downarrow0.
+\end{equation}
+For sufficiently small positive $\delta$, it fits any budget $B_E>C_*$. Equality $\delta=0$ reaches the capture boundary at $t_*$ and loses. Thus the infimum is sharp and unattained. The argument through $t_*$ also applies to every deadline $T\ge t_*$. Strict monotonicity of \eqref{eq:propellant} transfers the conclusion to propellant mass.
+\end{proof}
+
+For completeness, on $y>0$ and relative velocity $w<0$, the smooth expression
+\begin{equation}
+ F_*(y,w)=\frac{4(-w)^3}{9y}
+\end{equation}
+satisfies the formal stationary interior equation
+\begin{equation}
+ w(F_*)_y-\frac{(F_*)_w^2}{4}=0.
+\end{equation}
+Its minimizing selector is $a_E=-(F_*)_w/2=2w^2/(3y)$. Starting from $(L,-u)$, that selector is precisely the limiting $\delta=0$ profile, which is captured. This is a concrete demonstration that the stationary PDE alone does not supply the missing safety and attainment conditions.
+
+The family \eqref{eq:escapeprofile} is an explicit $\varepsilon$-optimal solution of the stated preference. If a minimum safety clearance is prescribed as a closed constraint, the corresponding constrained problem is different and may have an attained minimum. One must not silently replace strict escape by that modified objective.
+
+\section{Ordinary Differential Equations for Trajectory Reconstruction}
+\label{sec:characteristics}
+The PDEs determine globally meaningful feedback values. Their characteristics provide ordinary differential equations suitable for indirect numerical methods and for reconstructing smooth saddle trajectories. Satisfying these ODEs alone gives candidates, just as PMP shooting in the companion transfer problem gives candidates unless a sufficiency argument is supplied \cite{Pontryagin1962,OlsinaCompanion}.
+
+Introduce position costates $\boldsymbol\lambda_{x_i}$, velocity costates $\boldsymbol\lambda_{v_i}$, and budget costates $\eta_i$. We use the dynamic-programming \emph{minimization} convention; its costates have the opposite sign to a single-player maximization convention with Hamiltonian $\lambda\cdot f-L$ used in the companion article. The unoptimized characteristic Hamiltonian is
+\begin{align}
+ K={}&\sigma+\ell_P\norm{\mathbf a_P}^2
+                  +\ell_E\norm{\mathbf a_E}^2\nonumber\\
+ &+\sum_{i=P,E}\big[\boldsymbol\lambda_{x_i}\cdot\mathbf v_i
+   +\boldsymbol\lambda_{v_i}\cdot(\mathbf g(\mathbf x_i)+\mathbf a_i)
+   -\eta_i\norm{\mathbf a_i}^2\big].
+ \label{eq:canonicalH}
+\end{align}
+Use $(\sigma,\ell_P,\ell_E)=(1,0,0)$ for capture time, $(0,1,0)$ for pursuer fuel, and $(0,0,1)$ for evader fuel. The first two optimize by pursuer-min/evader-max; the last reverses those roles.
+
+On uncapped interior arcs the complete state--costate system is
+\begin{subequations}\label{eq:canonical}
+\begin{align}
+ \dot{\mathbf x}_i&=\mathbf v_i,\\
+ \dot{\mathbf v}_i&=\mathbf g(\mathbf x_i)+\mathbf a_i^*,\\
+ \dot b_i&=-\norm{\mathbf a_i^*}^2,\\
+ \dot{\boldsymbol\lambda}_{x_i}
+    &=-D\mathbf g(\mathbf x_i)^\top\boldsymbol\lambda_{v_i},\\
+ \dot{\boldsymbol\lambda}_{v_i}&=-\boldsymbol\lambda_{x_i},\\
+ \dot\eta_i&=0.
+\end{align}
+\end{subequations}
+For the pursuer objectives,
+\begin{equation}
+ \mathbf a_P^*=-\frac{\boldsymbol\lambda_{v_P}}{2(\ell_P-\eta_P)},
+ \qquad
+ \mathbf a_E^*=\frac{\boldsymbol\lambda_{v_E}}{2\eta_E},
+ \label{eq:costateselect}
+\end{equation}
+on the branches $\ell_P-\eta_P>0$, $\eta_E>0$. For the escape-cost game,
+\begin{equation}
+ \mathbf a_P^{\dagger}=\frac{\boldsymbol\lambda_{v_P}}{2\eta_P},
+ \qquad
+ \mathbf a_E^{\dagger}=-\frac{\boldsymbol\lambda_{v_E}}{2(1-\eta_E)},
+ \label{eq:costateselectE}
+\end{equation}
+on its corresponding branches. If necessary add $\dot s=-1$ and a quadrature for the selected running cost. Then recover $m_i,v_{ei},I_{\!sp,i}$ using \eqref{eq:recovermass} and \eqref{eq:mass}.
+
+\subsection{Free-Space Characteristics}
+In the relative formulation let $\mathbf p_r,\mathbf p_w$ be the kinematic costates. Then
+\begin{equation}
+ \dot{\mathbf p}_r=0,\qquad
+ \dot{\mathbf p}_w=-\mathbf p_r,\qquad \dot\eta_P=\dot\eta_E=0.
+ \label{eq:freecostate}
+\end{equation}
+On regular arcs, $\mathbf p_w=\mathbf A-\mathbf B t$ and
+\begin{equation}
+ \mathbf a_P^*=\frac{\mathbf p_w}{2(\ell_P-\eta_P)},\qquad
+ \mathbf a_E^*=\frac{\mathbf p_w}{2\eta_E}.
+ \label{eq:affinecontrols}
+\end{equation}
+Hence both accelerations are affine, velocities are quadratic, positions are cubic, and budget depletion is cubic on such an arc. This extends the affine-acceleration structure in the companion article, but only to a \emph{smooth interior saddle arc}. Exhaustion, finite engine bounds, capture boundaries, and changes of active value-function branch can interrupt it. A precomputed pair of cubic trajectories is not a feedback guarantee against deviations.
+
+\subsection{Kepler Characteristics}
+For $r_i=\norm{\mathbf x_i}$,
+\begin{equation}
+ D\mathbf g(\mathbf x_i)
+ =-\mu\left(\frac{I}{r_i^3}
+             -\frac{3\mathbf x_i\mathbf x_i^\top}{r_i^5}\right),
+\end{equation}
+so the costate equations become
+\begin{align}
+ \dot{\boldsymbol\lambda}_{x_i}
+ &=\mu\left(\frac{I}{r_i^3}
+             -\frac{3\mathbf x_i\mathbf x_i^\top}{r_i^5}\right)
+                       \boldsymbol\lambda_{v_i},\label{eq:keplercostate}\\
+ \dot{\boldsymbol\lambda}_{v_i}&=-\boldsymbol\lambda_{x_i}.
+\end{align}
+Equivalently,
+\begin{equation}
+ \ddot{\boldsymbol\lambda}_{v_i}
+             =D\mathbf g(\mathbf x_i)^\top\boldsymbol\lambda_{v_i}.
+\end{equation}
+These Cartesian equations avoid polar-coordinate singularities at a vanishing tangential velocity and apply equally to planar and spatial motion away from the central body.
+
+\subsection{Terminal Conditions and Their Limits}
+For a regular capture endpoint on $\norm{\mathbf x_E-\mathbf x_P}=R>0$, let $\mathbf n=(\mathbf x_E-\mathbf x_P)/R$. With no terminal state cost and no other active terminal constraints, transversality gives
+\begin{align}
+ \boldsymbol\lambda_{x_P}(\tau)&=-\nu\mathbf n,&
+ \boldsymbol\lambda_{x_E}(\tau)&=\nu\mathbf n,\label{eq:transversality}\\
+ \boldsymbol\lambda_{v_P}(\tau)&=0,&
+ \boldsymbol\lambda_{v_E}(\tau)&=0.\nonumber
+\end{align}
+For $R=0$, use a vector multiplier for $\mathbf x_E-\mathbf x_P=0$ instead. Budget endpoint constraints and central-distance constraints introduce their own multipliers; inactive free budget endpoints give $\eta_i(\tau)=0$. These statements concern regular endpoint branches, not singular value gradients at a target.
+
+For free terminal time in the time game, $K=0$ along a regular autonomous saddle extremal. For fuel minimization, an interior capture time $0<\tau<T$ also has the free-time transversality condition; an active deadline has a time-constraint multiplier and does not permit imposing that condition unaltered. One must allow capture before $T$.
+
+Notice that zero terminal velocity costates and free terminal budgets can make the strictly coercive formulas degenerate. In particular, one cannot insist that an entirely interior uncapped arc with constant nonzero budget costates extends smoothly to every unconstrained terminal state. Budget-active or singular terminal arcs are often essential. At budget exhaustion and other state constraints, use constrained optimal-control conditions and the reduced face dynamics. Ordinary shooting across such boundaries without the correct multipliers is not justified.
+
+\section{Finite Engine Bounds and Switching}
+\label{sec:bounded}
+For a compact admissible radius set
+\begin{equation}
+ S_i(b_i)=\{0\}\cup[a_{i,\min}(b_i),a_{i,\max}(b_i)],
+\end{equation}
+pointwise vector optimization reduces to a scalar problem. For
+\begin{equation}
+ Q(\mathbf a)=\mathbf h\cdot\mathbf a+c\norm{\mathbf a}^2,
+\end{equation}
+the minimizing powered direction is $-\mathbf h/\norm{\mathbf h}$ and the maximizing direction is $+\mathbf h/\norm{\mathbf h}$. Thus
+\begin{align}
+ \min_{\mathbf a\in\U_i}Q
+     &=\min_{r\in S_i}[-\norm{\mathbf h}r+cr^2],\label{eq:minradius}\\
+ \max_{\mathbf a\in\U_i}Q
+     &=\max_{r\in S_i}[+\norm{\mathbf h}r+cr^2].\label{eq:maxradius}
+\end{align}
+At $\mathbf h=0$ direction is immaterial. For the minimizing quadratic with $c>0$, compare zero with the interval-clipped radius $\norm{\mathbf h}/(2c)$. For the maximizing quadratic with $c<0$, compare zero with the interval-clipped radius $-\norm{\mathbf h}/(2c)$. In all other sign cases, comparing the interval endpoints and zero is sufficient. These rules solve the pointwise optimization globally, including coast and boundary arcs.
+
+Insert the resulting extrema in \eqref{eq:Hgeneral} or \eqref{eq:HE}. For a mass-independent ball bound $\norm{\mathbf a}\le A$, a coercive selector is simply radially clipped at $A$. An exhaust-speed ceiling alone retains the gap between coast and minimum powered acceleration described in the companion article.
+
+With mass-dependent control boundaries, \eqref{eq:canonical} must be replaced by the canonical equations of the \emph{optimized constrained Hamiltonian}. In particular, $\dot\eta_i=-\partial K^*/\partial b_i$ can be nonzero on exhaust-boundary arcs. The constant-budget-costate result is for unconstrained interior arcs, not a universal first integral of the bounded game.
+
+Rapid switching or relaxed controls may improve existence properties, but relaxation must retain the pair $(\mathbf a,-\norm{\mathbf a}^2)$ when taking convex combinations. Replacing an averaged acceleration by its square would generally give the wrong propellant flow. If a relaxed optimum exists, additional work is needed to show exact realization by an ordinary control rather than approximation through fast switching.
+
+\section{Numerically Specified Global Solution}
+\label{sec:numerical}
+\subsection{Exact Winning Sets and Resource Thresholds}
+Define the robust capture set at horizon $s$ by
+\begin{equation}
+ \mathcal K_s=\{z:\exists\alpha\ \forall\mathbf a_E,
+                                     \tau\le s\}.
+ \label{eq:K}
+\end{equation}
+Then, directly from \eqref{eq:timevalue},
+\begin{equation}
+ \boxed{V(z)=\inf\{s\ge0:z\in\mathcal K_s\}.}
+ \label{eq:VfromK}
+\end{equation}
+The infimum need not itself be a feasible horizon. Thus $V(z)<T$ implies feasibility by $T$, whereas the equality $V(z)=T$ requires attainment or a direct membership test in $\mathcal K_T$.
+
+For the ideal model, or bounds independent of the artificial fuel ledger, A2/B2 can be calculated without storing an infinite terminal fuel cost. Keep the actual initial state and impose an additional pathwise pursuer expenditure cap $c$. Let $\mathcal K_T(c)$ be its robust capture set. Then
+\begin{equation}
+ \boxed{W(T,z)=\inf\{c\in[0,b_P]:z\in\mathcal K_T(c)\}.}
+ \label{eq:Wthreshold}
+\end{equation}
+An empty set gives $+\infty$. Proof: a strategy guarantees a worst-case expenditure at most $c$ if and only if it guarantees capture with that additional cap. Taking the infimum gives \eqref{eq:Wthreshold}. For an ideal engine, the artificial cap can replace the pursuer budget in the kinematic reachability calculation. For exhaust-speed limits that depend on actual mass, retain the true $b_P$ and add a separate ledger $q$ with
+\begin{equation}
+ \dot q=-\norm{\mathbf a_P}^2,\qquad q(0)=c,\qquad q\ge0.
+\end{equation}
+Changing a fuel allowance must not inadvertently change the spacecraft's initial mass and thrust bounds.
+
+The evader cost has the analogous exact construction: minimize a pathwise expenditure cap over strategies that survive to $T$, or survive forever. For perpetual escape the quantifiers are $\exists\beta\,\forall\mathbf a_P\,\forall t\ge0$, with one common strategy. Threshold values give infima. Theorem~\ref{thm:nonattain} proves that the boundary cap itself may fail to permit a winning strategy.
+
+\subsection{A Continuous Reachability PDE}
+For a positive-radius target, let $\varphi(z)=\norm{\mathbf r}-R$; it may be smoothly truncated away from the target on a numerical domain. A useful finite-horizon game payoff is the smallest clearance attained on a path:
+\begin{equation}
+ L(s,z)=\inf_\alpha\sup_{\mathbf a_E}
+             \min_{0\le t\le s}\varphi(z(t)).
+ \label{eq:Lreach}
+\end{equation}
+With budgets included in the state, its dynamic-programming obstacle equation is
+\begin{equation}
+ \boxed{\max\{L-\varphi,\ L_s-\HH_0[L]\}=0,\qquad
+ L(0,z)=\varphi(z).}
+ \label{eq:reachVI}
+\end{equation}
+The obstacle records capture at \emph{any} earlier time, rather than only endpoint proximity. Continuous reachability and reach-avoid HJI formulations are developed in \cite{Mitchell2005,Margellos2009}. State and resource constraints must be imposed consistently when using this equation.
+
+Under a value/strategy existence theory, $L<0$ supplies a robust capture certificate with interior penetration, and $L>0$ supplies the opposite strict-margin certificate through the dual game. At $L=0$, exact capture requires attention to attainment and target regularity: an infimum of miss distances equal to zero is not automatically an attained interception. The exact set \eqref{eq:K} remains the definition. For $R=0$, $\varphi\ge0$, so there is no negative interior level; use the exact target game or a justified target-limit construction. Simply taking a small numerical miss distance as a proof of point capture is invalid.
+
+Similarly, closed safety sets with a prescribed margin can be propagated by viability methods. Their relation to the original strict escape condition, especially on an infinite horizon, must be verified rather than assumed.
+
+\subsection{Differential Equations and Boundary Data to Supply}
+A numerical mathematical specification is as follows:
+\begin{enumerate}
+\item Choose $P_i,m_{i0},m_{id}$, the initial positions and velocities, $R$, and, when relevant, $T$ and $\mu$. Specify ideal or bounded engines, observation convention, and the central-body boundary rule.
+\item Compute $B_i$ by \eqref{eq:B}. Use the relative state \eqref{eq:relative} in free space, optionally reduced by \eqref{eq:invariants}; use \eqref{eq:fullstate} in the Kepler field.
+\item Obtain the winning domain with \eqref{eq:K} and an HJI/viability construction such as \eqref{eq:reachVI}. Treat $b_i=0$ by the exact ballistic face game. Account for outer-domain boundaries rather than setting arbitrary terminal values there.
+\item For A1/B1, use \eqref{eq:A1} or \eqref{eq:B1}, or find the threshold in \eqref{eq:VfromK}. For A2/B2, use \eqref{eq:A2} or \eqref{eq:B2}, or search the monotone fuel threshold \eqref{eq:Wthreshold}.
+\item On an evader-winning state, solve \eqref{eq:FPDE} or the perpetual-survival problem \eqref{eq:Finfty}. Check whether the resulting infimum is attained; otherwise construct a winning $\varepsilon$-optimal strategy.
+\item Reconstruct trajectories using the value-gradient feedback and state ODEs, or use \eqref{eq:canonical} as characteristic equations with proper switching and terminal conditions. Evaluate controls from the actual state when the opponent deviates.
+\end{enumerate}
+This specifies the mathematical inputs to a numerical method without implementing one. A convergent monotone, consistent and stable HJI discretization needs a comparison principle for the chosen boundary problem; convergence results for pursuit--evasion discretizations require corresponding regularity assumptions \cite{Soravia1998}. A computed grid function is not by itself an exact global proof. Certified upper and lower value bounds or verified differential inequalities, together with capture feasibility, provide a stronger certificate. Shooting only one state--costate boundary-value problem cannot supply the global adversarial guarantee.
+
+\subsection{Numerical Limits That Must Be Kept Separate}
+Increasing only the pursuer's admissible control set can improve its capture value; increasing only the evader's can worsen it. Enlarging both sets simultaneously need not produce a monotone sequence of game values. Therefore ``solve with larger and larger common acceleration bounds'' is not, by itself, a proof of the ideal unbounded game.
+
+Likewise, a finite-horizon safety calculation cannot establish perpetual escape without a valid limiting strategy, and an $\varepsilon$-capture policy need not attain exact point capture. These are mathematical limitations of limit interchange, not missing ODE terms. They are especially relevant at resource exhaustion, grazing capture, and the strict-survival boundary demonstrated above.
+
+\section{Analytic Free-Space Checks and Useful Bounds}
+\label{sec:benchmarks}
+\subsection{An Exhausted, Ballistic Evader}
+Suppose $b_E=0$, so the evader cannot thrust. For a candidate interception time $h>0$, define
+\begin{equation}
+ \mathbf q(h)=\mathbf r_0+\mathbf w_0h.
+\end{equation}
+\begin{equation}
+ \mathbf d(h)=
+ \begin{cases}
+ (1-R/\norm{\mathbf q(h)})\mathbf q(h),&\norm{\mathbf q(h)}>R,\\
+ \mathbf0,&\norm{\mathbf q(h)}\le R.
+ \end{cases}
+\end{equation}
+The exact minimum acceleration expenditure to be in the capture ball at time $h$ is
+\begin{equation}
+ \boxed{c(h)=\frac{3\norm{\mathbf d(h)}^2}{h^3}.}
+ \label{eq:ballisticcost}
+\end{equation}
+Indeed, the pursuer must supply a weighted acceleration integral whose norm is at least $\norm{\mathbf d(h)}$, and
+\begin{equation}
+ \norm{\int_0^h(h-t)\mathbf a_P(t)\dd t}^2
+ \le\frac{h^3}{3}\int_0^h\norm{\mathbf a_P(t)}^2\dd t.
+\end{equation}
+Equality is attained by
+\begin{equation}
+ \boxed{\mathbf a_P(t)=\frac{3(h-t)}{h^3}\mathbf d(h),
+                     \quad 0\le t\le h.}
+ \label{eq:ballisticcontrol}
+\end{equation}
+Consequently, in this special case,
+\begin{align}
+ V_A&=\inf\{h>0:c(h)\le b_P\},\label{eq:ballisticV}\\
+ W_A(T)&=\inf_{0<h\le T}c(h)
+ \quad\text{if this infimum is feasible within }b_P.\label{eq:ballisticW}
+\end{align}
+Otherwise $W_A=+\infty$. An initially captured state has value zero. If a constructed endpoint path captures earlier, terminate it then. Conversely every first-capture path obeys the same lower bound at its own capture time. These observations justify the first-hit interpretation of \eqref{eq:ballisticV}--\eqref{eq:ballisticW}, not just the endpoint problem.
+
+For zero relative velocity and initial excess separation $D=\norm{\mathbf r_0}-R>0$,
+\begin{equation}
+ \boxed{V_A=(3D^2/b_P)^{1/3},\qquad
+ W_A(T)=3D^2/T^3,}
+ \label{eq:restintercept}
+\end{equation}
+provided the relevant budget is available. In dimensional propulsion parameters the time is
+\begin{equation}
+ V_A=\left[\frac{3D^2}{2P_P(m_{Pd}^{-1}-m_{P0}^{-1})}\right]^{1/3}.
+\end{equation}
+The companion rest-to-rest transfer has expenditure $12D^2/T^3$ instead of $3D^2/T^3$. The factor of four arises because interception here does not require matching terminal velocity.
+
+\subsection{A Certified Zero-Fuel Evader Win by a Deadline}
+Even if the evader has fuel available, it can elect to coast. Compute \eqref{eq:ballisticcost} for that coasting motion. If
+\begin{equation}
+ c(h)>b_P\qquad\text{for every }0<h\le T,
+ \label{eq:coastwin}
+\end{equation}
+then no pursuer control can intercept the coasting evader by $T$. Thus coasting is a guaranteed evader win with exactly zero fuel and is globally fuel-optimal. Conversely, if some $h\le T$ has $c(h)\le b_P$, the coasting strategy is not a guaranteed win, although a powered evasion strategy may still be one. This is a directly usable analytical certificate rather than an engine-superiority heuristic.
+
+\subsection{A Free-Space Capture Bound Under Ideal Nonanticipative Response}
+The following sufficient bound makes its information assumption explicit. Suppose the nonanticipative pursuer may use the evader's current acceleration, equivalently its almost-everywhere reconstruction from exact past velocity observations. For a prescribed time $h$, let
+\begin{equation}
+ \mathbf a_0(t)=\frac{3(h-t)}{h^3}(\mathbf r_0+\mathbf w_0h).
+\end{equation}
+The nonanticipative response
+\begin{equation}
+ \mathbf a_P(t)=\mathbf a_E(t)+\mathbf a_0(t)
+ \label{eq:copystrategy}
+\end{equation}
+forces $\mathbf r(h)=0$ for every admissible evader input. Minkowski's inequality gives
+\begin{equation}
+ \left(\int_0^h\norm{\mathbf a_P}^2\dd t\right)^{1/2}
+ \le\sqrt{b_E}+
+       \frac{\sqrt3\norm{\mathbf r_0+\mathbf w_0h}}{h^{3/2}}.
+\end{equation}
+Therefore a sufficient capture-by-$h$ condition is
+\begin{equation}
+ \boxed{\sqrt{b_P}\ge\sqrt{b_E}
+       +\frac{\sqrt3\norm{\mathbf r_0+\mathbf w_0h}}{h^{3/2}}.}
+ \label{eq:copybound}
+\end{equation}
+It respects the budget pathwise; if capture occurs earlier, the response is stopped. Since the second term tends to zero as $h\to\infty$, $b_P>b_E$ suffices for some finite guaranteed interception time in this ideal response model. If $\mathbf w_0=0$, the resulting upper bound is
+\begin{equation}
+ V_A\le\left[\frac{3\norm{\mathbf r_0}^2}
+                    {(\sqrt{b_P}-\sqrt{b_E})^2}\right]^{1/3}.
+\end{equation}
+This is an upper bound, not a proof that this time is optimal. The strategy uses the stated exact nonanticipative information convention; delayed measurements or restricted acceleration sensing require a different guarantee. It also need not satisfy finite instantaneous acceleration or exhaust-speed bounds. No corresponding cancellation works in a Kepler field without accounting for the unequal gravity terms in \eqref{eq:tidal}.
+
+\section{Conclusion}
+The variable-specific-impulse chase is a differential game in kinematic state and two remaining acceleration budgets. Free-space and Kepler dynamics enter the same separable Isaacs construction. Minimum guaranteed time uses a unit running cost and an absorbing capture target; minimum fuel by a deadline uses squared pursuer acceleration, zero cost at first capture, and infeasibility outside capture at the deadline. The evader's preference for least-fuel winning escape requires a separate survival game with the optimization roles reversed.
+
+The four HJI boundary problems, their feedback selectors, and the state--costate ODEs provide a mathematical specification for numerical solution. The verification theorems establish global optimality when feasibility, admissibility, regularity, and boundary conditions are certified. The exact free-space benchmarks supply independent analytical checks. General state--costate shooting solutions remain candidates until those global conditions are established.
+
+Finally, the requested existence of optimal trajectories for both ships cannot hold for all parameters: a strictly successful escaping ship may have only an unattained fuel infimum. In those instances the mathematically correct answer is the winning set, the exact infimum, and a family of winning $\varepsilon$-optimal strategies. The counterexample exhibits all three explicitly.
+
+\bibliographystyle{ieeetr}
+\bibliography{RocketPursuitEvasionReferences}
+\end{document}
