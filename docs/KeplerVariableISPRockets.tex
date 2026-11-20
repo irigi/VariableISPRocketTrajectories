@@ -1,9 +1,21 @@
-\documentclass[journal, a4paper]{IEEEtran}
+\IfFileExists{IEEEtran.cls}{
+\documentclass[journal,a4paper]{IEEEtran}
+}{
+\documentclass[10pt,twocolumn,a4paper]{article}
+\usepackage[textwidth=181mm,textheight=257mm,top=19mm,columnsep=4.5mm]{geometry}
+\usepackage{lmodern}
+\renewcommand{\thesection}{\Roman{section}}
+\renewcommand{\thesubsection}{\Alph{subsection}}
+\newcommand{\appendices}{\appendix}
+\date{}
+}
 %\documentclass[12pt,onecolumn]{IEEEtran}
 
 %\usepackage{cite}
+\usepackage[T1]{fontenc}
 \usepackage{booktabs}
 \usepackage{graphicx}
+\graphicspath{{figures/}}
 %\usepackage{psfrag}
 %\usepackage{subfigure}
 %\usepackage{hyperref}
@@ -11,12 +23,16 @@
 \usepackage{placeins}
 \usepackage{url}
 \usepackage{cuted}
-\usepackage{lipsum}
-\usepackage{amsmath}
+\usepackage[hidelinks]{hyperref}
+\usepackage{amsmath,amsthm}
+\newtheorem{lemma}{Lemma}
 \usepackage{amssymb}
+
+\usepackage{array}
 \usepackage{siunitx}
 \sisetup{output-exponent-marker=\ensuremath{\mathrm{e}}}
 
+\setlength{\emergencystretch}{1em}
 \begin{document}
 
 \title{Time-Optimal Candidate Heliocentric Transfers With a Constant-Power, Variable-$I_{\!sp}$ Engine}
@@ -29,16 +45,17 @@ email: \texttt{jan.olsina@gmail.com},  ORCID: \texttt{0009-0003-9816-3958}.}
 
 %\begin{strip}
 \begin{abstract}
-We study time-optimal candidate heliocentric transfers for a spacecraft propelled by an electric thruster that supplies constant useful jet power \(P\) while continuously varying its exhaust speed (variable \(I_{\!sp}\)). The vehicle is assumed to depart from and arrive on circular heliocentric orbits, so that the initial and final velocities match the local circular velocities at the respective radii. First, we derive the analytic one-dimensional, gravity-free brachistochrone and characterize the normal-PMP structure produced by a finite exhaust-speed ceiling. The ceiling introduces maximum-exhaust-speed boundary arcs and a central coast; every finite-switch candidate is an endpoint truncation of an interior-boost--boundary-boost--coast--boundary-brake--interior-brake--boundary-brake sequence. Although the convexified first-order equations also admit a coast/boundary sliding extremal, an exchange argument proves that this relaxed arc cannot belong to a true time-minimizing gravity-free trajectory. Next, we formulate the full planar Sun-field optimal-control problem, derive two closed-form first integrals, and show that the indirect formulation reduces the orbital/costate shooting dynamics to seven differential equations, with propellant consumption enforced by an additional quadrature or endpoint constraint. Finally, we present a practical numerical continuation strategy that obtains a coarse feasible endpoint via global optimization and then refines it by homotopy and Powell's local solver. Ideal uncapped numerical examples for a \SI{1}{GW} useful jet-power engine with an initial/dry mass of \SI{3000}{t}\,\(\to\)\,\SI{1000}{t} produce Earth--Jupiter-class PMP-extremal transfer candidates with flight times ranging from roughly \(170\) days for short-arc geometries up to about \(215\) days for long-arc geometries; the longer-arc candidates highlighted in the figures commonly exploit a low-perihelion Oberth-like pass. All results are subject to the idealizations of the model.
+We study time-optimal candidate heliocentric transfers for a spacecraft propelled by an electric thruster that supplies constant useful jet power \(P\) while continuously varying its exhaust speed (variable \(I_{\!sp}\)). The vehicle is assumed to depart from and arrive on circular heliocentric orbits, so that the initial and final velocities match the local circular velocities at the respective radii. First, we derive the analytic one-dimensional, gravity-free brachistochrone and characterize the normal-PMP structure produced by a finite exhaust-speed ceiling. The ceiling introduces maximum-exhaust-speed boundary arcs and a central coast; every finite-switch candidate is an endpoint truncation of an interior-boost--boundary-boost--coast--boundary-brake--interior-brake--boundary-brake sequence. On boundary arcs the mass costate is not conserved, and the braking branch cannot return to the coast threshold. Next, we formulate the full planar Sun-field optimal-control problem, derive two closed-form first integrals, and show that the indirect formulation reduces the orbital/costate shooting dynamics to seven differential equations, with propellant consumption enforced by an additional quadrature or endpoint constraint. Finally, we present a practical numerical continuation strategy that searches for a coarse endpoint via global optimization and then refines it by homotopy and Powell's local solver. Ideal uncapped numerical examples for a \SI{1}{GW} useful jet-power engine with an initial/dry mass of \SI{3000}{t}\,\(\to\)\,\SI{1000}{t} produce Earth--Jupiter-class ideal transfer candidates whose final-angle table spans flight times from roughly \(170\) to \(220\) days, and the departure-phase table up to \(281\) days. Each table row is a fixed angular winding class; where another tabulated winding class reaches the same terminal state, it can be considerably faster (e.g.\ \(211.5\) instead of \(220.5\) days), so the longest entries are not minimum times for their terminal state. The fastest candidates never pass inside \(1\)\,AU; the low-perihelion Oberth-like passes occur on slower branches and, in the most extreme case, reach a perihelion inside the Sun. Independent recomputation of 73 Jupiter table rows verifies their endpoint, dry-mass and free-time normalization conditions, reproduces the tabulated times to within \(0.05\) days, and reports their radius and exhaust diagnostics. All 73 leave a 50--250 km/s exhaust band, with peak exhaust speeds up to about \(0.6c\), so the tables are ideal-engine benchmarks rather than missions for a bounded engine.
 \end{abstract}
 %\end{strip}
 
 
 \section{Introduction}
 While electric propulsion (EP) is traditionally valued for its propellant efficiency, future ambitious endeavors such as interplanetary logistics networks or rapid sample return missions will demand not just efficiency but \emph{speed} \cite{Conway2010, PinoHowell2020, Fogel2020}. For such missions, the design focus shifts from optimizing propellant mass to minimizing flight time, making the spacecraft's power system the primary limiting factor \cite{Mazouffre2016}.
-Reducing transfer times from years to months propels interest in high-power propulsion systems, with gigawatt-class architectures representing a plausible long-term goal. Several pathways to this power scale are being explored, including advanced Nuclear Electric Propulsion (NEP) \cite{Peakman2023, scott2019value}, next-generation deployable solar arrays \cite{ChangDiaz2019}, and beamed-energy concepts \cite{Sheerin2021}. A common feature of these technologies is the ability to provide nearly constant useful propulsion power over long thrust arcs.
+Reducing transfer times from years to months propels interest in high-power propulsion systems, with gigawatt-class architectures representing a plausible long-term goal. Several pathways to this power scale are being explored, including advanced Nuclear Electric Propulsion (NEP) \cite{Peakman2023, scott2019value}, next-generation deployable solar arrays \cite{ChangDiaz2019}, and beamed-energy concepts \cite{Sheerin2021}. A common feature of these technologies is the ability to provide nearly constant useful propulsion power over long thrust arcs. The examples in this paper assume \SI{1}{GW} of useful jet power for a \SI{1000}{t} dry vehicle, i.e.\ a useful specific power of at least \SI{1}{kW/kg} referred to the whole dry mass, with no allowance for payload or structure. This is well beyond the specific powers assumed in current nuclear-electric design studies, which correspond to specific masses of tens of kilograms per kilowatt, so the examples should be read as a long-term technology benchmark.
 This constant-power paradigm fundamentally alters the classic rocketry framework. Instead of the fixed exhaust velocity ($v_e$) of the Tsiolkovsky equation \cite{Tsiolkovsky1903}, the exhaust speed becomes a key control variable, allowing the engine to actively trade thrust for specific impulse. The Variable Specific Impulse Magnetoplasma Rocket (VASIMR) is an exemplary technology demonstrating this "constant-power throttling" over a wide operating range \cite{Bering2011}. Such throttleability is compelling for the fast transfers that motivate our study, as recent optimization work confirms that varying the specific impulse during flight can significantly improve trip time \cite{DiPasquale2024}.
-In this paper, we develop the analytical and numerical machinery for constructing time-optimal transfer candidates in this high-power regime. We first derive an analytical solution for a 1D, gravity-free "brachistochrone" to build intuition. We then formulate the full planar Sun-field problem, derive two closed-form first integrals to simplify the dynamics, and present a robust numerical strategy to solve the resulting boundary-value problem. Our idealized uncapped examples for a gigawatt-scale engine demonstrate Earth--Jupiter-class transfer candidates in a few months, frequently exploiting a low-perihelion Oberth-like maneuver. The finite-ceiling analysis is used to characterize the limitation of that benchmark rather than in the reported heliocentric computations.
+The ideal power-limited problem with unbounded, freely variable exhaust speed is classical: the propellant cost reduces to the integral of the squared thrust acceleration, and the trajectory decouples from the mass history \cite{Irving1959,MelbourneSauer1962,Grodzovskii1969,Marec1979}; see also \cite{Lawden1963} for the primer-vector background. The free-space benchmark and the Sun-field reduction below are the minimum-time counterparts of this classical decoupling.
+In this paper, we develop the analytical and numerical machinery for constructing time-optimal transfer candidates in this high-power regime. We first derive an analytical solution for a 1D, gravity-free "brachistochrone" to build intuition. We then formulate the full planar Sun-field problem, derive two closed-form first integrals to simplify the dynamics, and present a robust numerical strategy to solve the resulting boundary-value problem. Our idealized uncapped examples for a gigawatt-scale engine demonstrate Earth--Jupiter-class transfer candidates in a few months. The fastest of them stay outside \(1\)\,AU; low-perihelion Oberth-like passes appear on slower angular winding classes and are not needed for the shortest times. The finite-ceiling analysis is used to characterize the limitation of that benchmark rather than in the reported heliocentric computations.
 
 \section{Variable-$I_{\!sp}$ Rocket Model}
 Let $m(t)$ be the instantaneous mass ($m \ge m_\mathrm{dry}$) and $v_e(t)$ the exhaust speed. The propellant mass flow rate is the positive quantity $\dot m_f = -\dot m$. Neglecting plume inefficiencies, the useful jet power $P$ (taken to be constant) and thrust magnitude $T$ are given by \cite{Sutton2017}:
@@ -71,7 +88,7 @@ For a minimum-time problem, the performance index is
 \[
     J=\int_0^{t_f} 1\,dt,
 \]
-so the running cost is \(L=1\).\footnote{Many modern aerospace optimal-control texts write \(\mathcal{H}=\boldsymbol{\lambda}^\top\mathbf{f}+L\) and minimize; that convention differs from \eqref{eq:hamiltonian_general} by the sign of all costates. The present maximization form follows Pontryagin's original formulation \cite{Pontryagin1962}.} For an autonomous problem with free final time, transversality implies \(\mathcal{H}\equiv 0\) along the optimal trajectory.
+so the running cost is \(L=1\).\footnote{Many modern aerospace optimal-control texts write \(\mathcal{H}=\boldsymbol{\lambda}^\top\mathbf{f}+L\) and minimize; that convention differs from \eqref{eq:hamiltonian_general} by the sign of all costates. The present maximization form follows Pontryagin's original formulation \cite{Pontryagin1962}.} For this autonomous problem with fixed terminal state and free final time, transversality implies \(\mathcal{H}\equiv 0\). A moving terminal state instead requires \(\mathcal H(t_f)=\lambda_f\cdot\dot x_d(t_f)\).
 
 Here:
 \begin{itemize}
@@ -139,7 +156,7 @@ A second, less obvious, integral is found by examining the time derivative of th
     &= \left(\lambda_m \frac{m a^2}{P}\right) m^2 + \lambda_m \left(2m \left(-\frac{m^2 a^2}{2P}\right)\right) \nonumber\\
     &= \frac{\lambda_m m^3 a^2}{P} - \frac{\lambda_m m^3 a^2}{P} = 0.
 \end{align}
-Thus, the product $\lambda_m(t) m^2(t)$ is constant throughout the trajectory:
+Thus, in this uncapped problem, the product $\lambda_m(t) m^2(t)$ is constant throughout the trajectory:
 \begin{equation}
     \lambda_m(t) m^2(t) = C_m = \text{const}.
     \label{eq:mass_costate_integral}
@@ -240,7 +257,7 @@ The uncapped free-space solution of Sec.~\ref{sec:free_space_solution} requires
 \begin{equation}
     v_e(t)=\frac{2P}{m(t)|a(t)|},
 \end{equation}
-and therefore demands arbitrarily large exhaust speed when the affine acceleration passes through zero. This section states the resulting finite-ceiling structure needed for interpreting the ideal model. The full PMP derivation, switching analysis, closed-form arc maps, and endpoint formulas are given in Appendix~\ref{sec:appendix_capped_derivation}.
+and therefore demands arbitrarily large exhaust speed when the affine acceleration passes through zero. This section states the resulting finite-ceiling structure needed for interpreting the ideal model. The full PMP derivation, switching analysis, closed-form arc maps, and shooting reduction are given in Appendix~\ref{sec:appendix_capped_derivation}.
 
 We impose
 \begin{equation}
@@ -261,69 +278,65 @@ At full power the ceiling is equivalent to a minimum nonzero acceleration magnit
 \end{equation}
 Thus accelerations with magnitude between zero and $F/m$ cannot be produced at fixed power; the engine must instead be switched off.
 
-\subsection{Pointwise Selector}
-For every finite normal maximizer, the product
+\subsection{Pointwise Selector and Mass Adjoint}
+Set $C=\lambda_m m^2>0$ and $p=P\lambda_v/C$, using the current
+value of $C$. With $q=F/m$, the selector is
 \begin{equation}
-    C\equiv\lambda_m m^2>0
+ a^*=\begin{cases}
+ p,&|p|\ge q,\\
+ \operatorname{sgn}(p)q,&q/2<|p|<q,\\
+ 0,&|p|<q/2.
+ \end{cases}
+ \label{eq:capped_summary_selector}
 \end{equation}
-is constant. The scalar primer acceleration is therefore affine in time,
+At $|p|=q/2$, coast and the corresponding boundary burn both maximize.
+The raw velocity costate remains affine, $\lambda_v=n(t_z-t)$,
+$n=\lambda_x>0$. The scaled primer $p$ does not: $C$ is constant
+only on interior burns and coasts. On a maximum-exhaust boundary,
 \begin{equation}
-    p(t)\equiv\frac{P\lambda_v(t)}{C}=p_0-\omega t,
-    \qquad \omega>0.
+ \dot\lambda_m=\frac{F|\lambda_v|}{m^2},\qquad
+ \dot C=F|\lambda_v|-\frac{2\sigma C}{m}.
+ \label{eq:capped_corrected_adjoint}
 \end{equation}
-Writing $q(m)=F/m$, pointwise maximization of the Hamiltonian gives
-\begin{equation}
-    a^*(t)=
-    \begin{cases}
-      p(t), & |p(t)|\ge q,\\[1ex]
-      \operatorname{sgn}(p(t))q,
-        & q/2<|p(t)|<q,\\[1ex]
-      0, & |p(t)|\le q/2.
-    \end{cases}
-    \label{eq:capped_summary_selector}
-\end{equation}
-The three corresponding arc types are:
-\begin{itemize}
-    \item an interior powered arc $U_\pm$, on which $a=p$ and $v_e<V$;
-    \item a maximum-exhaust-speed boundary arc $B_\pm$, on which
-    $a=\pm F/m$, $v_e=V$, and $\dot m=-\sigma$;
-    \item a coast $C$, on which $a=0$ and $m$ is constant.
-\end{itemize}
+This follows by differentiating the optimized Hamiltonian with the
+mass-dependent boundary $a=\pm F/m$ substituted. Holding $a$ fixed
+while differentiating would omit the motion of the admissible set.
+For $z=Vm|\lambda_v|/(2C)$, equivalently
+$\dot C=F|\lambda_v|(1-1/z)$.
 
-\subsection{Main Structural Result}
-For a rest-to-rest transfer from $x=0$ to $x=L>0$, every regular normal extremal with finitely many switches is an endpoint truncation of
+\subsection{Ceiling-Only Structure and Endpoint Reduction}
+Appendix~\ref{sec:appendix_capped_derivation} proves the ordered pattern
 \begin{equation}
-    [U_+]\;B_+\;C\;B_-\;[U_-\;[B_-]].
-    \label{eq:capped_summary_topology}
+ [U_+]\;B_+\;C\;B_-\;[U_-\;[B_-]],
+ \label{eq:capped_summary_topology}
 \end{equation}
-Brackets denote optional arcs. Hence the trajectory can begin with an interior acceleration arc, but it must pass through a positive maximum-exhaust-speed boundary arc before entering a central coast. Braking begins on a negative boundary arc and may subsequently enter an interior braking arc and, for some parameter regimes, a second boundary arc. The final state may occur on any displayed braking arc.
+with absent intervals and endpoint truncations allowed. Here $U$ denotes
+an interior burn, $B$ a maximum-exhaust burn, and $C$ a coast. The central
+coast contains the zero of the raw primer. On the braking side the
+vector fields point strictly upward at $z=1/2$, so the branch
+cannot return to this coast threshold, so there is no sliding branch.
+The proof and a standalone coast/boundary exchange lemma are in the appendix.
 
-For every finite $V$, the central coast has positive duration: the affine primer crosses zero while the powered/coast switching threshold $F/(2m)$ remains positive. Because mass is lost during the powered arcs, the accelerating and braking branches are generally unequal; the finite-ceiling solution is not obtained by uniformly scaling the symmetric uncapped profile.
+Normalize $n=1$. Shoot in $(t_z,\lambda_m(0))$, propagate state and
+mass costate with the current selector until $m=m_{\rm dry}$, and solve
+$x(t_f)=L$, $v(t_f)=0$. A positive normal costate scaling then enforces
+$\mathcal H=0$; competing candidates must still be compared. The
+fixture $P=1/2$, $V=2$, $m_0=1$, $m_d=1/2$, $L=1$ gives
+$t_f=2.35199587$ and is checked by direct transcription in the appendix.
+This theorem is ceiling-only. A lower exhaust bound introduces
+maximum-acceleration arcs whose switching topology is left open.
 
-Convexification of the on--off control set formally admits a coast/boundary sliding extremal on the braking side. It is not time minimizing in the gravity-free problem. An exchange argument shows that, for fixed total boundary-burn time and coast time, moving every coast interval ahead of every braking burn preserves terminal mass and velocity while increasing distance. The excess distance can then be removed by shortening the coast, producing the same endpoint in less time. Thus the relaxed sliding arc and finite coast/boundary chattering are excluded from a true gravity-free minimum-time solution. The proof is given in Appendix~\ref{sec:appendix_capped_derivation}.
-
-\subsection{Endpoint Reduction}
-The remaining regular candidates can be computed without integrating a general boundary-value problem. Let $M$ be the mass on the central coast, let $\omega$ be the primer slope, and write the terminal primer as $p(t_f)=-u_f$ with $u_f>0$. Then
+The following Sun-field calculations use the ideal uncapped model.
+Their implied exhaust speed is
 \begin{equation}
-    t_f=\frac{p_0+u_f}{\omega}.
+ v_e(t)=\frac{2P}{m(t)\|\mathbf a_T(t)\|}.
+ \label{eq:ve_diagnostic_uncapped}
 \end{equation}
-For prescribed $(P,V,L,m_i,m_\mathrm{dry})$, the switching law determines $p_0$ from $(M,\omega)$, and forward propagation of the braking branch to $m=m_\mathrm{dry}$ determines $u_f$. The two unknowns $(M,\omega)$ are fixed by
-\begin{align}
-    0&=\frac{1}{\omega}
-       \int_{-u_f}^{p_0}a^*(p,m(p))\,dp,
-       \label{eq:capped_summary_velocity}\\
-    L&=\frac{1}{\omega^2}
-       \int_{-u_f}^{p_0}p\,a^*(p,m(p))\,dp.
-       \label{eq:capped_summary_distance}
-\end{align}
-All arc propagations and switching masses are elementary; their closed forms and the topology-dependent admissibility tests are collected in Appendix~\ref{sec:appendix_capped_derivation}.
-
-As $V\to\infty$, the boundary arcs and central coast shrink to zero duration and the uncapped affine solution is recovered. The orbital calculations in Secs.~\ref{sec:SunModel}--\ref{sec:similarity_reduction} and the numerical examples below use that ideal \emph{uncapped} model. They should therefore be interpreted as a benchmark for the continuously variable-$I_{\!sp}$ limit, not as trajectories satisfying a specified finite exhaust-speed ceiling. For any representative numerical trajectory, the implied exhaust-speed history is recovered a posteriori from
-\begin{equation}
-    v_e(t)=\frac{2P}{m(t)\|\mathbf a_T(t)\|}.
-    \label{eq:ve_diagnostic_uncapped}
-\end{equation}
-A finite-ceiling heliocentric study would replace the unconstrained thrust law by the vector analogue of Eq.~\eqref{eq:capped_summary_selector} and is left for future work.
+For a heliocentric finite-ceiling extension, apply the vector selector
+in the direction of $\boldsymbol\lambda_v$ and propagate
+$\dot\lambda_m=F\|\boldsymbol\lambda_v\|/m^2$ on boundary burns.
+The corresponding $C$ varies there. Substituting a vector selector while
+retaining the ideal constant-$C$ adjoint would be inconsistent.
 
 \section{Full Planar Sun-Field Model}
 \label{sec:SunModel}
@@ -460,7 +473,7 @@ This completes the analytical formulation. After using the two first integrals, 
     \,d\tau .
     \label{eq:mass_quadrature_sun}
 \end{equation}
-The terminal dry-mass condition is therefore enforced as the scalar quadrature constraint
+For a dry-mass terminal extremal the required scalar quadrature equality is
 \begin{equation}
     \int_0^{t_f}
     \frac{a_r(t)^2+a_\theta(t)^2}{2P}
@@ -473,7 +486,7 @@ The terminal dry-mass condition is therefore enforced as the scalar quadrature c
     \frac{1}{m_\mathrm{dry}}-\frac{1}{m_i}.
     \label{eq:dry_mass_quadrature_constraint}
 \end{equation}
-A shooting method must find the initial values of the costates, the constant \(C_\theta\), the thrust-gain constant \(k_T\), and the final time \(t_f\) so that the final circular-orbit boundary conditions and the mass-budget constraint are satisfied.
+Section~\ref{sec:acceptance} separates this required equality from the penalty implementation of the solver and verifies it for the recomputed candidates. A shooting method must find the initial values of the costates, the constant \(C_\theta\), the thrust-gain constant \(k_T\), and the final time \(t_f\) so that the final circular-orbit boundary conditions and the mass-budget constraint are satisfied.
 
 \section{Similarity Reduction of the Sun-Field Transfer Family}
 \label{sec:similarity_reduction}
@@ -675,7 +688,7 @@ This is the computational advantage of the similarity reduction: one normalized 
 
 \bigskip
 \section{Numerical Procedure}
-Solving the two-point boundary-value problem and constructing PMP-extremal transfer candidates requires a numerical approach. We employ a two-stage strategy that combines a global search to find an initial, feasible trajectory with a local refinement process that uses a continuation method to precisely reach the desired target \cite{Fogel2020,DiPasquale2024}.
+The two-stage procedure uses global search and local continuation to find endpoint-targeting seeds. Its penalty objectives are described first; the equality and normal-transversality acceptance tests follow in Section~\ref{sec:acceptance} \cite{Fogel2020,DiPasquale2024}.
 
 \subsection{Objective Function}
 The core of the numerical method is an objective function, \(J\), which quantifies endpoint targeting accuracy and constraint satisfaction for a candidate trajectory. This function is minimized to find a set of initial costate parameters that satisfies the endpoint and constraint residuals as accurately as possible. It incorporates penalties for violating physical constraints and errors for missing the target state. The function has two distinct forms depending on the optimization stage.
@@ -688,7 +701,7 @@ In the initial search phase, the goal is to find \emph{any} feasible trajectory 
 \end{equation}
 The terms are defined as:
 \begin{itemize}
-    \item $\mathcal{P}_f$: A fuel penalty that applies a large constant value if the final mass $m_f$ drops below the dry mass $m_\text{dry}$, effectively creating a hard constraint against using more fuel than available.
+    \item $\mathcal{P}_f$: A fuel term. The trajectory integration terminates when the mass reaches $m_\text{dry}$ (or at a maximum flight time), so the evaluated terminal state is the propellant-exhaustion state; the large constant assigned when $m_f<m_\text{dry}$ is a safeguard that is essentially never active. The term that does act is proportional to the unused propellant fraction $(m_f-m_\text{dry})/(m_i-m_\text{dry})$; it penalizes trajectories that reach the time limit with propellant remaining and vanishes on every trajectory that ends at dry mass.
     \item $\mathcal{P}_r$: A radial position penalty, $\max(0, r_\text{min} - r_f)^2$, which discourages solutions that fail to travel a minimum distance $r_\text{min}$ (e.g., 1.5\,AU) from the Sun.
     \item $\mathcal{E}_v$: The velocity mismatch error at the final state. It measures the Euclidean distance between the final velocity vector $\mathbf{v}_f=(v_{r,f}, v_{\theta,f})$ and the required velocity for a circular orbit at the final radius $r_f$, given by $\mathbf{v}_\text{circ}=(0, \sqrt{\mu/r_f})$. The squared error is $\mathcal{E}_v^2 = v_{r,f}^2 + (v_{\theta,f} - \sqrt{\mu/r_f})^2$.
     \item $w_f, w_r, w_v$: Positive weighting constants that balance the contribution of each term.
@@ -704,58 +717,202 @@ Here, the radial penalty $\mathcal{P}_r$ is removed, and two new terms are added
 
 \subsection{Two-Stage Optimization Strategy}
 \subsubsection{Stage 1: Global Search}
-An initial, admissible solution is found by minimizing the global objective function \eqref{eq:obj_global}. For this task, we use the \texttt{differential\_evolution} algorithm from the SciPy library \cite{Storn1997}. This robust, population-based method is well-suited for exploring the wide parameter space of the initial costates without getting trapped in local minima, thereby finding a good starting point for the next stage.
+An initial approximate seed is sought by minimizing the global objective function \eqref{eq:obj_global}. For this task, we use the \texttt{differential\_evolution} algorithm from the SciPy library \cite{Storn1997}. This robust, population-based method is well-suited for exploring the wide parameter space of the initial costates without getting trapped in local minima, thereby finding a good starting point for the next stage.
 
 \subsubsection{Stage 2: Continuation and Local Refinement}
 Starting from the solution found in Stage~1, which ends at a point $(r^\star, \theta^\star)$, we use a continuation (or homotopy) method to incrementally approach the final desired target $(r_\text{des}, \theta_\text{des})$ \cite{Allgower1990}. The procedure is as follows:
 \begin{enumerate}
     \item Set an intermediate target partway between the current known solution's endpoint and the final desired endpoint.
     \item Perform a local optimization by minimizing the targeted objective function \eqref{eq:obj_local} using Powell's method \cite{Powell1964} (derivative-free) as implemented in \texttt{scipy.optimize.minimize}. The initial guess for the optimizer is the set of parameters from the previous successfully converged solution.
-    \item If the optimizer converges to a high-precision solution, the new solution is accepted. The intermediate target is then advanced closer to the final destination, and the process repeats.
-    \item If the optimizer fails to converge, it indicates the step to the new target was too large. The intermediate target is then moved back, typically halving the distance between the last successful endpoint and the current target, and the optimization is re-attempted.
+    \item A step is accepted when the objective falls below $10^{-12}$. In the scaled units of the implementation this bounds the terminal velocity mismatch by about \SI{0.01}{m/s}, the radius error by about $10^{-6}$\,AU and the polar-angle error by about $3\times10^{-7}$\,rad. The candidate must also pass the equality and normal-transversality tests in Section~\ref{sec:acceptance}. The intermediate target is then advanced closer to the final destination, and the process repeats.
+    \item If the optimizer fails to converge, the cause is unresolved; reducing the continuation step is a recovery heuristic. The intermediate target is then moved back, typically halving the distance between the last successful endpoint and the current target, and the optimization is re-attempted.
 \end{enumerate}
 This adaptive stepping keeps the local optimizer close to a previously converged solution and substantially improves robustness, although convergence is not guaranteed for every target or every continuation step.
 
-\subsubsection{Qualification of Time-Optimality Claims}
-The indirect formulation enforces the PMP state equations, costate equations, and pointwise stationarity of the Hamiltonian by construction. Therefore, a converged shooting solution is a PMP extremal and is a necessary-condition candidate for a time-optimal transfer.
+\subsection{Endpoint Equalities and Free-Time Normalization}
+\label{sec:acceptance}
+The two penalty objectives are seed-finding devices, not complete PMP
+acceptance tests. In particular, neither objective explicitly minimizes
+time or imposes free-time transversality. In the implementation that
+generated the tables, the event-driven integrator stops at $m=m_d$, so an
+accepted trajectory ends at dry mass and its flight time is the time of
+that event; the time-optimality conditions are checked only afterwards.
+A later version of the code replaced the Powell continuation with a
+fixed-time least-squares boundary residual that uses only
+$\max(0,m_d-m_f)$ and accepts a 1\% radius and $1^\circ$ angle mismatch.
+That path does not enforce dry-mass equality, so its convergence alone
+does not give a minimum-time PMP extremal; it was not used for the
+tabulated values.
 
-However, satisfying the PMP conditions alone does not prove global optimality, and by itself it also does not prove local optimality in the strict second-order sense. A rigorous local optimality proof would require additional second-order analysis, such as checking for conjugate points, or an equivalent sufficiency test. In this work we therefore describe the numerical trajectories as time-optimal candidates or PMP-extremal transfer candidates. The reported times should be interpreted as the transfer times of the converged extremals found by the continuation procedure, not as a proof that no shorter feasible transfer exists.
+For a fixed final polar angle, the verification integrates
+normalized fixed-time effort costates $p$, with $u=p_v/2$, and the
+quadrature $I'=|u|^2$. Shoot in
+$(p_{r0},p_{v_r0},p_{v_\theta0},p_\theta,\log h)$ against the five
+\emph{equality} residuals
+\begin{equation}
+ \begin{pmatrix}r(h)-\rho\\\theta(h)-\Theta\\v_r(h)\\
+ v_\theta(h)-\rho^{-1/2}\\I(h)-\kappa\end{pmatrix}=0.
+ \label{eq:corrected_residual}
+\end{equation}
+This enforces both circular endpoint state and $m_f=m_d$; $h$ is an
+unknown.
+The autonomous effort Hamiltonian is
+\begin{equation}
+ E=p_rv_r+p_\theta v_\theta/r
+ +p_{v_r}(v_\theta^2/r-r^{-2})
+ -p_{v_\theta}v_rv_\theta/r+|p_v|^2/4.
+\end{equation}
+It is constant and initially $E=p_\theta+|p_v(0)|^2/4$.
+If $E>0$, the time covectors are $p/E$ and the quadrature covector
+is $-1/E$. Their normal time Hamiltonian is $\mathcal H_T=E/E-1=0$.
+Thus free-time transversality is an explicit positive-normalization
+check, not an extra independent equation after removal of costate scale.
+If $E\le0$, this construction does not establish a normal minimum-time
+extremal. For a moving circular target, use
+$\theta(h)=\phi+\rho^{-3/2}h$ instead and normalize by
+$E-p_\theta\rho^{-3/2}$; the transversality condition is then
+$\mathcal H_T-\lambda_f\cdot\dot x_d=0$, not generally $\mathcal H_T=0$.
 
-All simulations, optimization procedures, and figures were generated using the accompanying open-source Python implementation \cite{Olsina2025}.
-The repository includes the complete solver, plotting scripts, and resulting graphs of trajectories, fuel and acceleration magnitudes.
+For the 73 independently recomputed $5.2$ AU final-angle rows,
+$E$ ranges from $4.03123$ to $8.78006$ and is positive throughout.
+Maximum normalized endpoint error is $4.8\,10^{-11}$, effort-equality
+error $1.47\,10^{-10}$, final-mass error $1.3\,10^{-5}$ kg, and
+maximum recomputed $|\mathcal H_T|$ is $1.1\,10^{-9}$.
+These rows are therefore normal extremals to numerical precision;
+their local or global optimality is not checked.
+The independent figure reconstructions have mass errors below $0.002$ kg;
+the extreme solar pass has maximum Hamiltonian error $2.2\,10^{-6}$.
 
-%\pagebreak
+\subsection{Atlas Sensitivities and Resource Parameters}
+For a regular ideal minimum-effort branch $F(d,h)$ whose initial and
+terminal states follow ballistic Kepler ephemerides, endpoint variation gives
+\begin{equation}
+ F_h=-|u_f|^2,\qquad F_d=|u_0|^2-|u_f|^2.
+\end{equation}
+With a fixed final polar angle instead, $F_h=-E$. These are different
+boundary conditions. The attainable budget-to-time value is
+$h^*(\kappa)=\inf\{h:F^*(d,h)\le\kappa\}$ when the threshold is attained;
+otherwise actual control feasibility must be retained in the definition.
+A regular moving-endpoint root permits the safeguarded Newton step
+\begin{equation}
+ h_{\rm new}=h+\frac{F(d,h)-\kappa}{|u_f|^2}.
+\end{equation}
+Use a bracket and compare branches; a stationary root is not a global
+value certificate. These sensitivities are developed in the unified
+minimum-effort manuscript \cite{OlsinaMinimumEffort}.
+
+For finite bounds let $V_0=\sqrt{\mu/r_0}$, $J_0=V_0^2/T_0$,
+$\chi=2P/(m_0J_0)$ and $\eta=m_0/m_d$. Then
+\begin{equation}
+\begin{gathered}
+ \kappa=\chi(\eta-1),\qquad \nu_\pm=v_{e,\pm}/V_0,\\
+ w=\chi+I,\qquad w/\nu_+\le|u|\le w/\nu_-.
+\end{gathered}
+\end{equation}
+Coast is separately admissible. The ceiling parameter is
+$\nu_{\max}=\nu_+$; the ideal atlas parameter $\kappa$ alone no longer
+specifies the capped engine. The mass ratio supplies
+$\chi=\kappa/(\eta-1)$, and both exhaust bounds must also be retained.
+
+The solver and plots are available in the repository \cite{Olsina2025};
+the tables and figures were generated with commit
+\nolinkurl{f0062a8378c179eaa8d0477760cc4ca52a48685f}, which implements the
+Powell continuation described above. Later commits, such as
+\nolinkurl{bdc9698212c92cd0815d9251c7d777d47cefd706}, replace it with the
+least-squares homotopy solver mentioned in Sec.~\ref{sec:acceptance}.
+Recomputing the 73 $5.2$\,AU final-angle rows reproduces the tabulated
+times to within $0.046$ days.
+The verification scripts and a per-cell table ledger are provided as
+supplementary data. Solver acceptance flags are not used as
+evidence of feasibility or optimality.
 
 \section{Results}
-The numerical procedure was applied to compute PMP-extremal transfer candidates from a 1\,AU circular orbit (representing Earth) to various target circular orbits. The targets are defined by their final radius and the heliocentric polar angle $\theta_f-\theta_0$ relative to the starting position. (We retain the symbol $\theta$ for this polar angle throughout; it is not the orbital true anomaly, which is undefined on a circular orbit.) The propulsion model used \(P=\SI{1}{GW}\) of useful jet power, with an initial vehicle mass of \SI{3000}{t} and a dry mass of \SI{1000}{t}. These calculations use the ideal uncapped control law of Sec.~\ref{sec:SunModel}; no finite upper bound on \(v_e\) is imposed.
+The numerical procedure was applied to compute ideal transfer candidates from a 1\,AU circular orbit (representing Earth) to various target circular orbits. The targets are defined by their final radius and the heliocentric polar angle $\theta_f-\theta_0$ relative to the starting position. (We retain the symbol $\theta$ for this polar angle throughout; it is not the orbital true anomaly, which is undefined on a circular orbit.) The propulsion model used \(P=\SI{1}{GW}\) of useful jet power, with an initial vehicle mass of \SI{3000}{t} and a dry mass of \SI{1000}{t}. These calculations use the ideal uncapped control law of Sec.~\ref{sec:SunModel}; no finite upper bound on \(v_e\) is imposed.
 As an order-of-magnitude check on these numbers, the free-space benchmark of Sec.~\ref{sec:free_space_solution} with \(L=r_f-r_0=4.2\,\mathrm{AU}\), \(P=\SI{1}{GW}\), and \(\Delta=1/m_\mathrm{dry}-1/m_i\) gives
 \begin{equation*}
 T_{\min}
 =\!\left[\frac{6L^{2}}{P\Delta}\right]^{1/3}
 \!\approx\;177\;\mathrm{days}.
 \end{equation*}
-The Sun-field transfers to \(5.2\,\mathrm{AU}\) in Tables~\ref{tab:transfer_times_final_anomaly}--\ref{tab:transfer_times_initial_anomaly} range from about \(170\) to \(215\) days and bracket this value. The flight times shorter than the free-space benchmark are possible because the spacecraft begins with a non-zero tangential velocity (\(\sim\SI{30}{km/s}\) at \(1\,\mathrm{AU}\)) and can convert solar gravitational potential energy along the transfer. The longer ones reflect the additional arc length traversed around the Sun, the energy required to climb the potential well to the outer orbit, and, in some cases, the cost of the low-perihelion Oberth pass.
+The Sun-field transfers to \(5.2\,\mathrm{AU}\) in Table~\ref{tab:transfer_times_final_anomaly} range from about \(170\) to \(220\) days and bracket this value. The departure-phase table spans a wider range, extending to about 281 days for the 5.2 AU target; Sec.~\ref{sec:windings} explains why the longest entries are not minimum times for their terminal state. The flight times shorter than the free-space benchmark are possible because the spacecraft begins with a non-zero tangential velocity (\(\sim\SI{30}{km/s}\) at \(1\,\mathrm{AU}\)) and can convert solar gravitational potential energy along the transfer. The longer ones reflect the additional arc length traversed around the Sun, the energy required to climb the potential well to the outer orbit, and, in some cases, the cost of the low-perihelion Oberth pass.
 
 Figures~\ref{fig:final_theta} and~\ref{fig:starting_theta} show the relationship between flight time and the orbital geometry. The flight times exhibit a U-shaped dependence on the final polar angle, with a clear minimum for transfers that are neither direct short-arcs nor long-arcs. Similar behavior has been reported in recent multi-objective studies of variable-$I_{\!sp}$ maneuvers \cite{DiPasquale2024}.
 
-Figures~\ref{fig:oberth_figure} and~\ref{fig:oberth_figure2} show example candidate extremals. A key feature of these trajectories is the inclusion of an Oberth-like low-perihelion maneuver. To gain orbital energy efficiently, the spacecraft first thrusts to lower its periapsis, making a low-perihelion pass around the Sun. It then applies its main acceleration burn at maximum velocity near the Sun, which is far more effective at increasing orbital energy than thrusting in a higher orbit \cite{Oberth1923}. This is visible in the plots as an initial dip towards the Sun and a corresponding peak in the acceleration magnitude. These Oberth-type solutions should be interpreted within the idealized dynamical model used here. No explicit constraints are imposed on minimum perihelion distance, solar heating, radiator performance near the Sun, pointing restrictions, or power-system survivability. Adding such constraints would generally increase the transfer times or remove some of the most aggressive solar-pass solutions.
+Figures~\ref{fig:oberth_figure} and~\ref{fig:oberth_figure2} show example candidate extremals that include an Oberth-like low-perihelion maneuver. To gain orbital energy efficiently, the spacecraft first thrusts to lower its periapsis, making a low-perihelion pass around the Sun. It then applies its main acceleration burn at maximum velocity near the Sun, which is far more effective at increasing orbital energy than thrusting in a higher orbit \cite{Oberth1923}. This is visible in the plots as an initial dip towards the Sun and a corresponding peak in the acceleration magnitude. These Oberth-type solutions should be interpreted within the idealized dynamical model used here. No explicit constraints are imposed on minimum perihelion distance, solar heating, radiator performance near the Sun, pointing restrictions, or power-system survivability. Adding such constraints would generally increase the transfer times or remove some of the most aggressive solar-pass solutions.
+The solar pass is, however, not what makes the fastest transfers fast. In the recomputed $5.2$\,AU final-angle rows, every row from $\Theta=0^\circ$ to $105^\circ$, including the fastest ($169.8$ days at $75^\circ$), has a minimum radius of $1$\,AU and makes no solar pass, whereas the deep-pass rows ($r_{\min}<0.1$\,AU at $\Theta=305^\circ$--$360^\circ$) take about $210$--$212$ days. The $\Theta=385.2^\circ$ example of Fig.~\ref{fig:oberth_figure2} takes $214$ days, while the $\Theta=25^\circ$ row, a different winding class ending $0.2^\circ$ away on the same circular orbit, takes $193$ days without a solar pass.
 
-Table~\ref{tab:transfer_times_final_anomaly} and Table~\ref{tab:transfer_times_initial_anomaly} present the resulting transfer times in days for a grid of targets. As expected, transfers to more distant orbits take longer. The notation ``N/A'' indicates that the numerical continuation and shooting procedure did not find a trajectory satisfying the terminal circular-orbit constraints before violating the dry-mass bound. Such cases may correspond to a genuine feasibility boundary for the specified power and propellant budget, or to a numerical convergence limitation of the present solver. Figure~\ref{fig:oberth_figure2} shows a trajectory close to such a boundary, with an extreme solar pass that cannot be extended further within the imposed model constraints.
+Tables~\ref{tab:transfer_times_final_anomaly} and~\ref{tab:transfer_times_initial_anomaly} give the outward time grid. Cells marked ``U'' are unresolved solver outputs, not proven infeasible transfers. Excluding a geometric cell would need a global effort lower bound $L(h)>\kappa$ for every admissible time and winding; solver failure supplies no such bound.
+
+\paragraph*{Angular winding classes}\label{sec:windings}
+Each table row fixes the unwrapped transfer angle, i.e.\ the winding $N$ in Eq.~\eqref{eq:Theta_def_similarity}. Rows whose angles differ by $360^\circ$ therefore end in the same terminal state (the same position and circular velocity on the target orbit), but they are distinct transfers: the paths go around the Sun differently, are not deformable into one another, and are separate extremals. A table entry is thus a candidate time for its winding class, not a minimum time over all transfers to that terminal state. Where both classes are tabulated the difference can be large: at $5.2$\,AU, $\Theta=0^\circ$ takes $220.50$ days and $\Theta=360^\circ$ takes $211.54$ days, and the departure phases $\phi=-100^\circ$ and $260^\circ$ take $281.19$ and $211.33$ days. The other $5.2$\,AU entries above about $212$ days ($\Theta=5^\circ$ and $\phi\le-15^\circ$) lie on the same monotone branches, but their $360^\circ$-shifted classes were not computed. If the shortest time to a given terminal state is wanted, the minimum must be taken over winding classes; over the tabulated $5.2$\,AU rows, excluding the entries above $212$ days just listed, the range is $169.8$--$211.8$ days. The return tables are, in this ideal model, time-reversed counterparts of the outward ones and are not independent results; their differences from the outward entries (up to about $0.4$ days) indicate the solver's numerical spread. Tables~\ref{tab:transfer_times_final_anomaly_return} and~\ref{tab:transfer_times_initial_anomaly_return} give the return-to-1-AU results, which were not re-verified.
+
+
+\subsection{Continuous-Path Diagnostics and Verification Coverage}
+\label{sec:diagnostics}
+The tables give rounded flight times; the solver runs that produced them
+did not record per-cell initial costates or full trajectories. A flight time and an endpoint
+alone do not determine a unique path or its exhaust extrema. We therefore
+distinguish independently recomputed candidates from the
+plotted and tabulated outputs. The supplementary file
+\texttt{table\_diagnostics.csv} has one record for every cell,
+with explicit unavailable and unresolved statuses; blank extrema are not
+zero. The complete 73-row $5.2$ AU final-angle reconstruction includes
+minimum radius and both exhaust extrema for each row. The other
+cells do not have individually verified path diagnostics.
+Figures~\ref{fig:final_theta}--\ref{fig:starting_theta} are aggregate time
+plots: only their recomputed subset is verified.
+
+The indicated geometries of the three path illustrations give:
+\begin{center}\small
+\begin{tabular}{rrrrr}\toprule
+$\rho,\Theta$ & days & $r_{\min}$ AU & $v_{e,\min}$ & $v_{e,\max}$\\\midrule
+$1.5,34.7^\circ$ &42.546&1.0000&20.37&993.91\\
+$5,273.1^\circ$ &206.560&0.169926&42.35&13001.03\\
+$5.2,385.2^\circ$ &214.236&0.0002732&4.85&1203.49\\\bottomrule
+\end{tabular}
+\end{center}
+Speeds are in km/s. These reconstruct the stated geometries. The first
+gives 42.5 days against the 44 days of the figure label, so that plotted
+path is not reproduced exactly.
+
+Radius minima are found from radial-velocity roots. Exhaust extrema are
+refined from dense samples, including endpoint values. Every band
+violation is large, so sampling error does not change the verdicts. All 73 Jupiter rows fail the $50$--$250$
+km/s band, and rows $305^\circ$--$360^\circ$ also cross $0.1$ AU.
+Over the 73 rows the exhaust speed ranges from $31$\,km/s to about
+$1.85\times10^{5}$\,km/s ($0.62c$, at $\Theta=95^\circ$), so the uncapped
+law also leaves the non-relativistic exhaust model.
+The three indicated figure geometries likewise fail the band. The extreme
+pass reaches approximately $0.00027$ AU (about $41\,000$\,km from the
+Sun's centre, $0.06\,R_\odot$), i.e.\ inside the Sun; that trajectory is
+physically impossible, not merely aggressive. Rows $340^\circ$--$360^\circ$
+reach $7.1$--$2.6\,R_\odot$. These are ideal-engine benchmarks. Enforcing an exhaust
+band or perihelion floor requires a new constrained solve and may change
+the branch and time; clipping controls or rejecting points after the solve
+does not repair the endpoint.
+
+A hard radial floor is correctly posed as a state constraint. For
+$c=(r_{\min}^2-|x|^2)/2\le0$, the maximizing convention can use a
+nonnegative measure $dM$ supported on contact, with
+$dp_x=-Dg^Tp_v\,dt-x\,dM$, $dp_v=-p_x\,dt$ and the associated
+entry, exit and tangency conditions \cite{HartlSethiVickson1995}.
+The finite-bound resource adjoint must still be propagated. The companion
+minimum-effort article specializes these conditions \cite{OlsinaMinimumEffort}.
 
 \section{Conclusion}
-We combined analytic insight (two closed-form first integrals, an uncapped free-space benchmark, and a finite-exhaust-speed structural extension) with a continuation strategy for constructing time-optimal transfer candidates for a constant-power, variable-\(I_{\!sp}\) engine. The uncapped numerical method generates PMP-extremal candidate trajectories, including those featuring low-perihelion Oberth-like maneuvers, for transfers out to the giant planets with a gigawatt-class useful jet-power engine. Recent developments in variable-$I_{\!sp}$ propulsion and adaptive low-thrust guidance algorithms \cite{PinoHowell2020,DiPasquale2024} suggest that further improvements in mission performance are possible. Future work will extend this framework to three-dimensional rendezvous problems. A rigorous demonstration of local or global time optimality for the Sun-field examples remains future work; it would require either second-order sufficiency analysis of the extremals, such as conjugate-point checks, or a broader global comparison across competing transfer branches.
+We combined analytic insight (two closed-form first integrals, an uncapped free-space benchmark, and a finite-exhaust-speed structural extension) with a continuation strategy for constructing time-optimal transfer candidates for a constant-power, variable-\(I_{\!sp}\) engine. The recomputed subset satisfies normal PMP necessary conditions; the remaining table entries are solver outputs that were not individually verified. The uncapped numerical method generates candidate trajectories for transfers out to the giant planets with a gigawatt-class useful jet-power engine. Some of them feature low-perihelion Oberth-like passes, but the fastest $5.2$\,AU candidates make no solar pass, and the table entries are minimum-time candidates only within their angular winding class. Recent developments in variable-$I_{\!sp}$ propulsion and adaptive low-thrust guidance algorithms \cite{PinoHowell2020,DiPasquale2024} suggest that further improvements in mission performance are possible. The companion pursuit article treats ideal free-space rendezvous in dimensions two and three and gives local planar CW and nonlinear Kepler capture certificates \cite{OlsinaChaseCorrected}. A full constrained three-dimensional interplanetary optimizer remains future work. A rigorous demonstration of local or global time optimality for the Sun-field examples remains future work; it would require either second-order sufficiency analysis of the extremals, such as conjugate-point checks, or a broader global comparison across competing transfer branches.
 
 
 
 \begin{figure}[htbp]
     \centering
-    \includegraphics[width=\linewidth]{article_003.jpg}
+    \includegraphics[width=\linewidth]{article_003.png}
     \caption{Flight times in days versus final polar angle at arrival.}
     \label{fig:final_theta}
 \end{figure}
 \begin{figure}[htbp]
     \centering
-    \includegraphics[width=\linewidth]{article_004.jpg}
+    \includegraphics[width=\linewidth]{article_004.png}
     \caption{Flight times in days versus initial polar angle at departure.}
     \label{fig:starting_theta}
 \end{figure}
@@ -769,13 +926,13 @@ We combined analytic insight (two closed-form first integrals, an uncapped free-
 \begin{figure*}[p]
     \centering
     \includegraphics[width=\linewidth]{article_005.jpg}
-    \caption{Example trajectory from $r=1$\,AU, $\theta=0^\circ$ to $r=1.5$\,AU, $\theta=34.7^\circ$ in 44 days. The trajectory is a very close analogy to the trajectories without gravity, demonstrating clear acceleration-deceleration pattern that is almost fully symmetric.}
+    \caption{Example trajectory from $r=1$\,AU, $\theta=0^\circ$ to $r=1.5$\,AU, $\theta=34.7^\circ$ in 44 days. Recomputing the stated rounded geometry gives 42.55 days (Sec.~\ref{sec:diagnostics}), so the plotted path is not reproduced exactly.}
     \label{fig:non_oberth_figure}
 \end{figure*}
 \begin{figure*}[p]
     \centering
     \includegraphics[width=\textwidth]{article_002.jpg}
-    \caption{An example of a more extreme low-perihelion Oberth-like maneuver for a transfer to Jupiter's orbit. The trajectory is from $r=1$\,AU, $\theta=0^\circ$ to $r=5.2$\,AU, $\theta=385.2^\circ$ and lasts 214 days.}
+    \caption{An example of a more extreme low-perihelion Oberth-like maneuver for a transfer to Jupiter's orbit. The trajectory is from $r=1$\,AU, $\theta=0^\circ$ to $r=5.2$\,AU, $\theta=385.2^\circ$ and lasts 214 days. Its $0.00027$\,AU perihelion lies inside the Sun, so it illustrates the unconstrained model rather than a feasible mission; the $\Theta=25^\circ$ winding class reaches nearly the same terminal state in 193 days without a solar pass.}
     \label{fig:oberth_figure2}
 \end{figure*}
 
@@ -787,625 +944,167 @@ The author wishes to acknowledge the use of large language models (Google's Gemi
 
 
 \appendices
-\section{Complete Derivation for the Finite Exhaust-Speed Free-Space Problem}
+\section{Finite-Ceiling Free-Space Derivation}
 \label{sec:appendix_capped_derivation}
-The main text states only the selector, regular topology, sliding exclusion, and endpoint reduction. This appendix gives the complete derivation and the topology-dependent closed forms.
+For the dimensional time problem in one dimension, let
+$l=\lambda_v$ with $l'=-\lambda_x$ and $\lambda_x$ constant.
+On a powered fixed-sign interval, write $|l|=L_a+nt$.
+For fixed exhaust $V$ set $F=2P/V$, $\sigma=2P/V^2$ and
+$C_m=\lambda_m m^2$. Differentiating the optimized Hamiltonian gives
+\begin{equation}
+ m'=-\sigma,\quad
+ \lambda_m'=\frac{F|l|}{m^2},\quad
+ C_m'=\frac{2P|l|}{V}-\frac{4PC_m}{mV^2}.
+\end{equation}
+Thus $C_m$ is not constant on this boundary. With
+$B=n/\sigma$ and $A=L_a+Bm_a$,
+\begin{equation}
+ \begin{gathered}
+ m=m_a-\sigma t,\\
+ \lambda_m=\lambda_{m,a}
+ +V\left[A\left(\frac1m-\frac1{m_a}\right)
+                  +B\log\frac m{m_a}\right].
+ \end{gathered}
+\end{equation}
+For thrust sign $\epsilon=\pm1$,
+\begin{equation}
+ \begin{split}
+ v&=v_a+\epsilon V\log(m_a/m),\\
+ x&=x_a+v_at+\epsilon V
+                \left[t-\frac m\sigma\log(m_a/m)\right].
+ \end{split}
+\end{equation}
+On an ideal interior arc $C_m$ is constant and $a=Pl/C_m$;
+on a coast both $m$ and $\lambda_m$ are constant.
 
-The uncapped free-space solution of Sec.~\ref{sec:free_space_solution} requires
+\subsection{Relations carried over from the uncapped analysis}
+The pointwise selector holds when evaluated with the current $C_m$.
+The fixed-exhaust state maps above, the interior-arc mass formula, and
+the exchange argument excluding an avoidable powered--coast rearrangement
+under its monotone braking hypotheses also hold. On an interior arc
+$l=l_a-nt$,
 \begin{equation}
-    v_e(t)=\frac{2P}{m(t)|a(t)|},
+ \frac1{m(t)}=\frac1{m_a}+\frac{P}{2C_m^2}
+       (l_a^2t-l_an t^2+n^2t^3/3).
 \end{equation}
-and therefore demands arbitrarily large exhaust speed when the affine acceleration passes through zero. We now impose a finite ceiling
-\begin{equation}
-    v_e\le V,\qquad V\equiv v_{e,\max},
-\end{equation}
-while retaining the two-mode engine model used throughout this section: when the engine is on, it supplies the fixed useful jet power $P$; when it is off, the spacecraft coasts with $a=0$ and $\dot m=0$. We seek the minimum final time $t_f$ subject to
-\begin{equation}
-\begin{aligned}
-    x(0)&=0, & v(0)&=0, & m(0)&=m_i,\\
-    x(t_f)&=L, & v(t_f)&=0, & m(t_f)&=m_\mathrm{dry}.
-\end{aligned}
-    \label{eq:capped_endpoints}
-\end{equation}
-The resulting control set is nonconvex, so the capped solution is not obtained by merely truncating or uniformly scaling the uncapped affine-acceleration profile.
+Integrating $a=Pl/C_m$ gives quadratic velocity and cubic position.
+The raw primer remains affine globally; its scaled acceleration does not.
+Because $C_m$ varies on boundary arcs, switching times cannot be
+obtained from a constant-$C_m$ primer, not even with its terminal value.
 
-It is convenient to define the thrust and propellant-flow rate associated with full power at the exhaust-speed ceiling,
-\begin{equation}
-    F\equiv \frac{2P}{V},
-    \qquad
-    \sigma\equiv \frac{2P}{V^2}=\frac{F}{V}.
-    \label{eq:capped_F_sigma}
-\end{equation}
-During a powered interval,
-\begin{equation}
-    v_e=\frac{2P}{m|a|}\le V
-    \quad\Longleftrightarrow\quad
-    |a|\ge \frac{F}{m}.
-\end{equation}
-Consequently, the admissible signed accelerations are
-\begin{equation}
-    \mathcal U(m)
-    =\{0\}\cup\left(-\infty,-\frac{F}{m}\right]
-              \cup\left[\frac{F}{m},\infty\right).
-    \label{eq:capped_control_set}
-\end{equation}
-The nonzero powered acceleration therefore has a \emph{minimum} magnitude. Accelerations between zero and $F/m$ cannot be produced at fixed power without violating the exhaust-speed ceiling; the engine must instead be switched off.
+\begin{lemma}[Coast/boundary exchange]
+In a monotone nonnegative-velocity braking phase, any positive coast after a positive fixed-exhaust brake can be moved ahead of the burns and shortened to preserve distance, terminal velocity and mass while reducing time.
+\end{lemma}
+\begin{proof} In a
+coast/ceiling-brake mixture with duty fraction $\delta\in[0,1]$, write
+$s(t)=\int\delta\,dt$. Then $m=m_a-\sigma s$ and
+$v=v_a-V\log(m_a/m)$. Final mass and velocity depend only on total
+powered time. Exchanging a burn followed by a coast of length $c$ for
+coast followed by burn increases distance by $c\,\Delta v>0$, where
+$\Delta v$ is the burn's velocity decrement. Repetition puts all coasting
+first. If the braking interval has $0\le v\le v_a$ and $v_a>0$, its
+original coast distance is reproduced by a shorter leading coast of
+duration $\int_{\rm coast}v\,dt/v_a$. Mass, terminal velocity and distance
+are unchanged, while elapsed time strictly decreases whenever a positive
+coast follows a positive brake. Approximation extends this state argument
+to fractional mixtures. The argument uses only the state equations.
+\end{proof}
 
-\subsection{Pointwise Hamiltonian Maximization}
-The state equations are
-\begin{subequations}
-\begin{align}
-    \dot x &=v,\\
-    \dot v &=a,\\
-    \dot m &=-\frac{m^2a^2}{2P},
-\end{align}
-\end{subequations}
-with the understanding that $a=0$ denotes the coast mode. In the normal maximization convention, the Hamiltonian is
+\subsection{Ceiling-only topology and the unresolved two-sided case}
+Consider the ceiling-only, positive-distance, rest-to-rest problem with
+$C_m>0$ and positive dry mass. Normalize the constant $\lambda_x=n>0$;
+the primer is $l=n(t_z-t)$. Define
+$z=Vm|l|/(2C_m)$. The selector gives interior $\mathsf U$ for $z>1$,
+ceiling burn $\mathsf B$ for $1/2<z<1$, and coast $\mathsf C$ for $z<1/2$.
+On a ceiling arc,
 \begin{equation}
-    \mathcal H
-    =\lambda_xv+\lambda_va
-     -\lambda_m\frac{m^2a^2}{2P}-1.
-    \label{eq:capped_H}
+ \frac{z'}z=\frac{|l|'}{|l|}+\frac{\sigma}{m}(1-2z),
+ \qquad \sigma=2P/V^2.
 \end{equation}
-As in the uncapped problem,
-\begin{equation}
-    \dot\lambda_x=0,
-    \qquad
-    \dot\lambda_v=-\lambda_x,
-    \qquad
-    \dot\lambda_m=\lambda_m\frac{ma^2}{P}
-\end{equation}
-on powered arcs, while $\dot\lambda_m=0$ on a coast. Hence
-\begin{equation}
-    C\equiv \lambda_m m^2
-    \label{eq:capped_C}
-\end{equation}
-is constant on every arc and across the switches. A finite pointwise maximum of \eqref{eq:capped_H} requires $C>0$. Define the scalar primer acceleration
-\begin{equation}
-    p(t)\equiv \frac{P\lambda_v(t)}{C}
-             =p_0-\omega t,
-    \qquad
-    \omega\equiv \frac{P\lambda_x}{C}.
-    \label{eq:capped_primer}
-\end{equation}
-For a transfer from rest at $x=0$ to rest at $x=L>0$, the maximizing acceleration must be positive before it is negative. Since the sign of the maximizing powered acceleration is the sign of $p$, the primer must decrease through zero, and therefore $\omega>0$.
+On an interior arc $z'/z=|l|'/|l|-\sigma z^2/m$; on a coast it is
+$|l|'/|l|$. During boost $|l|'<0$, so $z$ decreases strictly through
+$\mathsf U_+,\mathsf B_+,\mathsf C$, with initial truncations allowed.
+On braking $|l|'=n>0$. At $z=1/2$ both the coast and boundary vector
+fields have $z'>0$. Thus $\mathsf C\to\mathsf B_-$ is regular and cannot
+return to the tie: every encounter with that level would point upward.
+No sliding arc or terminal $m_6$ event is available.
 
-The part of the Hamiltonian that depends on $a$ is, apart from the positive factor $C/P$,
+At $z=1$ both powered fields give
+$z'/z=n/|l|-\sigma/m$. The quantity
+$k=mn/(\sigma|l|)$ decreases strictly throughout braking, since $m$
+decreases and $|l|$ increases. An upward crossing $\mathsf B_-\to\mathsf U_-$
+can occur only while $k>1$, and a subsequent downward crossing
+$\mathsf U_-\to\mathsf B_-$ only when $k<1$; no further reversal is
+possible. Consequently every such finite-switch normal candidate has
+the ordered pattern
 \begin{equation}
-    \Phi(a)=pa-\frac{a^2}{2}.
+ \mathsf U_+\;\mathsf B_+\;\mathsf C\;\mathsf B_-\;
+ \mathsf U_-\;\mathsf B_-,
 \end{equation}
-Let
-\begin{equation}
-    q(m)\equiv \frac{F}{m}.
-\end{equation}
-If $|p|\ge q$, the unconstrained stationary point $a=p$ is feasible and maximizes $\Phi$. If $|p|<q$, the best powered control is the boundary value $a=\operatorname{sgn}(p)q$, whose Hamiltonian gain relative to coasting is
-\begin{equation}
-    \Phi\!\left(\operatorname{sgn}(p)q\right)
-    =|p|q-\frac{q^2}{2}.
-\end{equation}
-This gain is positive only when $|p|>q/2$. The exact pointwise maximizing law is therefore
-\begin{equation}
-    a^*(t)=
-    \begin{cases}
-      p(t), & |p(t)|\ge q,\\[1ex]
-      \operatorname{sgn}(p(t))\,q,
-        & q/2<|p(t)|<q,\\[1ex]
-      0, & |p(t)|\le q/2.
-    \end{cases}
-    \label{eq:capped_selector}
-\end{equation}
-At $|p|=F/m$, the interior and boundary controls coincide. At $|p|=F/(2m)$, the maximum-exhaust-speed control and coasting have equal Hamiltonian. These equalities define the switching surfaces.
+with absent intervals and endpoint truncations permitted. In particular
+the last boundary burn ends at the endpoint, not at a return to coast.
+This is a ceiling-only one-dimensional result. For the two-sided
+$50$--$250$ km/s engine, the $50$ km/s lower exhaust limit caps
+acceleration and introduces additional arcs.
 
-Three arc types result:
-\begin{itemize}
-    \item On an \emph{interior powered arc}, denoted $U_\pm$, the ceiling is inactive and
-    \begin{equation}
-        a=p,
-        \qquad
-        v_e=\frac{2P}{m|p|}<V.
-    \end{equation}
-    \item On a \emph{maximum-exhaust-speed boundary arc}, denoted $B_\pm$,
-    \begin{equation}
-        a=\pm\frac{F}{m},
-        \qquad
-        v_e=V,
-        \qquad
-        \dot m=-\sigma.
-        \label{eq:capped_boundary_dynamics}
-    \end{equation}
-    Thus thrust and mass-flow rate are constant, while the acceleration magnitude increases as the vehicle mass decreases.
-    \item On a coast arc, denoted $C$, $a=0$ and $m$ is constant.
-\end{itemize}
-The subscripts $+$ and $-$ indicate acceleration and braking, respectively.
+To state precisely what remains unresolved here, write $V_-=50$ km/s,
+$V_+=250$ km/s, $\rho_V=V_+/V_-=5$, and define $z$ with $V=V_+$.
+For $C_m>0$, the dimensional selector becomes
+\begin{equation}
+ |a|=\begin{cases}
+ 0,&z<1/2,\\
+ 2P/(mV_+),&1/2<z<1,\\
+ P|l|/C_m,&1<z<\rho_V,\\
+ 2P/(mV_-),&z>\rho_V.
+ \end{cases}
+\end{equation}
+The last region is a maximum-acceleration ($a_+$) arc, denoted
+$\mathsf A_\pm$ according to thrust sign. Its state and mass-adjoint
+maps are the fixed-exhaust maps above with $V=V_-$, and
+\begin{equation}
+ \frac{z'}z=\frac{|l|'}{|l|}
+   +\frac{\sigma_-}{m}\left(1-\frac{2z}{\rho_V}\right),
+ \qquad\sigma_-=2P/V_-^2.
+\end{equation}
+Thus the selector and propagation are available for both boundaries,
+but a complete two-sided switching-topology theorem, including all
+$\mathsf A_\pm$ visits and admissible endpoint truncations, is left open,
+as are gravity, abnormal extremals and other endpoint conditions.
 
-\subsection{Closed-Form Arc Relations}
-Because $\dot p=-\omega$, each arc can be integrated in closed form. On an interior powered arc,
+\subsection{Endpoint reduction}
+This reduction and its numerical fixture retain the ceiling-only
+assumptions of the proved topology.
+Use homogeneity to fix $n=1$. The two shooting unknowns are $t_z$ and
+$\lambda_m(0)>0$. Propagate the exact interior, boundary and coast maps,
+switching with the current $z$, until the first exhaustion $m=m_d$.
+Call that time $T(t_z,\lambda_m(0))$. Solve
 \begin{equation}
-    \frac{dm}{dp}=\frac{m^2p^2}{2P\omega},
+ x(T;t_z,\lambda_m(0))=L,\qquad
+ v(T;t_z,\lambda_m(0))=0.
 \end{equation}
-so an arc beginning at $(p_a,m_a)$ satisfies
-\begin{equation}
-    \frac{1}{m(p)}
-    =\frac{1}{m_a}
-     +\frac{p_a^3-p^3}{6P\omega}.
-    \label{eq:capped_U_mass}
-\end{equation}
-On either boundary arc,
-\begin{equation}
-    \frac{dm}{dp}=\frac{\sigma}{\omega},
-    \qquad
-    m(p)=m_a+\frac{\sigma}{\omega}(p-p_a).
-    \label{eq:capped_B_mass}
-\end{equation}
-On a coast, $m$ is constant while $p$ continues to decrease linearly.
+Reject trajectories without exhaustion or with invalid adjoint sign or
+switch inequalities. Alternatively use $T$ as a third unknown and add
+$m(T)=m_d$ as a third residual. Normalize the free-time Hamiltonian
+afterward if a positive normal scaling exists, and compare competing
+solutions, since the reduction does not imply uniqueness.
 
-The corresponding state maps are also elementary. For an interior powered arc of duration $\tau$ beginning with $(x_a,v_a,p_a)$,
-\begin{subequations}
-\begin{align}
-    p(\tau)&=p_a-\omega\tau,\\
-    v(\tau)&=v_a+p_a\tau-\frac12\omega\tau^2,\\
-    x(\tau)&=x_a+v_a\tau
-       +\frac12p_a\tau^2-\frac16\omega\tau^3.
-    \label{eq:capped_U_state}
-\end{align}
-\end{subequations}
-For a boundary arc with sign $\varepsilon=+1$ or $-1$,
-\begin{subequations}
-\begin{align}
-    m(\tau)&=m_a-\sigma\tau,\\
-    v(\tau)&=v_a+\varepsilon V\ln\!\left(\frac{m_a}{m(\tau)}\right),\\
-    x(\tau)&=x_a+v_a\tau
-      +\varepsilon V\left[
-          \tau-\frac{m(\tau)}{\sigma}
-          \ln\!\left(\frac{m_a}{m(\tau)}\right)
-      \right].
-    \label{eq:capped_B_state}
-\end{align}
-\end{subequations}
-A coast of duration $\tau$ has $v(\tau)=v_a$ and $x(\tau)=x_a+v_a\tau$.
-
-\subsection{Ordering of the Arcs}
-The switching law \eqref{eq:capped_selector} determines the arc ordering; it is not an independent ansatz. Introduce the normalized primer magnitude
-\begin{equation}
-    z(t)\equiv \frac{|p(t)|m(t)}{F}.
-    \label{eq:capped_z}
-\end{equation}
-The interior, boundary, and coast regions are $z\ge1$, $1/2<z<1$, and $z\le1/2$, respectively.
-
-While $p>0$, $z=pm/F$. Along an interior arc, a boundary arc, and a coast, respectively,
-\begin{subequations}
-\begin{align}
-    \dot z_U&=-\frac{1}{F}
-       \left(\omega m+\frac{m^2p^3}{2P}\right)<0,\\
-    \dot z_B&=-\frac{1}{F}(\omega m+\sigma p)<0,\\
-    \dot z_C&=-\frac{\omega m}{F}<0.
-\end{align}
-\end{subequations}
-Thus the accelerating side can only have the order
-\begin{equation}
-    [U_+]\;B_+\;C,
-    \label{eq:capped_positive_order}
-\end{equation}
-where brackets denote an optional arc. An initial coast would leave the spacecraft at rest while increasing the transfer time, and is therefore excluded. The boundary arc $B_+$ cannot be skipped: a continuous trajectory from $z>1/2$ to the coast region must pass through $1/2<z<1$. Moreover, for every finite $V$, the central coast has positive duration because $p$ crosses zero while $F/(2m)>0$.
-
-On the braking side, write $u\equiv-p>0$, so that $\dot u=\omega$ and $z=um/F$. The coast necessarily ends at $z=1/2$, after which a regular trajectory enters $B_-$. On that boundary arc,
-\begin{equation}
-    \dot z_B=\frac{1}{F}(\omega m-\sigma u).
-    \label{eq:capped_zdot_negative_B}
-\end{equation}
-The quantity $z$ can initially increase, reach a single maximum, and then decrease. If it reaches $z=1$, the trajectory enters $U_-$. On $U_-$, Eq.~\eqref{eq:capped_U_mass} gives
-\begin{equation}
-    \frac{1}{m(u)}
-    =\frac{1}{m_4}
-     +\frac{u^3-u_4^3}{6P\omega},
-    \label{eq:capped_Uminus_mass}
-\end{equation}
-where $(u_4,m_4)$ is the $B_-\to U_-$ switch and $u_4=F/m_4$. Differentiating $z(u)=u m(u)/F$ shows that the sign of $dz/du$ is the sign of
-\begin{equation}
-    \frac{1}{m_4}
-    -\frac{u_4^3}{6P\omega}
-    -\frac{u^3}{3P\omega},
-    \label{eq:capped_Uminus_monotonicity}
-\end{equation}
-which decreases strictly with $u$. Hence $z$ has at most one maximum on $U_-$, and the trajectory can leave $U_-$ at most once. If it does, it re-enters $B_-$ at $z=1$ and subsequently moves toward the $z=1/2$ switching surface.
-
-It follows that every regular normal extremal with finitely many switches is an endpoint truncation of
-\begin{equation}
-    [U_+]\;B_+\;C\;B_-\;[U_-\;[B_-]].
-    \label{eq:capped_master_topology}
-\end{equation}
-Equivalently, the six finite regular topologies are
-\begin{equation}
-\begin{gathered}
-    B_+CB_-,
-    \qquad
-    U_+B_+CB_-,\\
-    B_+CB_-U_-,
-    \qquad
-    U_+B_+CB_-U_-,\\
-    B_+CB_-U_-B_-,
-    \qquad
-    U_+B_+CB_-U_-B_-.
-    \label{eq:capped_six_topologies}
-\end{gathered}
-\end{equation}
-The final time may occur in the first braking boundary arc, in the braking interior arc, or in the second braking boundary arc. A zero-length endpoint arc represents only the limiting case in which the endpoint lies on a switching surface; an endpoint may also lie strictly inside a boundary region.
-
-A finite sequence containing repeated, separated coast intervals, such as $B_-CB_-CB_-$, is not a regular finite-switch extremal. When a descending braking branch reaches $z=1/2$, coasting makes $z$ increase, whereas full-power boundary operation makes $z$ decrease. The two classical vector fields therefore point toward the switching surface from opposite sides, and the pointwise selector has no continuation consisting of positive-duration alternating coast and boundary arcs.
-
-\subsection{Relaxed Sliding Extremal and Its Exclusion}
-Convexifying the on--off control set produces a formal sliding extremal on the coast--boundary switching surface
-\begin{equation}
-    z=\frac12,
-    \qquad
-    u=\frac{F}{2m}.
-    \label{eq:capped_sliding_surface}
-\end{equation}
-Let $\delta\in[0,1]$ denote the local fraction of time for which the engine operates at full power with $v_e=V$. The averaged coast/boundary dynamics are
-\begin{equation}
-    \bar a=-\delta\frac{F}{m},
-    \qquad
-    \dot m=-\delta\sigma.
-    \label{eq:capped_relaxed_average}
-\end{equation}
-Requiring $\dot z=0$ on Eq.~\eqref{eq:capped_sliding_surface} gives
-\begin{equation}
-    \delta(m)=\frac{2\omega m^2}{\sigma F},
-    \qquad 0<\delta\le1,
-    \label{eq:capped_duty}
-\end{equation}
-and therefore
-\begin{equation}
-    \bar a=-\frac{2\omega m}{\sigma},
-    \qquad
-    \dot m=-\frac{2\omega m^2}{F}.
-    \label{eq:capped_sliding_dynamics}
-\end{equation}
-Under the strict full-power/on--off model, this control is the weak limit of increasingly rapid alternation between $C$ and $B_-$. If continuous power throttling is admitted, the same averaged equations are obtained by operating at $v_e=V$ with useful power $\delta P$.
-
-The sliding construction satisfies the convexified pointwise PMP condition, but it is not time minimizing in the gravity-free problem. This follows from an exchange argument that applies to every mixture of coasting and maximum-exhaust-speed braking, including the chattering limit.
-
-Consider an interval beginning with state $(x_a,v_a,m_a)$ on which the only controls are coast and $B_-$. Write $\eta(t)\in[0,1]$ for the full-power duty fraction, where $\eta=0$ is coast and $\eta=1$ is full-power boundary braking. Then
-\begin{equation}
-    \dot m=-\eta\sigma,
-    \qquad
-    \dot v=-\eta\frac{F}{m}.
-    \label{eq:capped_exchange_dynamics}
-\end{equation}
-Introduce the accumulated full-power time
-\begin{equation}
-    s(t)=\int_{t_a}^{t}\eta(\tau)\,d\tau.
-\end{equation}
-Equations~\eqref{eq:capped_exchange_dynamics} integrate to
-\begin{equation}
-    m(t)=m_a-\sigma s(t),
-    \qquad
-    v(t)=v_a-V\ln\!\left(\frac{m_a}{m(t)}\right).
-    \label{eq:capped_exchange_state}
-\end{equation}
-Thus the terminal mass and velocity depend only on the total full-power time $s(t_b)$, not on the placement of the coast intervals.
-
-The effect on distance is ordered. Consider two adjacent intervals consisting of a boundary burn followed by a coast. Interchanging their order leaves the burn trajectory, elapsed time, terminal mass, and terminal velocity unchanged, because the preceding coast changes neither mass nor velocity. If the burn reduces the velocity by $\Delta v>0$ and the coast duration is $\tau_c>0$, the coast-then-burn ordering travels farther by
-\begin{equation}
-    \Delta x=\Delta v\,\tau_c>0.
-    \label{eq:capped_exchange_gain}
-\end{equation}
-Repeatedly applying this interchange moves every coast interval ahead of every boundary-burn interval. Consequently, among all coast/$B_-$ schedules having the same total duration and the same total full-power time, the ordering
-\begin{equation}
-    C\;B_-
-    \label{eq:capped_sorted_CB}
-\end{equation}
-travels the greatest distance. The result extends to a fractional control $0<\eta<1$ by approximation with on--off pulses, and hence applies to the sliding extremal.
-
-The distance improvement can be converted into a strict time improvement. Let $b$ and $c$ be the total full-power and coast durations of a nontrivial mixed interval, and let $D_B(b)$ be the distance traveled by the uninterrupted boundary burn of duration $b$ beginning from $(v_a,m_a)$. Inserting coast intervals into this burn does not change the powered state history; it only adds distance at the velocity at which each coast is inserted. Therefore the original mixed interval has distance
-\begin{equation}
-    D_{\rm mix}=D_B(b)+\int_{\rm coast}v\,dt,
-\end{equation}
-whereas the sorted coast-then-burn interval has distance
-\begin{equation}
-    D_{CB}=D_B(b)+v_a c.
-\end{equation}
-On a feasible terminal braking interval, $0\le v(t)\le v_a$. Since velocity decreases during braking,
-\begin{equation}
-    D_B(b)\le D_{\rm mix}<D_{CB}
-    \label{eq:capped_distance_order}
-\end{equation}
-whenever a positive amount of coast occurs after braking has begun. Define
-\begin{equation}
-    c'\equiv\frac{D_{\rm mix}-D_B(b)}{v_a}.
-\end{equation}
-Then $0\le c'<c$, and a coast of duration $c'$ followed by the same uninterrupted boundary burn reaches exactly the same final position, velocity, and mass in the strictly shorter time $b+c'$. Coast at zero velocity is even more directly removable. Hence no mixed coast/$B_-$ interval, no chattering limit, and no continuously throttled realization of Eq.~\eqref{eq:capped_sliding_dynamics} can be part of a true time-minimizing trajectory.
-
-The first-order sliding extremal must therefore be treated as a nonoptimal artifact of convexification, not as an additional admissible optimal topology. A genuine gravity-free optimum may terminate on a braking boundary arc, but it must do so before a descending $B_-$ branch reaches $z=1/2$. All braking after the central coast is contained in one connected powered sequence,
-\begin{equation}
-    B_-\;[U_-\;[B_-]],
-    \label{eq:capped_connected_braking}
-\end{equation}
-with endpoint truncation allowed on any displayed arc. Together with Eq.~\eqref{eq:capped_positive_order}, this leaves precisely the six regular topologies listed in Eq.~\eqref{eq:capped_six_topologies}. These are necessary normal-PMP candidates; the PMP alone does not establish sufficiency among them.
-
-\subsection{Switching Conditions on the Braking Side}
-Let $M$ be the constant mass on the central coast and define
-\begin{equation}
-    p_2\equiv\frac{F}{2M},
-    \qquad
-    \chi\equiv\frac{\sigma F}{\omega M^2}.
-    \label{eq:capped_chi}
-\end{equation}
-The coast ends at $(u,m)=(p_2,M)$. If a full-power braking boundary arc is followed, then
-\begin{equation}
-    u(m)=p_2+\frac{\omega}{\sigma}(M-m),
-\end{equation}
-and, with $y=m/M$,
-\begin{equation}
-    z_B(y)=\frac{y}{2}+\frac{y(1-y)}{\chi}.
-    \label{eq:capped_zB_y}
-\end{equation}
-At the coast exit,
-\begin{equation}
-    \dot z_B
-    =\frac{\omega M}{F}\left(1-\frac{\chi}{2}\right).
-\end{equation}
-Thus a positive-length regular $C\to B_-$ switch exists only for $\chi<2$. For $\chi\ge2$, the boundary control immediately enters the coast-maximizing side of the switching surface. Such a trial extremal has no regular braking continuation and, by the exchange argument of the preceding subsection, cannot be completed optimally by a relaxed coast/boundary mixture; it must be rejected.
-
-A positive-length $U_-$ arc occurs only if $z_B$ rises above unity. Solving $z_B=1$ gives
-\begin{equation}
-    \frac{m_4}{M}
-    =\frac{2+\chi+\sqrt{\chi^2-12\chi+4}}{4},
-    \label{eq:capped_m4}
-\end{equation}
-where the larger root is the first crossing encountered as the mass decreases. The boundary arc reaches $z=1$ only when
-\begin{equation}
-    \chi\le\chi_c,
-    \qquad
-    \chi_c\equiv6-4\sqrt2.
-    \label{eq:capped_chic}
-\end{equation}
-At $\chi=\chi_c$, the boundary arc is tangent to $z=1$ and the $U_-$ arc has zero duration. For $\chi_c<\chi<2$, no interior braking arc occurs; if the transfer continues far enough, the first $B_-$ arc returns to $z=1/2$ at
-\begin{equation}
-    m_s=\frac{\chi}{2}M,
-    \label{eq:capped_ms_noU}
-\end{equation}
-where the descending boundary branch again reaches the coast--boundary switching surface. A true minimum-time candidate must reach its terminal state no later than this point; a trial requiring $m_\mathrm{dry}<m_s$ is rejected.
-
-When $\chi<\chi_c$ and the trajectory enters $U_-$ at $(u_4,m_4)=(F/m_4,m_4)$, the interior arc eventually returns to $z=1$ if it is continued sufficiently far. Define
-\begin{equation}
-    \beta\equiv\frac{F^3}{6P\omega m_4^2}
-          =\frac{\sigma F}{3\omega m_4^2}.
-\end{equation}
-The nontrivial return mass $m_5<m_4$ follows from Eqs.~\eqref{eq:capped_Uminus_mass} and $u=F/m$:
-\begin{equation}
-    \frac{m_5}{m_4}
-    =\frac{\beta+\sqrt{4\beta-3\beta^2}}
-           {2(1-\beta)}.
-    \label{eq:capped_m5}
-\end{equation}
-The first $B_-\to U_-$ crossing lies on the increasing branch of $z$, which implies $0<\beta<1/3$ and makes \eqref{eq:capped_m5} well defined. If $m_\mathrm{dry}\ge m_4$, the transfer terminates on the first $B_-$ arc before or at entry to $U_-$. If $m_5\le m_\mathrm{dry}<m_4$, it terminates on $U_-$ before or at the return switch. Only when $m_\mathrm{dry}<m_5$ does the trajectory re-enter $B_-$.
-
-For the second boundary arc, set
-\begin{equation}
-    \kappa\equiv\frac{\sigma F}{\omega m_5^2}>1.
-\end{equation}
-The mass at which this arc reaches $z=1/2$ is
-\begin{equation}
-    \frac{m_6}{m_5}
-    =\frac{\kappa+1-\sqrt{\kappa^2+1}}{2}.
-    \label{eq:capped_m6}
-\end{equation}
-A transfer with $m_\mathrm{dry}\ge m_6$ can terminate on this second $B_-$ arc. A trial requiring $m_\mathrm{dry}<m_6$ would reach the coast--boundary switching surface before the dry-mass endpoint and is therefore rejected rather than continued by a relaxed arc.
-
-\subsection{Exact Reduction to Two Endpoint Equations}
-The affine primer permits a compact formulation that covers every regular topology. Let the terminal primer be $p(t_f)=-u_f$, with $u_f>0$. Since $dp/dt=-\omega$,
-\begin{equation}
-    t_f=\frac{p_0+u_f}{\omega}.
-    \label{eq:capped_tf_general}
-\end{equation}
-The zero-final-velocity condition is
-\begin{equation}
-    0=\int_0^{t_f}a\,dt
-     =\frac{1}{\omega}
-      \int_{-u_f}^{p_0}a^*(p,m(p))\,dp.
-    \label{eq:capped_velocity_quadrature}
-\end{equation}
-Furthermore,
-\begin{align}
-    L
-    &=\int_0^{t_f}v(t)\,dt
-      =\int_0^{t_f}(t_f-t)a(t)\,dt\nonumber\\
-    &=\frac{1}{\omega^2}
-      \int_{-u_f}^{p_0}(p+u_f)a^*(p,m(p))\,dp.
-\end{align}
-The free-final-time condition $\mathcal H=0$ fixes the remaining positive costate scale $C/P$ after the primer trajectory has been determined; it does not introduce an additional state-shape equation.
-
-The term proportional to $u_f$ vanishes by \eqref{eq:capped_velocity_quadrature}, yielding
-\begin{equation}
-    L=\frac{1}{\omega^2}
-      \int_{-u_f}^{p_0}p\,a^*(p,m(p))\,dp.
-    \label{eq:capped_distance_quadrature}
-\end{equation}
-For prescribed $(P,V,L,m_i,m_\mathrm{dry})$, one may choose the coast mass $M$ and primer slope $\omega$ as the two unknowns. The positive-side switching law determines $p_0$; forward propagation of the regular braking-side switching law to $m=m_\mathrm{dry}$ determines $u_f$. Equations~\eqref{eq:capped_velocity_quadrature} and \eqref{eq:capped_distance_quadrature} then provide two scalar residual equations for $(M,\omega)$. All arc integrations are elementary by Eqs.~\eqref{eq:capped_U_mass}--\eqref{eq:capped_B_state}. A trial pair $(M,\omega)$ is rejected if the braking trajectory reaches the descending coast--boundary surface $z=1/2$ before it reaches $m=m_\mathrm{dry}$, because continuation by the relaxed sliding extremal is not time minimizing.
-
-The accelerating branch is obtained directly from $M$ and $\omega$. If the boundary arc extends to the initial mass, then
-\begin{equation}
-    p_0=p_2+\frac{\omega}{\sigma}(m_i-M),
-    \qquad
-    \frac{p_0m_i}{F}\le1,
-    \label{eq:capped_Bplus_only}
-\end{equation}
-and the initial topology is $B_+$. Otherwise an interior arc precedes $B_+$. Let $m_1$ denote the $U_+\to B_+$ switching mass. Then
-\begin{equation}
-    m_1-M
-    =\frac{\sigma F}{\omega}
-      \left(\frac{1}{m_1}-\frac{1}{2M}\right),
-    \label{eq:capped_m1_relation}
-\end{equation}
-so, with $r_1=m_1/M$,
-\begin{equation}
-    r_1
-    =\frac{2-\chi+\sqrt{\chi^2+12\chi+4}}{4}.
-    \label{eq:capped_r1}
-\end{equation}
-The initial primer is then
-\begin{equation}
-    p_0
-    =\left[
-       \left(\frac{F}{m_1}\right)^3
-       +6P\omega\left(\frac{1}{m_1}-\frac{1}{m_i}\right)
-      \right]^{1/3}.
-    \label{eq:capped_p0}
-\end{equation}
-The condition $m_1<m_i$ is equivalent to a positive-length $U_+$ arc.
-
-\subsection{Regular Five-Arc Candidate}
-The most direct analogue of the uncapped solution is the regular five-arc topology
-\begin{equation}
-    U_+\;B_+\;C\;B_-\;U_-.
-    \label{eq:capped_five_arc}
-\end{equation}
-It applies when
-\begin{equation}
-\begin{gathered}
-    m_i>m_1>M>m_4>m_\mathrm{dry},
-    \qquad \chi<\chi_c,\\
-    \frac{u_fm_\mathrm{dry}}{F}\ge1.
-\end{gathered}
-    \label{eq:capped_five_arc_conditions}
-\end{equation}
-where the last inequality states that the dry-mass endpoint is reached before the braking interior arc returns to $B_-$. Define
-\begin{equation}
-    p_1\equiv\frac{F}{m_1},
-    \qquad
-    p_2\equiv\frac{F}{2M},
-    \qquad
-    u_4\equiv\frac{F}{m_4}.
-\end{equation}
-The boundary matching conditions are
-\begin{subequations}
-\begin{align}
-    m_1-M
-    &=\frac{\sigma F}{\omega}
-      \left(\frac{1}{m_1}-\frac{1}{2M}\right),\\
-    M-m_4
-    &=\frac{\sigma F}{\omega}
-      \left(\frac{1}{m_4}-\frac{1}{2M}\right).
-    \label{eq:capped_boundary_matching}
-\end{align}
-\end{subequations}
-Their physical roots are
-\begin{subequations}
-\begin{align}
-    \frac{m_1}{M}
-    &=\frac{2-\chi+\sqrt{\chi^2+12\chi+4}}{4},\\
-    \frac{m_4}{M}
-    &=\frac{2+\chi+\sqrt{\chi^2-12\chi+4}}{4}.
-    \label{eq:capped_regular_roots}
-\end{align}
-\end{subequations}
-The interior-arc mass integrals give
-\begin{subequations}
-\begin{align}
-    p_0
-    &=\left[
-       p_1^3+6P\omega
-       \left(\frac{1}{m_1}-\frac{1}{m_i}\right)
-      \right]^{1/3},\\
-    u_f
-    &=\left[
-       u_4^3+6P\omega
-       \left(\frac{1}{m_\mathrm{dry}}-\frac{1}{m_4}\right)
-      \right]^{1/3}.
-    \label{eq:capped_endpoint_primers}
-\end{align}
-\end{subequations}
-
-The zero-final-velocity condition is the sum of the velocity changes on the four powered arcs,
-\begin{equation}
-    \frac{p_0^2-p_1^2}{2\omega}
-    +V\ln\!\left(\frac{m_1}{M}\right)
-    -V\ln\!\left(\frac{M}{m_4}\right)
-    -\frac{u_f^2-u_4^2}{2\omega}
-    =0.
-    \label{eq:capped_regular_velocity}
-\end{equation}
-For the distance equation, define
-\begin{subequations}
-\begin{align}
-    \mathcal I_{U+}
-    &=\frac{p_0^3-p_1^3}{3},\\
-    \mathcal I_{U-}
-    &=\frac{u_f^3-u_4^3}{3},\\
-    \mathcal I_{B+}
-    &=\frac{F\omega}{\sigma}
-      \left[
-       p_2\ln\!\left(\frac{m_1}{M}\right)
-       \right.\nonumber\\
-    &\hspace{2.5em}\left.
-       +\frac{\omega}{\sigma}
-        \left(
-          m_1-M-M\ln\!\left(\frac{m_1}{M}\right)
-        \right)
-      \right],\\
-    \mathcal I_{B-}
-    &=\frac{F\omega}{\sigma}
-      \left[
-       p_2\ln\!\left(\frac{M}{m_4}\right)
-       \right.\nonumber\\
-    &\hspace{2.5em}\left.
-       +\frac{\omega}{\sigma}
-        \left(
-          M\ln\!\left(\frac{M}{m_4}\right)-(M-m_4)
-        \right)
-      \right].
-    \label{eq:capped_regular_I}
-\end{align}
-\end{subequations}
-Equation~\eqref{eq:capped_distance_quadrature} becomes
-\begin{equation}
-    L
-    =\frac{1}{\omega^2}
-      \left(
-        \mathcal I_{U+}
-        +\mathcal I_{B+}
-        +\mathcal I_{B-}
-        +\mathcal I_{U-}
-      \right).
-    \label{eq:capped_regular_distance}
-\end{equation}
-Equations~\eqref{eq:capped_regular_velocity} and \eqref{eq:capped_regular_distance} are two nonlinear algebraic equations for $(M,\omega)$. Once they are solved, all masses, primer values, switching times, and states follow algebraically. In particular,
-\begin{subequations}
-\begin{align}
-    t_1&=\frac{p_0-p_1}{\omega},\\
-    t_2&=\frac{p_0-p_2}{\omega},\\
-    t_3&=\frac{p_0+p_2}{\omega},\\
-    t_4&=\frac{p_0+u_4}{\omega},\\
-    t_f&=\frac{p_0+u_f}{\omega}.
-    \label{eq:capped_regular_times}
-\end{align}
-\end{subequations}
-The acceleration profile is
-\begin{equation}
-    a(t)=
-    \begin{cases}
-       p_0-\omega t, & 0\le t<t_1,\\
-       F/m(t),       & t_1\le t<t_2,\\
-       0,            & t_2\le t<t_3,\\
-       -F/m(t),      & t_3\le t<t_4,\\
-       p_0-\omega t, & t_4\le t\le t_f.
-    \end{cases}
-    \label{eq:capped_regular_acceleration}
-\end{equation}
-Unlike the scaled boost--coast--brake approximation, this profile is generally not symmetric in time. The central coast is symmetric in primer space, extending from $p=p_2$ to $p=-p_2$, but the mass loss makes the accelerating and braking powered arcs unequal.
-
-\subsection{Limiting Behavior and Scope}
-As $V\to\infty$, both $F$ and $\sigma$ tend to zero. The boundary arcs and the coast shrink to zero duration, the coast mass approaches
-\begin{equation}
-    M\longrightarrow
-    \frac{2m_i m_\mathrm{dry}}{m_i+m_\mathrm{dry}},
-\end{equation}
-and the affine uncapped solution of Sec.~\ref{sec:free_space_solution} is recovered. For finite $V$, a nonzero central coast is unavoidable under the fixed-power/on--off model. For sufficiently restrictive ceilings, the correct regular structure is not a pair of uniformly scaled symmetric burns separated by a coast. The accelerating and braking branches are generally unequal, and the terminal state may lie on either a braking interior arc or a maximum-exhaust-speed boundary arc. A formal coast/boundary sliding continuation can appear in the convexified first-order equations, but the exchange argument above excludes it from the true gravity-free minimum-time solution.
-
-The derivation above characterizes normal PMP candidates and eliminates the relaxed sliding candidate by a finite improvement argument. Because the admissible control set \eqref{eq:capped_control_set} is nonconvex, pointwise maximization still supplies only necessary conditions and does not by itself prove global optimality among the remaining regular topologies. It does, however, determine their ordering and reduce each candidate to closed-form arc propagation and a small system of endpoint equations.
-
-The heliocentric model of Sec.~\ref{sec:SunModel} retains the uncapped variable-$I_{\!sp}$ control law unless a ceiling is imposed explicitly. With a finite ceiling, the pointwise switching logic still applies to the magnitude of the vector primer: an interior thrust arc is followed by a maximum-exhaust-speed boundary arc when the unconstrained thrust magnitude becomes infeasible, and by a coast when the boundary-arc Hamiltonian gain becomes nonpositive. The coast/boundary exchange proof used here relies on gravity-free, position-independent dynamics and therefore does not automatically extend to the heliocentric problem.
+For $P=1/2$, $V=2$, $m_0=1$, $m_d=1/2$, $L=1$, independent numerical
+integration of the selector gives
+$t_z=1.22365494$, $\lambda_m(0)=0.61524660$, $T=2.35199587$;
+the maximum endpoint residual is $9.6\,10^{-8}$. The coast is approximately
+$[0.80144,1.64581]$. Direct transcription with piecewise-constant
+acceleration, exact $(x,v,1/m)$ propagation and the ceiling imposed at
+each burn cell's final mass gives:
+\begin{center}\begin{tabular}{rrr}\toprule
+Burn cells&Time&Endpoint error\\\midrule
+12&2.35489579&$2.6\,10^{-12}$\\
+24&2.35338380&$1.4\,10^{-12}$\\
+48&2.35267314&$1.3\,10^{-12}$\\\bottomrule
+\end{tabular}\end{center}
+The within-cell ceiling holds because inverse mass increases monotonically
+and the acceleration is constant. Ceiling violations at optimizer tolerance
+are below $9\,10^{-13}$. The transcription independently checks the
+trajectory equations and approaches the shooting time from above.
 
 
 \section{Power-System Mass Closure for the Free-Space Benchmark}
@@ -1582,11 +1281,12 @@ An attempt was made to mitigate this by using a continuation strategy on the num
 
 \bibliographystyle{ieeetr}
 
-\bibliography{references}
+\bibliography{KeplerVariableISPReferences}
 
 %\begin{table*}[!htbp]
+\footnotesize\renewcommand{\arraystretch}{0.9}
 %\centering
-%\caption{Transfer time, in days, of the converged PMP-extremal candidate to a circular orbit of a given %radius and final polar angle.}
+%\caption{Transfer time in days found by the solver (U: unresolved) to a circular orbit of a given %radius and final polar angle.}
 %\label{tab:transfer_times}
 %\sisetup{table-format=3.2}
 %\begin{tabular}{r S S S S S S S S}
@@ -1595,52 +1295,52 @@ An attempt was made to mitigate this by using a continuation strategy on the num
 %\cmidrule(lr){2-9}
 %\textbf{(\si{\degree})} & {0.3} & {0.75} & {1.643} & {3} & {5} & {10} & %{15} & {20} \\
 %\midrule
-%-100 & {N/A} & {N/A} & 172.79 & 214.70 & 278.24 & 411.05 & 521.03 & 617.79 \\
-%-95  & {N/A} & {N/A} & 172.53 & 214.38 & 278.09 & 411.36 & 521.71 & 618.81 \\
-%-90  & {N/A} & {N/A} & 172.04 & 213.82 & 277.69 & 411.37 & 522.08 & 619.49 \\
-%-85  & {N/A} & {N/A} & 171.31 & 213.01 & 277.01 & 411.07 & 522.09 & 619.81 \\
-%-80  & {N/A} & {N/A} & 170.30 & 211.89 & 276.00 & 410.38 & 521.69 & 619.66 \\
-%-75  & {N/A} & {N/A} & 169.02 & 210.48 & 274.68 & 409.32 & 520.91 & 619.10 \\
-%-70  & {N/A} & {N/A} & 167.45 & 208.77 & 273.04 & 407.90 & 519.68 & 618.09 \\
-%-65  & {N/A} & {N/A} & 165.56 & 206.75 & 271.06 & 406.11 & 518.00 & 616.62 \\
-%-60  & {N/A} & {N/A} & 163.31 & 204.37 & 268.70 & 403.85 & 515.90 & 614.62 \\
-%-55  & {N/A} & {N/A} & 160.72 & 201.64 & 265.98 & 401.20 & 513.34 & 612.07 \\
-%-50  & {N/A} & {N/A} & 157.75 & 198.53 & 262.91 & 398.15 & 510.26 & 609.06 \\
-%-45  & {N/A} & {N/A} & 154.36 & 195.05 & 259.48 & 394.69 & 506.73 & 605.55 \\
-%-40  & {N/A} & {N/A} & 150.51 & 191.19 & 255.65 & 390.78 & 502.75 & 601.49 \\
-%-35  & {N/A} & {N/A} & 146.19 & 186.97 & 251.46 & 386.49 & 498.35 & 596.95 \\
-%-30  & {N/A} & {N/A} & 141.39 & 182.31 & 246.95 & 381.83 & 493.47 & 591.90 \\
-%-25  & {N/A} & {N/A} & 136.01 & 177.29 & 242.13 & 376.83 & 488.23 & 586.47 \\
-%-20  & {N/A} & {N/A} & 129.99 & 171.93 & 236.97 & 371.49 & 482.60 & 580.58 \\
-%-15  & {N/A} & {N/A} & 123.33 & 166.21 & 231.57 & 365.86 & 476.66 & 574.36 \\
-%-10  & {N/A} & {N/A} & 115.97 & 160.22 & 225.98 & 360.03 & 470.45 & 567.80 \\
-%-5   & {N/A} & {N/A} & 107.80 & 154.01 & 220.23 & 354.01 & 464.02 & 560.98 \\
-%0    & {N/A} & {N/A} & 98.73  & 147.65 & 214.39 & 347.87 & 457.41 & 553.97 \\
-%5    & {N/A} & {N/A} & 88.85  & 141.28 & 208.56 & 341.66 & 450.70 & 546.83 \\
-%10   & {N/A} & {N/A} & 78.39  & 135.03 & 202.80 & 335.46 & 443.96 & 539.61 \\
-%15   & {N/A} & {N/A} & 68.14  & 129.05 & 197.20 & 329.34 & 437.24 & 532.38 \\
-%20   & {N/A} & {N/A} & 59.71  & 123.57 & 191.88 & 323.36 & 430.63 & 525.22 \\
-%25   & {N/A} & {N/A} & 54.06  & 118.69 & 186.91 & 317.60 & 424.16 & 518.19 \\
-%30   & {N/A} & 27.24 & 51.06  & 114.50 & 182.34 & 312.10 & 417.94 & 511.36 \\
-%35   & {N/A} & 26.78 & 50.12  & 111.06 & 178.22 & 306.91 & 412.01 & 504.81 \\
-%40   & {N/A} & 27.70 & 50.34  & 108.50 & 174.68 & 302.14 & 406.39 & 498.55 \\
-%45   & {N/A} & 29.08 & 51.39  & 106.67 & 171.68 & 297.78 & 401.14 & 492.63 \\
-%50   & {N/A} & 30.74 & 52.90  & 105.51 & 169.21 & 293.85 & 396.35 & 487.18 \\
-%55   & {N/A} & 32.52 & 54.76  & 104.96 & 167.26 & 290.38 & 392.01 & 482.16 \\
-%60   & {N/A} & 34.39 & 56.87  & 104.98 & 165.89 & 287.44 & 388.13 & 477.60 \\
-%65   & {N/A} & 36.30 & 59.12  & 105.46 & 165.00 & 284.97 & 384.75 & 473.51 \\
-%70   & {N/A} & 38.25 & 61.48  & 106.30 & 164.55 & 282.97 & 381.85 & 469.98 \\
-%75   & {N/A} & 40.20 & 63.90  & 107.45 & 164.50 & 281.41 & 379.42 & 466.92 \\
-%80   & {N/A} & 42.15 & 66.38  & 108.91 & 164.86 & 280.36 & 377.53 & 464.42 \\
-%85   & {N/A} & 44.09 & 68.87  & 110.55 & 165.54 & 279.72 & 376.11 & 462.41 \\
-%90   & {N/A} & 46.02 & 71.37  & 112.40 & 166.54 & 279.47 & 375.11 & 460.87 \\
-%95   & {N/A} & 47.92 & 73.86  & 114.37 & 167.78 & 279.58 & 374.54 & 459.79 \\
-%100  & {N/A} & 49.80 & 76.32  & 116.45 & 169.24 & 280.07 & 374.41 & 459.18 \\
-%105  & {N/A} & 51.65 & 78.76  & 118.62 & 170.87 & 280.86 & 374.65 & 458.98 \\
-%110  & {N/A} & 53.46 & 81.15  & 120.84 & 172.69 & 281.91 & 375.21 & 459.21 \\
-%115  & {N/A} & 55.23 & 83.49  & 123.09 & 174.61 & 283.20 & 376.08 & 459.77 \\
-%120  & {N/A} & 56.96 & 85.77  & 125.35 & 176.62 & 284.72 & 377.25 & 460.65 \\
-%125  & {N/A} & 58.64 & 88.00  & 127.60 & 178.70 & 286.41 & 378.65 & 461.81 \\
+%-100 & {U} & {U} & 172.79 & 214.70 & 278.24 & 411.05 & 521.03 & 617.79 \\
+%-95  & {U} & {U} & 172.53 & 214.38 & 278.09 & 411.36 & 521.71 & 618.81 \\
+%-90  & {U} & {U} & 172.04 & 213.82 & 277.69 & 411.37 & 522.08 & 619.49 \\
+%-85  & {U} & {U} & 171.31 & 213.01 & 277.01 & 411.07 & 522.09 & 619.81 \\
+%-80  & {U} & {U} & 170.30 & 211.89 & 276.00 & 410.38 & 521.69 & 619.66 \\
+%-75  & {U} & {U} & 169.02 & 210.48 & 274.68 & 409.32 & 520.91 & 619.10 \\
+%-70  & {U} & {U} & 167.45 & 208.77 & 273.04 & 407.90 & 519.68 & 618.09 \\
+%-65  & {U} & {U} & 165.56 & 206.75 & 271.06 & 406.11 & 518.00 & 616.62 \\
+%-60  & {U} & {U} & 163.31 & 204.37 & 268.70 & 403.85 & 515.90 & 614.62 \\
+%-55  & {U} & {U} & 160.72 & 201.64 & 265.98 & 401.20 & 513.34 & 612.07 \\
+%-50  & {U} & {U} & 157.75 & 198.53 & 262.91 & 398.15 & 510.26 & 609.06 \\
+%-45  & {U} & {U} & 154.36 & 195.05 & 259.48 & 394.69 & 506.73 & 605.55 \\
+%-40  & {U} & {U} & 150.51 & 191.19 & 255.65 & 390.78 & 502.75 & 601.49 \\
+%-35  & {U} & {U} & 146.19 & 186.97 & 251.46 & 386.49 & 498.35 & 596.95 \\
+%-30  & {U} & {U} & 141.39 & 182.31 & 246.95 & 381.83 & 493.47 & 591.90 \\
+%-25  & {U} & {U} & 136.01 & 177.29 & 242.13 & 376.83 & 488.23 & 586.47 \\
+%-20  & {U} & {U} & 129.99 & 171.93 & 236.97 & 371.49 & 482.60 & 580.58 \\
+%-15  & {U} & {U} & 123.33 & 166.21 & 231.57 & 365.86 & 476.66 & 574.36 \\
+%-10  & {U} & {U} & 115.97 & 160.22 & 225.98 & 360.03 & 470.45 & 567.80 \\
+%-5   & {U} & {U} & 107.80 & 154.01 & 220.23 & 354.01 & 464.02 & 560.98 \\
+%0    & {U} & {U} & 98.73  & 147.65 & 214.39 & 347.87 & 457.41 & 553.97 \\
+%5    & {U} & {U} & 88.85  & 141.28 & 208.56 & 341.66 & 450.70 & 546.83 \\
+%10   & {U} & {U} & 78.39  & 135.03 & 202.80 & 335.46 & 443.96 & 539.61 \\
+%15   & {U} & {U} & 68.14  & 129.05 & 197.20 & 329.34 & 437.24 & 532.38 \\
+%20   & {U} & {U} & 59.71  & 123.57 & 191.88 & 323.36 & 430.63 & 525.22 \\
+%25   & {U} & {U} & 54.06  & 118.69 & 186.91 & 317.60 & 424.16 & 518.19 \\
+%30   & {U} & 27.24 & 51.06  & 114.50 & 182.34 & 312.10 & 417.94 & 511.36 \\
+%35   & {U} & 26.78 & 50.12  & 111.06 & 178.22 & 306.91 & 412.01 & 504.81 \\
+%40   & {U} & 27.70 & 50.34  & 108.50 & 174.68 & 302.14 & 406.39 & 498.55 \\
+%45   & {U} & 29.08 & 51.39  & 106.67 & 171.68 & 297.78 & 401.14 & 492.63 \\
+%50   & {U} & 30.74 & 52.90  & 105.51 & 169.21 & 293.85 & 396.35 & 487.18 \\
+%55   & {U} & 32.52 & 54.76  & 104.96 & 167.26 & 290.38 & 392.01 & 482.16 \\
+%60   & {U} & 34.39 & 56.87  & 104.98 & 165.89 & 287.44 & 388.13 & 477.60 \\
+%65   & {U} & 36.30 & 59.12  & 105.46 & 165.00 & 284.97 & 384.75 & 473.51 \\
+%70   & {U} & 38.25 & 61.48  & 106.30 & 164.55 & 282.97 & 381.85 & 469.98 \\
+%75   & {U} & 40.20 & 63.90  & 107.45 & 164.50 & 281.41 & 379.42 & 466.92 \\
+%80   & {U} & 42.15 & 66.38  & 108.91 & 164.86 & 280.36 & 377.53 & 464.42 \\
+%85   & {U} & 44.09 & 68.87  & 110.55 & 165.54 & 279.72 & 376.11 & 462.41 \\
+%90   & {U} & 46.02 & 71.37  & 112.40 & 166.54 & 279.47 & 375.11 & 460.87 \\
+%95   & {U} & 47.92 & 73.86  & 114.37 & 167.78 & 279.58 & 374.54 & 459.79 \\
+%100  & {U} & 49.80 & 76.32  & 116.45 & 169.24 & 280.07 & 374.41 & 459.18 \\
+%105  & {U} & 51.65 & 78.76  & 118.62 & 170.87 & 280.86 & 374.65 & 458.98 \\
+%110  & {U} & 53.46 & 81.15  & 120.84 & 172.69 & 281.91 & 375.21 & 459.21 \\
+%115  & {U} & 55.23 & 83.49  & 123.09 & 174.61 & 283.20 & 376.08 & 459.77 \\
+%120  & {U} & 56.96 & 85.77  & 125.35 & 176.62 & 284.72 & 377.25 & 460.65 \\
+%125  & {U} & 58.64 & 88.00  & 127.60 & 178.70 & 286.41 & 378.65 & 461.81 \\
 %130  & 48.33 & 60.28 & 90.14  & 129.82 & 180.82 & 288.22 & 380.23 & 463.22 \\
 %135  & 48.34 & 61.86 & 92.20  & 132.00 & 182.95 & 290.14 & 381.98 & 464.84 \\
 %140  & 48.55 & 63.38 & 94.18  & 134.12 & 185.06 & 292.14 & 383.87 & 466.63 \\
@@ -1677,10 +1377,11 @@ An attempt was made to mitigate this by using a continuation strategy on the num
 
 
 \begin{table*}[tbp]
+\footnotesize\renewcommand{\arraystretch}{0.9}
 \centering
 \footnotesize
-\renewcommand{\arraystretch}{0.95}
-\caption{Transfer time, in days, of the converged PMP-extremal candidate from a circular orbit of 1 AU and final polar angle (at rocket arrival).}
+\renewcommand{\arraystretch}{0.9}
+\caption{Transfer time in days found by the solver (U: unresolved) from a circular orbit of 1 AU and final polar angle (at rocket arrival).}
 \label{tab:transfer_times_final_anomaly}
 \sisetup{table-format=3.2} % Requires siunitx LaTeX package
 \begin{tabular}{{r S S S S S S S }}
@@ -1689,24 +1390,24 @@ An attempt was made to mitigate this by using a continuation strategy on the num
 \cmidrule(lr){2-8}
 \textbf{(\si{\degree})} & {0.390} & {0.720} & {1.520} & {5.200} & {9.580} & {19.220} & {30.050} \\
 \midrule
-0 & {N/A} & {N/A} & {N/A} & 220.50 & 337.82 & 539.55 & 724.65 \\
-5 & {N/A} & {N/A} & 84.99 & 214.66 & 331.66 & 532.47 & 716.76 \\
-10 & {N/A} & {N/A} & 73.01 & 208.91 & 325.52 & 525.31 & 708.75 \\
-15 & {N/A} & {N/A} & 60.88 & 203.32 & 319.44 & 518.17 & 700.69 \\
-20 & {N/A} & {N/A} & 51.35 & 197.98 & 313.53 & 511.09 & 692.64 \\
-25 & {N/A} & {N/A} & 45.94 & 192.95 & 307.83 & 504.13 & 684.71 \\
-30 & {N/A} & 32.66 & 43.80 & 188.35 & 302.40 & 497.40 & 676.93 \\
-35 & {N/A} & 29.03 & 43.63 & 184.23 & 297.29 & 490.93 & 669.37 \\
-40 & {N/A} & 28.92 & 44.61 & 180.59 & 292.59 & 484.76 & 662.08 \\
-45 & {N/A} & 29.86 & 46.15 & 177.47 & 288.32 & 478.95 & 655.19 \\
-50 & {N/A} & 31.19 & 48.07 & 174.94 & 284.48 & 473.58 & 648.68 \\
-55 & {N/A} & 32.74 & 50.23 & 172.94 & 281.10 & 468.66 & 642.60 \\
-60 & {N/A} & 34.42 & 52.55 & 171.44 & 278.25 & 464.20 & 637.00 \\
-65 & {N/A} & 36.18 & 54.96 & 170.42 & 275.88 & 460.21 & 631.92 \\
-70 & {N/A} & 38.00 & 57.46 & 169.90 & 273.97 & 456.76 & 627.37 \\
-75 & {N/A} & 39.84 & 59.98 & 169.80 & 272.50 & 453.79 & 623.38 \\
-80 & {N/A} & 41.69 & 62.51 & 170.05 & 271.54 & 451.39 & 619.93 \\
-85 & {N/A} & 43.55 & 65.05 & 170.65 & 270.98 & 449.42 & 617.06 \\
+0 & {U} & {U} & {U} & 220.50 & 337.82 & 539.55 & 724.65 \\
+5 & {U} & {U} & 84.99 & 214.66 & 331.66 & 532.47 & 716.76 \\
+10 & {U} & {U} & 73.01 & 208.91 & 325.52 & 525.31 & 708.75 \\
+15 & {U} & {U} & 60.88 & 203.32 & 319.44 & 518.17 & 700.69 \\
+20 & {U} & {U} & 51.35 & 197.98 & 313.53 & 511.09 & 692.64 \\
+25 & {U} & {U} & 45.94 & 192.95 & 307.83 & 504.13 & 684.71 \\
+30 & {U} & 32.66 & 43.80 & 188.35 & 302.40 & 497.40 & 676.93 \\
+35 & {U} & 29.03 & 43.63 & 184.23 & 297.29 & 490.93 & 669.37 \\
+40 & {U} & 28.92 & 44.61 & 180.59 & 292.59 & 484.76 & 662.08 \\
+45 & {U} & 29.86 & 46.15 & 177.47 & 288.32 & 478.95 & 655.19 \\
+50 & {U} & 31.19 & 48.07 & 174.94 & 284.48 & 473.58 & 648.68 \\
+55 & {U} & 32.74 & 50.23 & 172.94 & 281.10 & 468.66 & 642.60 \\
+60 & {U} & 34.42 & 52.55 & 171.44 & 278.25 & 464.20 & 637.00 \\
+65 & {U} & 36.18 & 54.96 & 170.42 & 275.88 & 460.21 & 631.92 \\
+70 & {U} & 38.00 & 57.46 & 169.90 & 273.97 & 456.76 & 627.37 \\
+75 & {U} & 39.84 & 59.98 & 169.80 & 272.50 & 453.79 & 623.38 \\
+80 & {U} & 41.69 & 62.51 & 170.05 & 271.54 & 451.39 & 619.93 \\
+85 & {U} & 43.55 & 65.05 & 170.65 & 270.98 & 449.42 & 617.06 \\
 90 & 46.97 & 45.39 & 67.58 & 171.57 & 270.81 & 447.98 & 614.72 \\
 95 & 45.78 & 47.22 & 70.07 & 172.77 & 270.99 & 447.01 & 612.89 \\
 100 & 45.47 & 49.04 & 72.55 & 174.17 & 271.54 & 446.46 & 611.58 \\
@@ -1768,10 +1469,11 @@ An attempt was made to mitigate this by using a continuation strategy on the num
 
 
 \begin{table*}[tbp]
+\footnotesize\renewcommand{\arraystretch}{0.9}
 \centering
 \footnotesize
-\renewcommand{\arraystretch}{0.95}
-\caption{Transfer time, in days, of the converged PMP-extremal candidate from a circular orbit of 1 AU and initial polar angle (at rocket departure).}
+\renewcommand{\arraystretch}{0.9}
+\caption{Transfer time in days found by the solver (U: unresolved) from a circular orbit of 1 AU and initial polar angle (at rocket departure).}
 \label{tab:transfer_times_initial_anomaly}
 \sisetup{table-format=3.2} % Requires siunitx LaTeX package
 \begin{tabular}{{r S S S S S S S }}
@@ -1780,20 +1482,20 @@ An attempt was made to mitigate this by using a continuation strategy on the num
 \cmidrule(lr){2-8}
 \textbf{(\si{\degree})} & {0.390} & {0.720} & {1.520} & {5.200} & {9.580} & {19.220} & {30.050} \\
 \midrule
--100 & 46.96 & {N/A} & {N/A} & 281.19 & 401.02 & 604.63 & {N/A} \\
--95 & 46.26 & {N/A} & {N/A} & 279.72 & 400.45 & 605.12 & {N/A} \\
--90 & 45.76 & {N/A} & {N/A} & 277.93 & 399.55 & 605.20 & {N/A} \\
--85 & 45.48 & {N/A} & {N/A} & 275.79 & 398.22 & 604.85 & {N/A} \\
--80 & 45.50 & {N/A} & {N/A} & 273.34 & 396.54 & 604.07 & {N/A} \\
--75 & 45.92 & {N/A} & {N/A} & 270.57 & 394.49 & 602.85 & {N/A} \\
--70 & 47.06 & {N/A} & {N/A} & 267.50 & 392.06 & 601.12 & {N/A} \\
--65 & 49.08 & {N/A} & {N/A} & 264.11 & 389.20 & 598.91 & {N/A} \\
--60 & 51.87 & {N/A} & {N/A} & 260.40 & 385.96 & 596.20 & {N/A} \\
--55 & 54.65 & {N/A} & {N/A} & 256.39 & 382.34 & 592.99 & 783.40 \\
--50 & 56.90 & {N/A} & {N/A} & 252.12 & 378.37 & 589.31 & 779.93 \\
--45 & 58.68 & {N/A} & {N/A} & 247.60 & 374.05 & 585.12 & 775.84 \\
--40 & 60.08 & {N/A} & 85.30 & 242.86 & 369.37 & 580.49 & 771.21 \\
--35 & 61.19 & {N/A} & 80.06 & 237.92 & 364.40 & 575.39 & 766.05 \\
+-100 & 46.96 & {U} & {U} & 281.19 & 401.02 & 604.63 & {U} \\
+-95 & 46.26 & {U} & {U} & 279.72 & 400.45 & 605.12 & {U} \\
+-90 & 45.76 & {U} & {U} & 277.93 & 399.55 & 605.20 & {U} \\
+-85 & 45.48 & {U} & {U} & 275.79 & 398.22 & 604.85 & {U} \\
+-80 & 45.50 & {U} & {U} & 273.34 & 396.54 & 604.07 & {U} \\
+-75 & 45.92 & {U} & {U} & 270.57 & 394.49 & 602.85 & {U} \\
+-70 & 47.06 & {U} & {U} & 267.50 & 392.06 & 601.12 & {U} \\
+-65 & 49.08 & {U} & {U} & 264.11 & 389.20 & 598.91 & {U} \\
+-60 & 51.87 & {U} & {U} & 260.40 & 385.96 & 596.20 & {U} \\
+-55 & 54.65 & {U} & {U} & 256.39 & 382.34 & 592.99 & 783.40 \\
+-50 & 56.90 & {U} & {U} & 252.12 & 378.37 & 589.31 & 779.93 \\
+-45 & 58.68 & {U} & {U} & 247.60 & 374.05 & 585.12 & 775.84 \\
+-40 & 60.08 & {U} & 85.30 & 242.86 & 369.37 & 580.49 & 771.21 \\
+-35 & 61.19 & {U} & 80.06 & 237.92 & 364.40 & 575.39 & 766.05 \\
 -30 & 62.11 & 36.38 & 74.72 & 232.82 & 359.17 & 569.87 & 760.36 \\
 -25 & 62.88 & 33.69 & 69.37 & 227.58 & 353.71 & 564.00 & 754.17 \\
 -20 & 63.51 & 31.65 & 64.02 & 222.28 & 348.06 & 557.81 & 747.56 \\
@@ -1823,36 +1525,36 @@ An attempt was made to mitigate this by using a continuation strategy on the num
 100 & 68.28 & 77.91 & 93.55 & 179.39 & 273.28 & 446.33 & 610.94 \\
 105 & 68.79 & 78.33 & 95.58 & 181.45 & 274.59 & 446.59 & 610.43 \\
 110 & 69.52 & 78.67 & 97.41 & 183.58 & 276.10 & 447.23 & 610.40 \\
-115 & {N/A} & 78.96 & 99.09 & 185.77 & 277.82 & 448.16 & 610.75 \\
-120 & {N/A} & 79.18 & 100.57 & 187.96 & 279.67 & 449.36 & 611.45 \\
-125 & {N/A} & 79.36 & 101.92 & 190.15 & 281.62 & 450.81 & 612.49 \\
-130 & {N/A} & 79.50 & 103.10 & 192.30 & 283.64 & 452.46 & 613.81 \\
-135 & {N/A} & 79.59 & 104.14 & 194.39 & 285.71 & 454.29 & 615.39 \\
-140 & {N/A} & 79.65 & 105.06 & 196.39 & 287.79 & 456.23 & 617.15 \\
-145 & {N/A} & 79.68 & 105.84 & 198.29 & 289.84 & 458.24 & 619.06 \\
-150 & {N/A} & 79.69 & 106.53 & 200.09 & 291.84 & 460.29 & 621.07 \\
-155 & {N/A} & 79.66 & 107.11 & 201.74 & 293.77 & 462.35 & 623.15 \\
-160 & {N/A} & 79.63 & 107.59 & 203.26 & 295.60 & 464.39 & 625.26 \\
-165 & {N/A} & 79.57 & 107.99 & 204.64 & 297.31 & 466.36 & 627.35 \\
-170 & {N/A} & 79.49 & 108.32 & 205.88 & 298.90 & 468.25 & 629.38 \\
-175 & {N/A} & 79.41 & 108.58 & 206.97 & 300.33 & 470.02 & 631.35 \\
-180 & {N/A} & 79.32 & 108.76 & 207.93 & 301.64 & 471.67 & 633.19 \\
-185 & {N/A} & 79.22 & 108.90 & 208.75 & 302.80 & 473.19 & 634.91 \\
-190 & {N/A} & 79.12 & 108.99 & 209.46 & 303.81 & 474.55 & 636.50 \\
-195 & {N/A} & 79.02 & 109.02 & 210.05 & 304.69 & 475.76 & 637.95 \\
-200 & {N/A} & 78.93 & 109.02 & 210.53 & 305.44 & 476.84 & 639.25 \\
-205 & {N/A} & 78.85 & 109.00 & 210.92 & 306.07 & 477.78 & 640.39 \\
-210 & {N/A} & 78.78 & 108.93 & 211.22 & 306.59 & 478.57 & 641.39 \\
-215 & {N/A} & 78.72 & 108.84 & 211.44 & 307.00 & 479.25 & 642.26 \\
-220 & {N/A} & 78.70 & 108.73 & 211.59 & 307.33 & 479.80 & 643.01 \\
-225 & {N/A} & 78.71 & 108.60 & 211.69 & 307.58 & 480.28 & 643.63 \\
-230 & {N/A} & 78.76 & 108.46 & 211.74 & 307.76 & 480.64 & 644.16 \\
-235 & {N/A} & 78.87 & 108.31 & 211.74 & 307.88 & 480.94 & 644.60 \\
-240 & {N/A} & 79.06 & 108.14 & 211.71 & 307.95 & 481.16 & 644.95 \\
-245 & {N/A} & 79.33 & 107.98 & 211.64 & 307.97 & 481.33 & 645.23 \\
-250 & {N/A} & 79.74 & 107.81 & 211.55 & 307.96 & 481.44 & 645.46 \\
-255 & {N/A} & 80.32 & 107.65 & 211.45 & 307.92 & 481.52 & 645.64 \\
-260 & {N/A} & 81.16 & 107.49 & 211.33 & 307.86 & 481.57 & 645.79 \\
+115 & {U} & 78.96 & 99.09 & 185.77 & 277.82 & 448.16 & 610.75 \\
+120 & {U} & 79.18 & 100.57 & 187.96 & 279.67 & 449.36 & 611.45 \\
+125 & {U} & 79.36 & 101.92 & 190.15 & 281.62 & 450.81 & 612.49 \\
+130 & {U} & 79.50 & 103.10 & 192.30 & 283.64 & 452.46 & 613.81 \\
+135 & {U} & 79.59 & 104.14 & 194.39 & 285.71 & 454.29 & 615.39 \\
+140 & {U} & 79.65 & 105.06 & 196.39 & 287.79 & 456.23 & 617.15 \\
+145 & {U} & 79.68 & 105.84 & 198.29 & 289.84 & 458.24 & 619.06 \\
+150 & {U} & 79.69 & 106.53 & 200.09 & 291.84 & 460.29 & 621.07 \\
+155 & {U} & 79.66 & 107.11 & 201.74 & 293.77 & 462.35 & 623.15 \\
+160 & {U} & 79.63 & 107.59 & 203.26 & 295.60 & 464.39 & 625.26 \\
+165 & {U} & 79.57 & 107.99 & 204.64 & 297.31 & 466.36 & 627.35 \\
+170 & {U} & 79.49 & 108.32 & 205.88 & 298.90 & 468.25 & 629.38 \\
+175 & {U} & 79.41 & 108.58 & 206.97 & 300.33 & 470.02 & 631.35 \\
+180 & {U} & 79.32 & 108.76 & 207.93 & 301.64 & 471.67 & 633.19 \\
+185 & {U} & 79.22 & 108.90 & 208.75 & 302.80 & 473.19 & 634.91 \\
+190 & {U} & 79.12 & 108.99 & 209.46 & 303.81 & 474.55 & 636.50 \\
+195 & {U} & 79.02 & 109.02 & 210.05 & 304.69 & 475.76 & 637.95 \\
+200 & {U} & 78.93 & 109.02 & 210.53 & 305.44 & 476.84 & 639.25 \\
+205 & {U} & 78.85 & 109.00 & 210.92 & 306.07 & 477.78 & 640.39 \\
+210 & {U} & 78.78 & 108.93 & 211.22 & 306.59 & 478.57 & 641.39 \\
+215 & {U} & 78.72 & 108.84 & 211.44 & 307.00 & 479.25 & 642.26 \\
+220 & {U} & 78.70 & 108.73 & 211.59 & 307.33 & 479.80 & 643.01 \\
+225 & {U} & 78.71 & 108.60 & 211.69 & 307.58 & 480.28 & 643.63 \\
+230 & {U} & 78.76 & 108.46 & 211.74 & 307.76 & 480.64 & 644.16 \\
+235 & {U} & 78.87 & 108.31 & 211.74 & 307.88 & 480.94 & 644.60 \\
+240 & {U} & 79.06 & 108.14 & 211.71 & 307.95 & 481.16 & 644.95 \\
+245 & {U} & 79.33 & 107.98 & 211.64 & 307.97 & 481.33 & 645.23 \\
+250 & {U} & 79.74 & 107.81 & 211.55 & 307.96 & 481.44 & 645.46 \\
+255 & {U} & 80.32 & 107.65 & 211.45 & 307.92 & 481.52 & 645.64 \\
+260 & {U} & 81.16 & 107.49 & 211.33 & 307.86 & 481.57 & 645.79 \\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -1860,8 +1562,9 @@ An attempt was made to mitigate this by using a continuation strategy on the num
 
 
 \begin{table*}[!htbp]
+\footnotesize\renewcommand{\arraystretch}{0.9}
 \centering
-\caption{Transfer time, in days, of the converged PMP-extremal candidate to a circular orbit of 1 AU and final polar angle (at rocket arrival).}
+\caption{Transfer time in days found by the solver (U: unresolved) to a circular orbit of 1 AU and final polar angle (at rocket arrival).}
 \label{tab:transfer_times_final_anomaly_return}
 \sisetup{table-format=3.2} % Requires siunitx LaTeX package
 \begin{tabular}{{r S S S S S S S }}
@@ -1870,23 +1573,23 @@ An attempt was made to mitigate this by using a continuation strategy on the num
 \cmidrule(lr){2-8}
 \textbf{(\si{\degree})} & {0.390} & {0.720} & {1.520} & {5.200} & {9.580} & {19.220} & {30.050} \\
 \midrule
-0 & {N/A} & {N/A} & 95.77 & 220.50 & 337.82 & 539.56 & 724.64 \\
-5 & {N/A} & {N/A} & 84.93 & 214.67 & 331.66 & 532.46 & 716.76 \\
-10 & {N/A} & {N/A} & 73.02 & 208.91 & 325.51 & 525.31 & 708.76 \\
-15 & {N/A} & {N/A} & 60.90 & 203.30 & 319.44 & 518.16 & 700.69 \\
-20 & {N/A} & {N/A} & 51.21 & 197.97 & 313.53 & 511.08 & 692.65 \\
-25 & {N/A} & {N/A} & 45.92 & 192.97 & 307.82 & 504.14 & 684.70 \\
-30 & {N/A} & 32.29 & 43.85 & 188.36 & 302.39 & 497.40 & 676.91 \\
-35 & {N/A} & 28.90 & 43.65 & 184.19 & 297.29 & 490.93 & 669.34 \\
-40 & {N/A} & 28.92 & 44.59 & 180.58 & 292.60 & 484.76 & 662.08 \\
-45 & {N/A} & 29.84 & 46.15 & 177.50 & 288.32 & 478.95 & 655.19 \\
-50 & {N/A} & 31.18 & 48.07 & 174.95 & 284.47 & 473.58 & 648.68 \\
-55 & {N/A} & 32.73 & 50.23 & 172.91 & 281.10 & 468.66 & 642.61 \\
-60 & {N/A} & 34.42 & 52.55 & 171.44 & 278.26 & 464.19 & 637.03 \\
-65 & {N/A} & 36.19 & 54.97 & 170.45 & 275.88 & 460.24 & 631.95 \\
-70 & {N/A} & 37.99 & 57.46 & 169.91 & 273.97 & 456.77 & 627.37 \\
-75 & {N/A} & 39.83 & 59.98 & 169.77 & 272.50 & 453.80 & 623.40 \\
-80 & {N/A} & 41.69 & 62.51 & 170.05 & 271.54 & 451.38 & 619.96 \\
+0 & {U} & {U} & 95.77 & 220.50 & 337.82 & 539.56 & 724.64 \\
+5 & {U} & {U} & 84.93 & 214.67 & 331.66 & 532.46 & 716.76 \\
+10 & {U} & {U} & 73.02 & 208.91 & 325.51 & 525.31 & 708.76 \\
+15 & {U} & {U} & 60.90 & 203.30 & 319.44 & 518.16 & 700.69 \\
+20 & {U} & {U} & 51.21 & 197.97 & 313.53 & 511.08 & 692.65 \\
+25 & {U} & {U} & 45.92 & 192.97 & 307.82 & 504.14 & 684.70 \\
+30 & {U} & 32.29 & 43.85 & 188.36 & 302.39 & 497.40 & 676.91 \\
+35 & {U} & 28.90 & 43.65 & 184.19 & 297.29 & 490.93 & 669.34 \\
+40 & {U} & 28.92 & 44.59 & 180.58 & 292.60 & 484.76 & 662.08 \\
+45 & {U} & 29.84 & 46.15 & 177.50 & 288.32 & 478.95 & 655.19 \\
+50 & {U} & 31.18 & 48.07 & 174.95 & 284.47 & 473.58 & 648.68 \\
+55 & {U} & 32.73 & 50.23 & 172.91 & 281.10 & 468.66 & 642.61 \\
+60 & {U} & 34.42 & 52.55 & 171.44 & 278.26 & 464.19 & 637.03 \\
+65 & {U} & 36.19 & 54.97 & 170.45 & 275.88 & 460.24 & 631.95 \\
+70 & {U} & 37.99 & 57.46 & 169.91 & 273.97 & 456.77 & 627.37 \\
+75 & {U} & 39.83 & 59.98 & 169.77 & 272.50 & 453.80 & 623.40 \\
+80 & {U} & 41.69 & 62.51 & 170.05 & 271.54 & 451.38 & 619.96 \\
 85 & 49.67 & 43.54 & 65.05 & 170.67 & 270.98 & 449.42 & 617.07 \\
 90 & 46.93 & 45.39 & 67.57 & 171.58 & 270.81 & 447.98 & 614.71 \\
 95 & 45.83 & 47.22 & 70.08 & 172.74 & 270.99 & 447.01 & 612.86 \\
@@ -1925,32 +1628,33 @@ An attempt was made to mitigate this by using a continuation strategy on the num
 260 & 65.01 & 79.53 & 109.01 & 211.68 & 307.96 & 481.51 & 645.68 \\
 265 & 65.26 & 79.62 & 108.97 & 211.61 & 307.92 & 481.57 & 645.82 \\
 270 & 65.49 & 79.66 & 108.88 & 211.51 & 307.87 & 481.60 & 645.93 \\
-275 & 65.69 & 79.68 & 108.78 & 211.39 & {N/A} & 481.61 & 646.03 \\
-280 & 65.86 & 79.68 & 108.66 & 211.26 & {N/A} & 481.62 & 646.12 \\
-285 & 66.02 & 79.65 & 108.52 & 211.14 & {N/A} & 481.62 & 646.21 \\
-290 & 66.16 & 79.61 & 108.36 & 211.00 & {N/A} & 481.63 & 646.31 \\
-295 & 66.27 & 79.54 & 108.21 & 210.88 & {N/A} & 481.66 & 646.43 \\
-300 & 66.38 & 79.47 & 108.04 & 210.75 & {N/A} & 481.71 & 646.57 \\
-305 & 66.47 & 79.37 & 107.87 & 210.65 & {N/A} & 481.78 & 646.75 \\
-310 & 66.56 & 79.27 & 107.70 & 210.56 & {N/A} & 481.89 & 646.96 \\
-315 & 66.63 & 79.17 & 107.54 & 210.49 & {N/A} & 482.04 & 647.22 \\
-320 & 66.70 & 79.07 & 107.39 & 210.44 & {N/A} & 482.24 & 647.54 \\
-325 & 66.76 & 78.97 & 107.25 & 210.43 & {N/A} & 482.48 & 647.93 \\
-330 & 66.83 & 78.89 & 107.13 & 210.45 & {N/A} & 482.79 & 648.38 \\
-335 & 66.90 & 78.80 & 107.03 & 210.51 & {N/A} & 483.16 & 648.91 \\
-340 & 66.99 & 78.74 & 106.97 & 210.60 & {N/A} & 483.61 & 649.55 \\
-345 & 67.08 & 78.70 & 106.94 & 210.75 & {N/A} & 484.14 & 650.27 \\
-350 & 67.19 & 78.70 & 106.94 & 210.96 & {N/A} & 484.76 & 651.11 \\
-355 & 67.32 & 78.73 & 107.00 & 211.22 & {N/A} & 485.47 & 652.06 \\
-360 & 67.48 & 78.82 & 107.10 & 211.54 & {N/A} & 486.28 & 653.13 \\
+275 & 65.69 & 79.68 & 108.78 & 211.39 & {U} & 481.61 & 646.03 \\
+280 & 65.86 & 79.68 & 108.66 & 211.26 & {U} & 481.62 & 646.12 \\
+285 & 66.02 & 79.65 & 108.52 & 211.14 & {U} & 481.62 & 646.21 \\
+290 & 66.16 & 79.61 & 108.36 & 211.00 & {U} & 481.63 & 646.31 \\
+295 & 66.27 & 79.54 & 108.21 & 210.88 & {U} & 481.66 & 646.43 \\
+300 & 66.38 & 79.47 & 108.04 & 210.75 & {U} & 481.71 & 646.57 \\
+305 & 66.47 & 79.37 & 107.87 & 210.65 & {U} & 481.78 & 646.75 \\
+310 & 66.56 & 79.27 & 107.70 & 210.56 & {U} & 481.89 & 646.96 \\
+315 & 66.63 & 79.17 & 107.54 & 210.49 & {U} & 482.04 & 647.22 \\
+320 & 66.70 & 79.07 & 107.39 & 210.44 & {U} & 482.24 & 647.54 \\
+325 & 66.76 & 78.97 & 107.25 & 210.43 & {U} & 482.48 & 647.93 \\
+330 & 66.83 & 78.89 & 107.13 & 210.45 & {U} & 482.79 & 648.38 \\
+335 & 66.90 & 78.80 & 107.03 & 210.51 & {U} & 483.16 & 648.91 \\
+340 & 66.99 & 78.74 & 106.97 & 210.60 & {U} & 483.61 & 649.55 \\
+345 & 67.08 & 78.70 & 106.94 & 210.75 & {U} & 484.14 & 650.27 \\
+350 & 67.19 & 78.70 & 106.94 & 210.96 & {U} & 484.76 & 651.11 \\
+355 & 67.32 & 78.73 & 107.00 & 211.22 & {U} & 485.47 & 652.06 \\
+360 & 67.48 & 78.82 & 107.10 & 211.54 & {U} & 486.28 & 653.13 \\
 \bottomrule
 \end{tabular}
 \end{table*}
 
 
 \begin{table*}[!htbp]
+\footnotesize\renewcommand{\arraystretch}{0.9}
 \centering
-\caption{Transfer time, in days, of the converged PMP-extremal candidate to a circular orbit of 1 AU and initial polar angle (at rocket departure).}
+\caption{Transfer time in days found by the solver (U: unresolved) to a circular orbit of 1 AU and initial polar angle (at rocket departure).}
 \label{tab:transfer_times_initial_anomaly_return}
 \sisetup{table-format=3.2} % Requires siunitx LaTeX package
 \begin{tabular}{{r S S S S S S S }}
@@ -1959,18 +1663,18 @@ An attempt was made to mitigate this by using a continuation strategy on the num
 \cmidrule(lr){2-8}
 \textbf{(\si{\degree})} & {0.390} & {0.720} & {1.520} & {5.200} & {9.580} & {19.220} & {30.050} \\
 \midrule
--100 & 46.94 & {N/A} & 137.22 & 281.20 & 401.02 & 604.64 & 789.45 \\
--95 & 46.28 & {N/A} & 133.71 & 279.71 & 400.45 & 605.10 & 790.72 \\
--90 & 45.79 & {N/A} & 130.04 & 277.91 & 399.53 & 605.19 & 791.59 \\
--85 & 45.47 & {N/A} & 126.23 & 275.81 & 398.24 & 604.86 & 792.02 \\
--80 & 45.48 & {N/A} & 122.29 & 273.35 & 396.55 & 604.09 & 791.99 \\
--75 & 45.94 & {N/A} & 118.16 & 270.58 & 394.50 & 602.83 & 791.40 \\
--70 & 47.06 & {N/A} & 113.88 & 267.49 & 392.03 & 601.11 & 790.28 \\
--65 & 49.09 & {N/A} & 109.49 & 264.09 & 389.19 & 598.93 & 788.57 \\
--60 & 51.87 & {N/A} & 104.93 & 260.40 & 385.96 & 596.20 & 786.30 \\
--55 & 54.64 & {N/A} & 100.21 & 256.39 & 382.37 & 593.01 & 783.38 \\
--50 & 56.91 & {N/A} & 95.40 & 252.12 & 378.37 & 589.32 & 779.89 \\
--45 & 58.67 & {N/A} & 90.40 & 247.61 & 374.03 & 585.12 & 775.84 \\
+-100 & 46.94 & {U} & 137.22 & 281.20 & 401.02 & 604.64 & 789.45 \\
+-95 & 46.28 & {U} & 133.71 & 279.71 & 400.45 & 605.10 & 790.72 \\
+-90 & 45.79 & {U} & 130.04 & 277.91 & 399.53 & 605.19 & 791.59 \\
+-85 & 45.47 & {U} & 126.23 & 275.81 & 398.24 & 604.86 & 792.02 \\
+-80 & 45.48 & {U} & 122.29 & 273.35 & 396.55 & 604.09 & 791.99 \\
+-75 & 45.94 & {U} & 118.16 & 270.58 & 394.50 & 602.83 & 791.40 \\
+-70 & 47.06 & {U} & 113.88 & 267.49 & 392.03 & 601.11 & 790.28 \\
+-65 & 49.09 & {U} & 109.49 & 264.09 & 389.19 & 598.93 & 788.57 \\
+-60 & 51.87 & {U} & 104.93 & 260.40 & 385.96 & 596.20 & 786.30 \\
+-55 & 54.64 & {U} & 100.21 & 256.39 & 382.37 & 593.01 & 783.38 \\
+-50 & 56.91 & {U} & 95.40 & 252.12 & 378.37 & 589.32 & 779.89 \\
+-45 & 58.67 & {U} & 90.40 & 247.61 & 374.03 & 585.12 & 775.84 \\
 -40 & 60.08 & 42.22 & 85.27 & 242.85 & 369.36 & 580.46 & 771.21 \\
 -35 & 61.20 & 39.24 & 80.06 & 237.91 & 364.41 & 575.38 & 766.07 \\
 -30 & 62.11 & 36.39 & 74.72 & 232.81 & 359.17 & 569.87 & 760.34 \\
@@ -1998,40 +1702,40 @@ An attempt was made to mitigate this by using a continuation strategy on the num
 80 & 67.24 & 75.39 & 83.70 & 172.59 & 270.82 & 449.33 & 617.75 \\
 85 & 67.41 & 76.18 & 86.42 & 173.99 & 270.94 & 447.93 & 615.28 \\
 90 & 67.62 & 76.85 & 88.98 & 175.64 & 271.40 & 446.97 & 613.33 \\
-95 & {N/A} & 77.43 & 91.36 & 177.44 & 272.19 & 446.44 & 611.88 \\
-100 & {N/A} & 77.92 & 93.56 & 179.39 & 273.28 & 446.33 & 610.94 \\
-105 & {N/A} & 78.33 & 95.57 & 181.45 & 274.59 & 446.60 & 610.43 \\
-110 & {N/A} & 78.67 & 97.42 & 183.58 & 276.10 & 447.20 & 610.38 \\
-115 & {N/A} & 78.95 & 99.07 & 185.77 & 277.82 & 448.15 & 610.75 \\
-120 & {N/A} & 79.18 & 100.57 & 187.97 & 279.67 & 449.37 & 611.47 \\
-125 & {N/A} & 79.36 & 101.92 & 190.15 & 281.62 & 450.82 & 612.50 \\
-130 & {N/A} & 79.49 & 103.11 & 192.30 & 283.64 & 452.46 & 613.81 \\
-135 & {N/A} & 79.59 & 104.14 & 194.39 & 285.71 & 454.29 & 615.39 \\
-140 & {N/A} & 79.65 & 105.06 & 196.39 & 287.79 & 456.23 & 617.15 \\
-145 & {N/A} & 79.68 & 105.85 & 198.29 & 289.84 & 458.24 & 619.06 \\
-150 & {N/A} & 79.69 & 106.54 & 200.09 & 291.84 & 460.29 & 621.08 \\
-155 & {N/A} & 79.66 & 107.11 & 201.74 & 293.77 & 462.35 & 623.15 \\
-160 & {N/A} & 79.63 & 107.60 & 203.26 & 295.60 & 464.39 & 625.26 \\
-165 & {N/A} & 79.57 & 108.00 & 204.64 & 297.31 & 466.36 & 627.35 \\
-170 & {N/A} & 79.49 & 108.32 & 205.88 & 298.90 & 468.25 & 629.38 \\
-175 & {N/A} & 79.41 & 108.58 & 206.99 & 300.34 & 470.02 & 631.35 \\
-180 & {N/A} & 79.32 & 108.76 & 207.93 & 301.65 & 471.67 & 633.20 \\
-185 & {N/A} & 79.22 & 108.90 & 208.75 & 302.80 & 473.19 & 634.91 \\
-190 & {N/A} & 79.12 & 108.98 & 209.46 & 303.82 & 474.54 & 636.50 \\
-195 & {N/A} & 79.02 & 109.02 & 210.05 & 304.69 & 475.76 & 637.95 \\
-200 & {N/A} & 78.93 & 109.03 & 210.52 & 305.45 & 476.84 & 639.25 \\
-205 & {N/A} & 78.85 & 108.99 & 210.92 & 306.08 & 477.77 & 640.40 \\
-210 & {N/A} & 78.77 & 108.93 & 211.22 & 306.59 & 478.57 & 641.40 \\
-215 & {N/A} & 78.72 & 108.84 & 211.44 & 307.01 & 479.25 & 642.26 \\
-220 & {N/A} & 78.70 & 108.73 & 211.59 & 307.34 & 479.81 & 643.01 \\
-225 & {N/A} & 78.71 & 108.60 & 211.70 & 307.59 & 480.28 & 643.64 \\
-230 & {N/A} & 78.76 & 108.46 & 211.74 & 307.76 & 480.64 & 644.17 \\
-235 & {N/A} & 78.87 & 108.30 & 211.74 & 307.88 & 480.93 & 644.60 \\
-240 & {N/A} & 79.06 & 108.15 & 211.71 & 307.94 & 481.17 & 644.95 \\
-245 & {N/A} & {N/A} & 107.97 & 211.64 & 307.97 & 481.33 & 645.24 \\
-250 & {N/A} & {N/A} & 107.81 & 211.56 & 307.96 & 481.44 & 645.47 \\
-255 & {N/A} & {N/A} & 107.65 & 211.45 & 307.92 & 481.52 & 645.64 \\
-260 & {N/A} & {N/A} & 107.49 & 211.33 & 307.87 & 481.57 & 645.79 \\
+95 & {U} & 77.43 & 91.36 & 177.44 & 272.19 & 446.44 & 611.88 \\
+100 & {U} & 77.92 & 93.56 & 179.39 & 273.28 & 446.33 & 610.94 \\
+105 & {U} & 78.33 & 95.57 & 181.45 & 274.59 & 446.60 & 610.43 \\
+110 & {U} & 78.67 & 97.42 & 183.58 & 276.10 & 447.20 & 610.38 \\
+115 & {U} & 78.95 & 99.07 & 185.77 & 277.82 & 448.15 & 610.75 \\
+120 & {U} & 79.18 & 100.57 & 187.97 & 279.67 & 449.37 & 611.47 \\
+125 & {U} & 79.36 & 101.92 & 190.15 & 281.62 & 450.82 & 612.50 \\
+130 & {U} & 79.49 & 103.11 & 192.30 & 283.64 & 452.46 & 613.81 \\
+135 & {U} & 79.59 & 104.14 & 194.39 & 285.71 & 454.29 & 615.39 \\
+140 & {U} & 79.65 & 105.06 & 196.39 & 287.79 & 456.23 & 617.15 \\
+145 & {U} & 79.68 & 105.85 & 198.29 & 289.84 & 458.24 & 619.06 \\
+150 & {U} & 79.69 & 106.54 & 200.09 & 291.84 & 460.29 & 621.08 \\
+155 & {U} & 79.66 & 107.11 & 201.74 & 293.77 & 462.35 & 623.15 \\
+160 & {U} & 79.63 & 107.60 & 203.26 & 295.60 & 464.39 & 625.26 \\
+165 & {U} & 79.57 & 108.00 & 204.64 & 297.31 & 466.36 & 627.35 \\
+170 & {U} & 79.49 & 108.32 & 205.88 & 298.90 & 468.25 & 629.38 \\
+175 & {U} & 79.41 & 108.58 & 206.99 & 300.34 & 470.02 & 631.35 \\
+180 & {U} & 79.32 & 108.76 & 207.93 & 301.65 & 471.67 & 633.20 \\
+185 & {U} & 79.22 & 108.90 & 208.75 & 302.80 & 473.19 & 634.91 \\
+190 & {U} & 79.12 & 108.98 & 209.46 & 303.82 & 474.54 & 636.50 \\
+195 & {U} & 79.02 & 109.02 & 210.05 & 304.69 & 475.76 & 637.95 \\
+200 & {U} & 78.93 & 109.03 & 210.52 & 305.45 & 476.84 & 639.25 \\
+205 & {U} & 78.85 & 108.99 & 210.92 & 306.08 & 477.77 & 640.40 \\
+210 & {U} & 78.77 & 108.93 & 211.22 & 306.59 & 478.57 & 641.40 \\
+215 & {U} & 78.72 & 108.84 & 211.44 & 307.01 & 479.25 & 642.26 \\
+220 & {U} & 78.70 & 108.73 & 211.59 & 307.34 & 479.81 & 643.01 \\
+225 & {U} & 78.71 & 108.60 & 211.70 & 307.59 & 480.28 & 643.64 \\
+230 & {U} & 78.76 & 108.46 & 211.74 & 307.76 & 480.64 & 644.17 \\
+235 & {U} & 78.87 & 108.30 & 211.74 & 307.88 & 480.93 & 644.60 \\
+240 & {U} & 79.06 & 108.15 & 211.71 & 307.94 & 481.17 & 644.95 \\
+245 & {U} & {U} & 107.97 & 211.64 & 307.97 & 481.33 & 645.24 \\
+250 & {U} & {U} & 107.81 & 211.56 & 307.96 & 481.44 & 645.47 \\
+255 & {U} & {U} & 107.65 & 211.45 & 307.92 & 481.52 & 645.64 \\
+260 & {U} & {U} & 107.49 & 211.33 & 307.87 & 481.57 & 645.79 \\
 \bottomrule
 \end{tabular}
 \end{table*}
